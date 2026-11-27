@@ -45,6 +45,7 @@ test("every registry method that needs approval has a pinned digest under its ow
     ["axis.tasks/1#start", "3dafc3a76159fcb23c98214eb41ef4d7032b028219c644c5561a8e5a14f3d404"],
     ["axis.plugins/1#grant", "ccaa34c6eb3582714c9a1a212cb1ff832279a700c1fc195b84ca949c539bd9bd"],
     ["axis.plugins/1#enable", "01d558ee185946b6e7beddabca735b93e7354dac7cdc4ea5cd667e626b38a616"],
+    ["axis.messages/1#enableCliEndpoint", "b7ba6e6eb3848c59847ea964324f5b6e29f4753c973442c25ff39e1ad03dbbeb"],
   ]);
   const payloads = new Map([
     ["axis.worktrees/1#remove", { id: "ws-1", deleteBranch: false }],
@@ -56,6 +57,7 @@ test("every registry method that needs approval has a pinned digest under its ow
     ["axis.tasks/1#start", { taskId: "task-1", worker: "agent-1", seq: 2, promptDigest: "d".repeat(64) }],
     ["axis.plugins/1#grant", { projectId: "p1", pluginId: "acme.board", permission: "runs.start" }],
     ["axis.plugins/1#enable", { projectId: "p1", pluginId: "acme.board" }],
+    ["axis.messages/1#enableCliEndpoint", {}],
   ]);
   const needing = [];
   for (const [key, methods] of Object.entries(contracts)) {

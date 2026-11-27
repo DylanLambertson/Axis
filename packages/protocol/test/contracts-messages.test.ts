@@ -17,6 +17,9 @@ import {
   makeError,
   messageIdSchema,
   messagesMethods,
+  messagesCliEndpointResponseSchema,
+  messagesDisableCliEndpointRequestSchema,
+  messagesEnableCliEndpointRequestSchema,
   messagesMarkReadRequestSchema,
   messagesMarkReadResponseSchema,
   messagesPauseRequestSchema,
@@ -39,7 +42,7 @@ import {
   tableProblems,
   threadIdSchema,
 } from "../src/index.js";
-import { MESSAGES_SAMPLES, MSG1, THREAD } from "./samples-messages.js";
+import { MESSAGES_SAMPLES, MSG1, THREAD, settings as SETTINGS } from "./samples-messages.js";
 import { accepts, rejects, runSuite, schemaOf } from "./suite.js";
 
 runSuite(MESSAGES_SAMPLES);
@@ -55,6 +58,8 @@ const EXPECTED: ReadonlyArray<readonly [string, string, number, string, number]>
   ["resume", "write", 2, "none", 5_000],
   ["settings", "read", 0, "none", 5_000],
   ["updateSettings", "write", 2, "none", 10_000],
+  ["enableCliEndpoint", "write", 4, "none", 30_000],
+  ["disableCliEndpoint", "write", 1, "none", 10_000],
 ];
 
 test("messages: served (PV-M3), nothing left planned; the method table is the designed one, frozen and servable", () => {
@@ -89,28 +94,37 @@ const BARE_REQUESTS: Record<string, z.ZodType> = {
   send: messagesSendRequestSchema, thread: messagesThreadRequestSchema, threads: messagesThreadsRequestSchema,
   read: messagesReadRequestSchema, markRead: messagesMarkReadRequestSchema, pause: messagesPauseRequestSchema,
   resume: messagesPauseRequestSchema, settings: messagesSettingsRequestSchema, updateSettings: messagesUpdateSettingsRequestSchema,
+  enableCliEndpoint: messagesEnableCliEndpointRequestSchema, disableCliEndpoint: messagesDisableCliEndpointRequestSchema,
 };
 const BARE_RESPONSES: Record<string, z.ZodType> = {
   send: messagesSendResponseSchema, thread: messagesThreadResponseSchema, threads: messagesThreadsResponseSchema,
   read: messagesReadResponseSchema, markRead: messagesMarkReadResponseSchema, pause: messagesPauseResponseSchema,
   resume: messagesResumeResponseSchema, settings: messagesSettingsResponseSchema, updateSettings: messagesUpdateSettingsResponseSchema,
+  enableCliEndpoint: messagesCliEndpointResponseSchema, disableCliEndpoint: messagesCliEndpointResponseSchema,
 };
 /** Names the pattern matches that are settings, not capabilities: the secret-scan mode of a project (section 8.2). */
 const NOT_A_CAPABILITY: ReadonlySet<string> = new Set(["secretScan"]);
 const CAPABILITY = /approv|challenge|digest|grant|token|capab|credential|secret|password|command|argv|exec|tool|permission|actor|sign/i;
 
-test("messages: no request or response field, at any depth, can carry an approval, a capability or a command", () => {
+/**
+ * The one method that takes an approval (PV-M7 slice 2): switching the CLI endpoint on, tier 4 with main's native
+ * confirmation. Its `approval` is the daemon's challenge reference that the retry spends, and nothing else it carries is one.
+ */
+const APPROVED: ReadonlyMap<string, ReadonlySet<string>> = new Map([["enableCliEndpoint", new Set(["approval", "challengeId"])]]);
+
+test("messages: no request or response field, at any depth, can carry an approval, a capability or a command (but the switch's own approval)", () => {
   const all = new Set<string>();
+  assert.deepEqual(Object.entries(messagesMethods).filter(([, spec]) => spec.tier > 2).map(([m]) => m), [...APPROVED.keys()], "only the switch is above tier 2");
   for (const [method, spec] of Object.entries(messagesMethods)) {
-    assert.ok(spec.tier <= 2, `${method}: a tier 3 method would take an approval`);
-    assert.equal((spec.request as { shape?: Record<string, unknown> }).shape?.["approval"], undefined, `${method}: approval field`);
+    if (!APPROVED.has(method)) assert.ok(spec.tier <= 2, `${method}: a tier 3 method would take an approval`);
+    if (!APPROVED.has(method)) assert.equal((spec.request as { shape?: Record<string, unknown> }).shape?.["approval"], undefined, `${method}: approval field`);
     for (const side of ["request", "response"] as const) {
       // The bare schemas are what the guarded ones parse with; the walk sees their whole tree.
       const bare = (side === "request" ? BARE_REQUESTS : BARE_RESPONSES)[method];
       assert.ok(bare !== undefined, `${method} ${side}`);
       const names = propertyNames(bare);
       for (const n of names) all.add(n);
-      for (const n of names) if (!NOT_A_CAPABILITY.has(n)) assert.doesNotMatch(n, CAPABILITY, `${method} ${side}: field ${n}`);
+      for (const n of names) if (!NOT_A_CAPABILITY.has(n) && !(side === "request" && APPROVED.get(method)?.has(n) === true)) assert.doesNotMatch(n, CAPABILITY, `${method} ${side}: field ${n}`);
     }
   }
   // The walk sees nested fields (the excerpt's line range, a recipient's group), so it is not vacuous.
@@ -185,9 +199,9 @@ test("messages: refusals are a closed set by code; details are exactly { reason 
   assert.deepEqual(MESSAGES_REFUSALS.E_NOT_FOUND, ["not_found"]);
   // Handlers cannot raise E_POLICY_DENIED (the daemon answers E_INTERNAL for it): no reason may sit under it.
   assert.equal(Object.hasOwn(MESSAGES_REFUSALS, "E_POLICY_DENIED"), false);
-  assert.deepEqual(Object.keys(MESSAGES_REFUSALS).sort(), ["E_BACKPRESSURE", "E_CONFLICT", "E_INVALID_ARGUMENT", "E_NOT_FOUND"]);
+  assert.deepEqual(Object.keys(MESSAGES_REFUSALS).sort(), ["E_BACKPRESSURE", "E_CONFLICT", "E_INVALID_ARGUMENT", "E_NOT_FOUND", "E_UNAVAILABLE"]);
   assert.deepEqual([...MESSAGES_REASONS].sort(), [
-    "bypass_entry", "config_home", "config_unparsed", "cross_project", "empty_argv", "env_assignment", "excerpt_path_refused", "hop_limit", "not_found", "paused", "queue_full", "rate_limited",
+    "already_enabled", "bypass_entry", "config_home", "config_unparsed", "cross_project", "empty_argv", "endpoint_unavailable", "env_assignment", "excerpt_path_refused", "hop_limit", "not_found", "paused", "queue_full", "rate_limited",
     "real_path_unresolved", "recipient_refused", "secret_found", "too_large", "too_many_recipients", "too_many_repo_files", "unknown_flag", "wrapper_unparsed",
   ]);
   assert.equal(new Set(MESSAGES_REASONS).size, MESSAGES_REASONS.length, "a reason under two codes");
@@ -208,4 +222,24 @@ test("messages: refusals are a closed set by code; details are exactly { reason 
   assert.equal(isMessagesRefusal("toString", "not_found"), false);
   assert.equal(isMessagesRefusal("E_INTERNAL", "not_found"), false);
   assert.doesNotMatch(MESSAGES_REFUSAL_MESSAGE, /thread|exist|visible|particip/i);
+});
+
+test("messages: the CLI endpoint switch (PV-M7 slice 2): enable carries only an approval, disable nothing; both answer the state and whether it changed", () => {
+  const { enableCliEndpoint, disableCliEndpoint, settings } = messagesMethods;
+  accepts(enableCliEndpoint.request, {}, "the first ask");
+  accepts(enableCliEndpoint.request, { approval: { challengeId: "A".repeat(22) } }, "the retry that spends the approval");
+  rejects(enableCliEndpoint.request, { enabled: true }, "no other field");
+  rejects(enableCliEndpoint.request, { approval: { challengeId: "x" } }, "an approval of the challenge reference shape");
+  accepts(disableCliEndpoint.request, {}, "no field");
+  rejects(disableCliEndpoint.request, { approval: { challengeId: "A".repeat(22) } }, "the disable takes no approval");
+  for (const m of [enableCliEndpoint, disableCliEndpoint]) {
+    accepts(m.response, { enabled: true, changed: false }, "state and change");
+    rejects(m.response, { enabled: true }, "changed is required");
+    rejects(m.response, { enabled: "yes", changed: false }, "a boolean");
+  }
+  assert.equal(enableCliEndpoint.tier, 4);
+  assert.equal(disableCliEndpoint.tier, 1);
+  assert.equal(enableCliEndpoint.idempotency, "none", "the approval is single use");
+  accepts(settings.response, { settings: SETTINGS, cliEndpoint: true }, "settings answers the switch beside the project's settings");
+  rejects(settings.response, { settings: SETTINGS }, "always");
 });

@@ -18,9 +18,32 @@ export class PluginGrantRecords {
   setEnabled(a: string, b: string, e: boolean, t?: PluginGrantWrite): void { void a; void b; void e; void t; }
   state(a: string, b: string): unknown { return [a, b]; }
 }`,
+  [FILES.switchStore]: `
+declare const S: unique symbol;
+export interface CliEndpointSwitchWrite { readonly [S]: true }
+export class CliEndpointSwitchRecords {
+  takeSwitchMint(): () => CliEndpointSwitchWrite { return () => ({}) as CliEndpointSwitchWrite; }
+  switchOn(t: CliEndpointSwitchWrite): { changed: boolean } { void t; return { changed: true }; }
+  switchOff(): { changed: boolean } { return { changed: true }; }
+  enabled(): boolean { return false; }
+}`,
   [FILES.journal]: `
 import { PluginGrantRecords } from "./plugin-grant-store.js";
-export class Journal { readonly plugins = new PluginGrantRecords(); static open(): Journal { return new Journal(); } }`,
+import { CliEndpointSwitchRecords } from "./cli-endpoint-store.js";
+export class Journal { readonly plugins = new PluginGrantRecords(); readonly cliEndpoint = new CliEndpointSwitchRecords(); static open(): Journal { return new Journal(); } }`,
+  [FILES.switchAction]: `
+import type { CliEndpointSwitchRecords, CliEndpointSwitchWrite } from "../../../journal/src/cli-endpoint-store.js";
+export interface CliEndpointSwitchAction { switchOn(): { changed: boolean } }
+export function createCliEndpointSwitchAction(s: Pick<CliEndpointSwitchRecords, "switchOn">, mint: () => CliEndpointSwitchWrite): CliEndpointSwitchAction {
+  return { switchOn: () => s.switchOn(mint()) };
+}`,
+  [FILES.switchHandler]: `
+import type { CliEndpointSwitchAction } from "../messages/cli-endpoint-action.js";
+import type { CliEndpointSwitchRecords } from "../../../journal/src/cli-endpoint-store.js";
+export interface SwitchDeps { action: CliEndpointSwitchAction; store: Pick<CliEndpointSwitchRecords, "enabled" | "switchOff"> }
+export function handlers(d: SwitchDeps) {
+  return { on: () => d.action.switchOn(), off: () => d.store.switchOff(), state: () => d.store.enabled() };
+}`,
   [FILES.auditDb]: `export function openDatabase(path: string): unknown { return path; }`,
   [FILES.action]: `
 import type { PluginGrantRecords, PluginGrantWrite } from "../../../journal/src/plugin-grant-store.js";
@@ -32,12 +55,19 @@ export function createGrantAction(p: Pick<PluginGrantRecords, "grant">, mint: ()
 import type { Journal } from "../../journal/src/journal.js";
 import { createGrantAction } from "./plugins/grant-action.js";
 import { registerPluginsHandlers } from "./handlers/plugins.js";
-export function wire(j: Journal) { registerPluginsHandlers({ journal: j }); return createGrantAction(j.plugins, j.plugins.takeGrantMint()); }`,
+import { createCliEndpointSwitchAction } from "./messages/cli-endpoint-action.js";
+import { handlers } from "./handlers/messages-switch.js";
+export function wire(j: Journal) {
+  registerPluginsHandlers({ journal: j });
+  handlers({ action: createCliEndpointSwitchAction(j.cliEndpoint, j.cliEndpoint.takeSwitchMint()), store: j.cliEndpoint });
+  return createGrantAction(j.plugins, j.plugins.takeGrantMint());
+}`,
   [FILES.handler]: `
 import type { GrantAction } from "../plugins/grant-action.js";
 import type { Journal } from "../../../journal/src/journal.js";
 export function revoke(j: Journal, a?: GrantAction) { j.plugins.setEnabled("x", "p", false); a?.grant("x", "p", "runs.start"); }
-export function registerPluginsHandlers(deps: { journal: { plugins: { setEnabled(a: string, b: string, e: false): void } } }): unknown { return deps; }`,
+export function registerPluginsHandlers(deps: { journal: { plugins: { setEnabled(a: string, b: string, e: false): void } } }): unknown { return deps; }
+export interface GrantDeps { action: GrantAction }`,
   [FILES.host]: `
 import { Journal } from "../../journal/src/journal.js";
 export const journal = Journal.open();`,
@@ -48,6 +78,7 @@ export const db = openDatabase("x");`,
 
 const EVIL = "packages/daemon-host/src/evil.ts";
 const J = `import type { Journal } from "../../journal/src/journal.js";\nimport type { PluginGrantWrite } from "../../journal/src/plugin-grant-store.js";\n`;
+const JS = `import type { Journal } from "../../journal/src/journal.js";\nimport type { CliEndpointSwitchWrite } from "../../journal/src/cli-endpoint-store.js";\n`;
 
 function run(extra = {}) {
   const root = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "axis-grant-rule-"));
@@ -112,6 +143,29 @@ const PLANTED = [
   ["Journal.open outside the host", `import { Journal } from "../../journal/src/journal.js";\nexport const j = Journal.open();`],
   ["new PluginGrantRecords outside the journal", `import { PluginGrantRecords } from "../../journal/src/plugin-grant-store.js";\nexport const p = new PluginGrantRecords();`],
   ["the audit openDatabase elsewhere", `import { openDatabase } from "../../audit/src/db.js";\nexport const d = openDatabase("y");`],
+  // The CLI endpoint switch (PV-M7 slice 2): switchOn only through the action, switchOff only in its handler, the mint only into the action.
+  ["switchOn on the switch store", `${JS}export function f(j: Journal, t: CliEndpointSwitchWrite) { return j.cliEndpoint.switchOn(t); }`],
+  ["switchOff outside its handler", `${JS}export function f(j: Journal) { return j.cliEndpoint.switchOff(); }`],
+  ["a second caller of takeSwitchMint", `${JS}export function f(j: Journal) { return j.cliEndpoint.takeSwitchMint(); }`],
+  ["destructuring switchOn", `${JS}export function f(j: Journal) { const { switchOn } = j.cliEndpoint; return switchOn; }`],
+  ["a literal bracket switchOff", `${JS}export function f(j: Journal) { return j.cliEndpoint["switchOff"](); }`],
+  ["a computed key on the switch store", `${JS}export function f(j: Journal, k: "switchOn" | "enabled") { return j.cliEndpoint[k]; }`],
+  ["a structural view of the switch store", `${JS}export function f(j: Journal) { const v: { switchOff(): unknown } = j.cliEndpoint; return v.switchOff(); }`],
+  ["the switch store passed to a helper", `${JS}function h(p: unknown) { return p; }\nexport function f(j: Journal) { return h(j.cliEndpoint); }`],
+  ["a switch token held elsewhere", `${JS}export function f(m: () => CliEndpointSwitchWrite) { return typeof m; }`],
+  ["the switch action held elsewhere", `import type { CliEndpointSwitchAction } from "./messages/cli-endpoint-action.js";\nexport function f(a: CliEndpointSwitchAction) { return a.switchOn(); }`],
+  ["a forged local CliEndpointSwitchAction cast", `${JS}interface CliEndpointSwitchAction { switchOff(): unknown }\nexport function f(j: Journal) { return (j.cliEndpoint as unknown as CliEndpointSwitchAction).switchOff(); }`],
+  // Review switch-contract 1 S1: the action reached by element access, from a file holding the exported deps type.
+  ["the switch action by a literal bracket key", `import type { SwitchDeps } from "./handlers/messages-switch.js";\nexport function f(d: SwitchDeps) { return d["action"].switchOn(); }`],
+  ["the switch action by a const computed key", `import type { SwitchDeps } from "./handlers/messages-switch.js";\nconst k = "action" as const;\nexport function f(d: SwitchDeps) { return d[k].switchOn(); }`],
+  ["the switch action by an optional bracket key", `import type { SwitchDeps } from "./handlers/messages-switch.js";\nexport function f(d?: SwitchDeps) { return d?.["action"].switchOn(); }`],
+  ["the grant action by a literal bracket key", `import type { GrantDeps } from "./handlers/plugins.js";\nexport function f(d: GrantDeps) { d["action"].grant("a", "b", "c"); }`],
+  ["the grant action by a const computed key", `import type { GrantDeps } from "./handlers/plugins.js";\nconst k = "action" as const;\nexport function f(d: GrantDeps) { d[k].grant("a", "b", "c"); }`],
+  // N4: a cast to the action or the token type outside their files (an \`any\` cast stays the recorded boundary).
+  ["a cast to the switch action", `import type { CliEndpointSwitchAction } from "./messages/cli-endpoint-action.js";\nexport function f(x: unknown) { return (x as CliEndpointSwitchAction).switchOn(); }`],
+  ["a cast to the grant action", `import type { GrantAction } from "./plugins/grant-action.js";\nexport function f(x: unknown) { (x as GrantAction).grant("a", "b", "c"); }`],
+  ["a cast to a switch token", `${JS}export function f(j: Journal, x: unknown) { return j.cliEndpoint.enabled() ? (x as CliEndpointSwitchWrite) : undefined; }`],
+  ["new CliEndpointSwitchRecords outside the journal", `import { CliEndpointSwitchRecords } from "../../journal/src/cli-endpoint-store.js";\nexport const s = new CliEndpointSwitchRecords();`],
 ];
 
 for (const [label, text] of PLANTED) {
@@ -181,4 +235,38 @@ test("allowed: a decrease anywhere, the grant action's own calls, a data field n
 test("refused: a local GrantAction declared inside the handler file itself", () => {
   const problems = run({ [FILES.handler]: `${BASE[FILES.handler]}\nnamespace L { export interface GrantAction { takeGrantMint(): unknown } }\nexport function f(j: Journal) { return (j.plugins as unknown as L.GrantAction).takeGrantMint(); }` });
   assert.ok(problems.some((p) => p.startsWith(`${FILES.handler}:`) && p.includes("takeGrantMint")), JSON.stringify(problems));
+});
+
+test("refused: a second value exported from cli-endpoint-action.ts", () => {
+  const problems = run({ [FILES.switchAction]: `${BASE[FILES.switchAction]}\nexport const leak = 1;` });
+  assert.ok(problems.some((p) => p.includes("cli-endpoint-action.ts must export exactly one value")), JSON.stringify(problems));
+});
+
+test("refused: takeSwitchMint in the composition but not straight into createCliEndpointSwitchAction", () => {
+  const problems = run({ [FILES.compose]: `
+import type { Journal } from "../../journal/src/journal.js";
+import { createCliEndpointSwitchAction } from "./messages/cli-endpoint-action.js";
+export function wire(j: Journal) { const m = j.cliEndpoint.takeSwitchMint(); return createCliEndpointSwitchAction(j.cliEndpoint, m); }` });
+  assert.ok(problems.some((p) => p.startsWith(`${FILES.compose}:`) && p.includes("takeSwitchMint")), JSON.stringify(problems));
+});
+
+test("refused: the plugin grant mint handed to the switch action, or the switch mint to the grant action", () => {
+  const crossed = run({ [FILES.compose]: `
+import type { Journal } from "../../journal/src/journal.js";
+import { createCliEndpointSwitchAction } from "./messages/cli-endpoint-action.js";
+import { createGrantAction } from "./plugins/grant-action.js";
+export function wire(j: Journal) { createCliEndpointSwitchAction(j.cliEndpoint, j.plugins.takeGrantMint() as never); return createGrantAction(j.plugins, j.cliEndpoint.takeSwitchMint() as never); }` });
+  assert.ok(crossed.some((p) => p.includes("takeGrantMint")) && crossed.some((p) => p.includes("takeSwitchMint")), JSON.stringify(crossed));
+});
+
+test("allowed: the switch's reader anywhere, a data field named switchOn, the handler's own switchOff and the action's switchOn", () => {
+  assert.deepEqual(run({ [EVIL]: `${JS}export function f(j: Journal) { return j.cliEndpoint.enabled(); }` }), [], "reading the switch");
+  assert.deepEqual(run({ [EVIL]: `export function f(o: { switchOn: boolean }) { return o.switchOn; }` }), [], "a data field");
+});
+
+test("refused: either mint passed straight into a function that is not its own action's creator", () => {
+  for (const [mint, store] of [["takeSwitchMint", "cliEndpoint"], ["takeGrantMint", "plugins"]]) {
+    const problems = run({ [FILES.compose]: `${BASE[FILES.compose]}\nfunction keep(m: unknown) { return m; }\nexport function leak(j: Journal) { return keep(j.${store}.${mint}()); }` });
+    assert.ok(problems.some((p) => p.startsWith(`${FILES.compose}:`) && p.includes(`${mint}()`)), `${mint}: ${JSON.stringify(problems)}`);
+  }
 });

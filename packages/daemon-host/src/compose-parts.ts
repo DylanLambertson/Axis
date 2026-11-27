@@ -239,10 +239,12 @@ export function messageSecretCheck(redactor: Redactor): (text: string) => boolea
   return (text) => check.containsSecret(text);
 }
 
-/** What compose's messaging option turns on (PV-M6; both default false; `cliEndpoint` needs `enabled`). PV-G4 reads `enabled`. */
+/**
+ * What compose's messaging option turns on: `enabled` for agent runs (delivery, the composer's send and read tools; PV-G4), off
+ * by default. The CLI endpoint is not an option: it is the user's switch in the journal (PV-M7 slice 2, v20).
+ */
 export interface MessagingOptions {
   readonly enabled?: boolean;
-  readonly cliEndpoint?: boolean;
 }
 /** A CLI run's endpoint as the run's spawn needs it. */
 export interface CliEndpoints {
@@ -251,18 +253,18 @@ export interface CliEndpoints {
 }
 
 /**
- * The CLI endpoint relay wired to the pty control channel (PV-M6 slice 2), or undefined: only with `messaging.enabled` AND
- * `messaging.cliEndpoint` (both off by default) and a pty port that relays. Each relayed message goes to the daemon's relay
+ * The CLI endpoint relay wired to the pty control channel (PV-M6 slice 2), or undefined: only when the user's switch is on (`on`,
+ * read from the journal at start; PV-M7 slice 2) and the pty port relays. Independent of `messaging.enabled` (decision A). Each relayed message goes to the daemon's relay
  * with the channel's mark; its answers go back on the channel; shutdown writes the pending aggregated failure rows.
  */
 export function wireCliEndpoints(
-  o: MessagingOptions | undefined,
+  on: boolean,
   pty: unknown,
   endpoints: { readonly relay: EndpointRelay; readonly source: symbol; readonly onSettings?: (l: (e: MessagingSettingsEvent) => void) => () => void },
   cleanups: (() => void)[],
 ): CliEndpoints | undefined {
   const port = pty as Partial<PtyRelayPort>;
-  if (o?.enabled !== true || o.cliEndpoint !== true || typeof port.onRelay !== "function" || typeof port.relay !== "function") return undefined;
+  if (on !== true || typeof port.onRelay !== "function" || typeof port.relay !== "function") return undefined;
   const send = port.relay.bind(port);
   const sub = port.onRelay((m) => void endpoints.relay.onRelay(endpoints.source, m).then((outs) => outs.forEach((out) => send(out)), () => undefined));
   // Slice 3: a worker's messaging turned off revokes its endpoints; a pause drops the connections of the senders it pauses.

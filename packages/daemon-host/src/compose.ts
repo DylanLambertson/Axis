@@ -116,8 +116,8 @@ export interface ComposeOptions {
   readonly observeWindowLifetimes?: (lifetimes: Pick<WindowLifetimes, "current" | "status">) => void;
   /** TEST ONLY: sees whether the composer binding was given the WT-2 guard (review c3 r1 N-6). */
   readonly observeAgent?: (agent: { readonly commands: boolean; readonly gitReads: boolean; readonly commandLimits: CommandLimits }) => void;
-  /** TEST ONLY: sees the `agentOf` the messaging binding was given (PV-G4: it knows no run unless `messaging.enabled`). */
-  readonly observeMessaging?: (m: { readonly agentOf: (runId: string) => string | undefined }) => void;
+  /** TEST ONLY: sees the `agentOf` the messaging binding was given (PV-G4: it knows no run unless `messaging.enabled`), the CLI endpoint path's own lookup and whether its relay was wired (PV-M7 slice 2: the user's switch alone decides both). */
+  readonly observeMessaging?: (m: { readonly agentOf: (runId: string) => string | undefined; readonly cliAgentOf: (runId: string) => string | undefined; readonly cliWired: boolean }) => void;
   /** How long shutdown waits for composer runs to record their last rows before the audit writers are sealed (default 1000). */
   readonly composerSettleMs?: number;
   /** Composer runs (`axis.runs/1`, docs/design/composer-runtime.md); see `ComposerOptions`. */
@@ -127,7 +127,7 @@ export interface ComposeOptions {
   };
   /** Period of the event sources (docs/design/events.md section 4; default 250 ms). */
   readonly eventPumpMs?: number;
-  /** Messaging: `enabled` for agent runs (delivery, the send and read tools; `HostMessaging.enabled`) and `cliEndpoint` for the CLI endpoint (PV-M6, needs `enabled`); both off by default. */
+  /** Messaging: `enabled` for agent runs (delivery, the send and read tools; `HostMessaging.enabled`), off by default. The CLI endpoint is the user's switch in the journal (PV-M7 slice 2). */
   readonly messaging?: MessagingOptions;
   /**
    * PV-K2 K2-g2: serve `axis.plugins/1.grant` and `enable` (tier 4, native confirmation). Off by default and in production until
@@ -262,9 +262,10 @@ export function composeDaemonHost(options: ComposeOptions): ComposedHost {
         const providers = createProvidersBinding({ redactor: ports.redactor, audit: composerWriter, ...productionConnection(options.composer?.anthropic) });
         // axis.messages/1 (PV-M3): service, settings and delivery into runs; its rows go through the sealed composer writer.
         const messagingDeps = hostMessagingDeps({ journal: parts.journal, audit: composerWriter, monotonic: () => ports.clock.monotonic(), scan: (text) => scanner.scan(text, { part: "message" }), logger, holdsSecret: messageSecretCheck(ports.redactor), enabled: options.messaging?.enabled === true });
-        options.observeMessaging?.({ agentOf: (id) => messagingDeps.agentOf?.(id) });
         const messaging = createMessagingBinding(messagingDeps);
-        const cliEndpoints = wireCliEndpoints(options.messaging, pty, messaging.endpoints, cleanups); // inert unless both flags are on
+        // The CLI endpoint: wired only when the user's switch is on at start (PV-M7 slice 2; read from the journal, never a flag).
+        const cliEndpoints = wireCliEndpoints(parts.journal.cliEndpoint.enabled(), pty, messaging.endpoints, cleanups);
+        options.observeMessaging?.({ agentOf: (id) => messagingDeps.agentOf?.(id), cliAgentOf: (id) => messagingDeps.cliAgentOf?.(id), cliWired: cliEndpoints !== undefined });
         // axis.pages/1 and the page tools (PV-Q1 slice 2): writes and their audit rows through the sealed composer writer.
         const pages = createPagesService({ journal: parts.journal, audit: composerWriter, random: { bytes: (n) => randomBytes(n) } });
         const tasks = createTasksService({ journal: parts.journal, audit: composerWriter, random: { bytes: (n) => randomBytes(n) } }); // axis.tasks/1 (PV-T1 slice 2a)

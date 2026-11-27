@@ -27,6 +27,13 @@ export interface MessagingBindingDeps {
   readonly limits?: Partial<MessagingLimits>;
   /** The agent a live run acts for (its recorded agent, PV-G4); default none, so nothing is delivered into runs. */
   readonly agentOf?: (runId: string) => string | undefined;
+  /**
+   * The CLI endpoint path's own run-to-worker lookup (PV-M7 slice 2 decision A), separate from `agentOf`, so the user's switch
+   * turns on the endpoint alone and never delivery or the composer's tools; default none.
+   */
+  readonly cliAgentOf?: (runId: string) => string | undefined;
+  /** The user's global CLI endpoint switch (journal v20), read at every mint and relayed message; default off. */
+  readonly cliEndpointOn?: () => boolean;
   /** True while a run is RUNNING (the journal's state); default: never. */
   readonly runLive?: (runId: string) => boolean;
   /** True while the supervisor launches the run (QUEUED): the CLI endpoint is minted in the spawn, before RUNNING. */
@@ -49,7 +56,7 @@ export interface MessagingBinding {
   readonly delivery: MessageDelivery;
   /**
    * The CLI endpoint relay (PV-M6 slice 1) and the mark of the one channel it accepts relayed messages from: the pty binding
-   * (slice 2) is its only holder. Inert while messaging is off: `mint` gives no run an endpoint while `agentOf` knows none.
+   * (slice 2) is its only holder. Inert while the user's switch is off: `mint` gives no run an endpoint (PV-M7 slice 2).
    */
   readonly endpoints: { readonly relay: EndpointRelay; readonly source: symbol; readonly onSettings: (l: (e: MessagingSettingsEvent) => void) => () => void };
   /** What a composer run's `send_message` and `read_messages` need (PV-M4), for `AgentBindingDeps.messaging`. */
@@ -68,7 +75,8 @@ export function createMessagingBinding(deps: MessagingBindingDeps): MessagingBin
   const relay = createEndpointRelay({
     service,
     directory,
-    agentOf: deps.agentOf ?? (() => undefined),
+    agentOf: deps.cliAgentOf ?? (() => undefined),
+    cliEndpointOn: deps.cliEndpointOn ?? (() => false),
     runLive: deps.runLive ?? (() => false),
     runLaunching: deps.runLaunching ?? (() => false),
     random: deps.random,
@@ -89,7 +97,8 @@ export function createMessagingBinding(deps: MessagingBindingDeps): MessagingBin
 
 /** What the composition root has for messaging; `logger` is required (possibly undefined), so it cannot be left out. */
 export interface HostMessaging {
-  readonly journal: Pick<Journal, "messages" | "getProject" | "getRun" | "agents">;
+  /** The journal, and of the CLI endpoint switch only its reader (`enabled`). */
+  readonly journal: Pick<Journal, "messages" | "getProject" | "getRun" | "agents"> & { readonly cliEndpoint: Pick<Journal["cliEndpoint"], "enabled"> };
   readonly audit: MessageAuditSink;
   readonly monotonic: () => number;
   readonly scan: (text: string) => Promise<readonly unknown[]>;
@@ -106,11 +115,16 @@ export interface HostMessaging {
 /** The binding's dependencies in the host: the daemon's CSPRNG, live runs from the journal, swallowed failures logged by code. */
 export function hostMessagingDeps(host: HostMessaging): MessagingBindingDeps {
   const { journal, logger } = host;
+  const cliEndpointOn = (): boolean => journal.cliEndpoint.enabled();
+  const cliLookup = journalAgentOf(journal);
   return {
     journal,
     // The journal's live agents and groups (PV-G3 slice 2); a run's recorded agent only with messaging enabled (PV-G4).
     directory: journalAgentsDirectory(journal),
     agentOf: host.enabled === true ? journalAgentOf(journal) : () => undefined,
+    // The CLI endpoint path (PV-M7 slice 2 decision A): its own lookup, gated on the user's switch, never on `enabled`.
+    cliEndpointOn,
+    cliAgentOf: (id) => (cliEndpointOn() ? cliLookup(id) : undefined),
     audit: host.audit,
     random: { bytes: (n) => randomBytes(n) },
     monotonic: host.monotonic,

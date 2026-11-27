@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import { z } from "zod";
 import { countSchema, guarded } from "./guard.js";
+import { challengeReferenceSchema } from "./challenge.js";
 import {
   MAX_READ_MESSAGES,
   MAX_READ_TEXT,
@@ -179,7 +180,8 @@ export const messagingSettingsSchema = z.strictObject({
 
 // settings (read, tier 0)
 export const messagesSettingsRequestSchema = z.strictObject({ projectId: projectIdSchema });
-export const messagesSettingsResponseSchema = z.strictObject({ settings: messagingSettingsSchema });
+// `cliEndpoint`: the user's one global switch for CLI messaging endpoints (PV-M7 slice 2), beside the project's settings.
+export const messagesSettingsResponseSchema = z.strictObject({ settings: messagingSettingsSchema, cliEndpoint: z.boolean() });
 
 /**
  * updateSettings (write, tier 2, user only): one setting per call, so the audit row (`message.settings`) names exactly
@@ -206,11 +208,25 @@ export const messagesUpdateSettingsRequestSchema = z.discriminatedUnion("setting
 export const messagesEnableWarningSchema = z.strictObject({ code: z.literal("repo_config"), ...enableFileSchema });
 export const messagesUpdateSettingsResponseSchema = z.strictObject({ settings: messagingSettingsSchema, changed: z.boolean(), warnings: z.array(messagesEnableWarningSchema).max(8).optional() });
 
+/**
+ * The CLI messaging endpoint switch (PV-M7 slice 2, `docs/design/axis-messages-shim.md` section 7): global, user scope, off by
+ * default, and independent of a worker's `cliMessaging` (both must be on for a CLI run to get an endpoint).
+ *
+ * - enableCliEndpoint (write, tier 4, user and desktop only): a daemon challenge and main's native confirmation; the retry that
+ *   spends the approval carries `approval`, and nothing else. No idempotency key: the approval is single use.
+ * - disableCliEndpoint (write, tier 1, user and desktop only): a decrease, at once, with no dialog.
+ *
+ * Both answer the switch's state and whether this call changed it.
+ */
+export const messagesEnableCliEndpointRequestSchema = z.strictObject({ approval: challengeReferenceSchema.optional() });
+export const messagesDisableCliEndpointRequestSchema = z.strictObject({});
+export const messagesCliEndpointResponseSchema = z.strictObject({ enabled: z.boolean(), changed: z.boolean() });
+
 const spec = <Req extends z.ZodType, Res extends z.ZodType>(
   request: Req,
   response: Res,
   sideEffect: "read" | "write",
-  tier: 0 | 1 | 2,
+  tier: 0 | 1 | 2 | 4,
   idempotency: "none" | "required",
   timeoutMs: number,
 ) => ({ request: guarded(request), response: guarded(response), sideEffect, tier, idempotency, timeoutMs }) as const;
@@ -225,6 +241,8 @@ export const messagesMethods = {
   resume: spec(messagesResumeRequestSchema, messagesResumeResponseSchema, "write", 2, "none", 5_000),
   settings: spec(messagesSettingsRequestSchema, messagesSettingsResponseSchema, "read", 0, "none", 5_000),
   updateSettings: spec(messagesUpdateSettingsRequestSchema, messagesUpdateSettingsResponseSchema, "write", 2, "none", 10_000),
+  enableCliEndpoint: spec(messagesEnableCliEndpointRequestSchema, messagesCliEndpointResponseSchema, "write", 4, "none", 30_000),
+  disableCliEndpoint: spec(messagesDisableCliEndpointRequestSchema, messagesCliEndpointResponseSchema, "write", 1, "none", 10_000),
 } as const satisfies Record<string, MethodSpec>;
 
 export type MessagesMethod = keyof typeof messagesMethods;

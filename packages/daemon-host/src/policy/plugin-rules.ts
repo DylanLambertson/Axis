@@ -59,6 +59,9 @@ export const PLUGIN_DENY_METHODS: ReadonlySet<string> = new Set([
   "axis.pages/1.restore",
   "axis.pages/1.markReviewed",
   "axis.pages/1.delete",
+  // The CLI endpoint switch (PV-M7 slice 2): the user's alone. The disable too, so a plugin cannot switch the user's endpoints off.
+  "axis.messages/1.enableCliEndpoint",
+  "axis.messages/1.disableCliEndpoint",
 ]);
 
 /** The highest tier a plugin call may have after every raise; 4 and above need native confirmation. */
