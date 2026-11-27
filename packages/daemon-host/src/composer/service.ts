@@ -258,8 +258,8 @@ export function createComposerService(deps: ComposerServiceDeps): ComposerServic
       if (closed) throw composerFailure("E_UNAVAILABLE", "shutting_down");
       // Synchronous from here to the loop's start: no other start can interleave between the check and the record.
       // A plugin's grant is checked again here, after every wait of the start (PV-K1e-b); a plugin start without the check is refused.
-      if ("pluginId" in by && input.recheck === undefined) throw composerFailure("E_UNAVAILABLE", "plugin_starts_unavailable");
-      if (input.recheck !== undefined && input.recheck() !== true) throw composerFailure("E_CONFLICT", "grant_changed");
+      if ("pluginId" in by && input.grantHolds === undefined) throw composerFailure("E_UNAVAILABLE", "plugin_starts_unavailable");
+      if (input.grantHolds !== undefined && input.grantHolds() !== true) throw composerFailure("E_CONFLICT", "grant_changed");
       // The active-run check comes before the journal's own idempotency replay: a retry whose daemon-side key entry is gone
       // while its run is still RUNNING answers `active_run`, not `replayed` (review r1 N5). The daemon's store normally
       // answers such a retry first; after a restart the run is BLOCKED and the replay works.
@@ -329,20 +329,26 @@ export function createComposerService(deps: ComposerServiceDeps): ComposerServic
       const l: Live = { runId, workspaceId: input.workspaceId, controller, budget, awaiting: 0, done: Promise.resolve() };
       let tools;
       try {
-        tools =
-        input.mode === "ask"
+        // IAC-T (PV-T1 slice 2b): receipts are taken inside `build`, before it returns the tools; an ask-mode run has no tools
+        // but is built for its receipts all the same, so its record says tainted (the tools are closed at once).
+        const taint = input.taint ?? [];
+        const built =
+        input.mode === "ask" && taint.length === 0
           ? undefined
           : build({
               runId,
               workspaceId: input.workspaceId,
               windowId: input.windowId,
               mode: input.mode,
+              receipts: taint,
               onApproval: (note) => {
                 if (note.state === "requested") l.awaiting += 1;
                 else l.awaiting = Math.max(0, l.awaiting - 1);
                 emit(runId, { type: "approval", ...note, reasons: [...note.reasons], paths: note.paths.map((p) => ({ ...p })) });
               },
             });
+        if (input.mode === "ask") built?.close?.();
+        tools = input.mode === "ask" ? undefined : built;
       } catch {
         // The run exists but can never be driven: end it now rather than leave it QUEUED until a restart.
         internal("tools");

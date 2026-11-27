@@ -101,7 +101,7 @@ need the renderer, but it must not merge before the card exists (a2-2 or its own
 - `axis.runs/1.start` takes an optional `approval` reference, as any method the policy can raise to tier 3 must; a user's
   tier-2 start never sends one.
 - The run's own approvals (its tool calls) go to the host window: the plugin view cannot answer one.
-- The service checks the grant once more in its synchronous creation step (`ComposerStartInput.recheck`), after every wait of
+- The service checks the grant once more in its synchronous creation step (`ComposerStartInput.grantHolds`), after every wait of
   the start (the trust gate, the provider's model list). A plugin start without that check is refused.
 
 **Order of the checks.** The pipeline runs the policy first, then the approval step (with a content hook), then the handler. For

@@ -65,7 +65,7 @@ async function setup(t: TestContext, over: { admit?: () => Promise<void> } = {})
       service: {
         cancel: none, get: none, list: none, events: none,
         start: async (input) => {
-          if (input.recheck !== undefined && input.recheck() !== true) throw composerFailure("E_CONFLICT", "grant_changed");
+          if (input.grantHolds !== undefined && input.grantHolds() !== true) throw composerFailure("E_CONFLICT", "grant_changed");
           starts.push(input);
           return { run: run(input), replayed: false };
         },
@@ -119,7 +119,7 @@ test("the full flow: the plugin asks, the user approves in the host window, the 
   const input = s.starts[0] as ComposerStartInput;
   assert.deepEqual(input.initiator, { kind: "plugin", pluginId: "acme.board", generation: 1 });
   assert.equal(input.windowId, "w1", "the run's own approvals go to the host window");
-  assert.equal(typeof input.recheck, "function");
+  assert.equal(typeof input.grantHolds, "function");
   assert.equal(isTrustCall(s.admitted[0]), true, "the trust gate is asked with the attested call");
   assert.deepEqual({ ...(s.admitted[0] as Row) }, { windowId: "p7", hostWindowId: "w1", pinnedProjectId: "p1" });
 });
@@ -227,7 +227,7 @@ test("still closed: a spoofed initiator field, every other runs method, CLI and 
   assert.equal(started.ok, true, JSON.stringify(started.error));
   const input = s.starts[0] as ComposerStartInput;
   assert.deepEqual(input.initiator, { kind: "user" });
-  assert.equal(input.recheck, undefined);
+  assert.equal(input.grantHolds, undefined);
   assert.equal(input.windowId, "w1");
   assert.equal(s.approvals.stats().pending, 0, "a user's tier-2 start asks for no approval");
 });
@@ -298,7 +298,7 @@ test("layer: the content hook refuses an out-of-scope or ungranted start itself,
 function handlerRig(s: Awaited<ReturnType<typeof setup>>, mutex = new ProjectMutex()) {
   const seen: ComposerStartInput[] = [];
   const handlers = createComposerRunsHandlers({
-    // A service that does NOT check `recheck`, so only the handler's own checks are under test.
+    // A service that does NOT check `grantHolds`, so only the handler's own checks are under test.
     service: { cancel: () => assert.fail("no"), get: () => assert.fail("no"), list: () => assert.fail("no"), events: () => assert.fail("no"), start: async (input) => (seen.push(input), { run: { runId: randomUUID(), workspaceId: input.workspaceId, mode: input.mode, providerId: input.providerId, modelId: input.modelId, state: "QUEUED", reason: null, createdAt: "2026-11-26T00:00:00.000Z", startedAt: null, endedAt: null, live: true, awaitingApproval: false, usage: null }, replayed: false }) },
     gate: { admit: async () => "ticket" } as never,
     journal: s.journal,

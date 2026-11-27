@@ -90,6 +90,8 @@ export interface ComposerStart {
   readonly providerId: string;
   readonly modelId: string;
   readonly worker?: string;
+  /** IAC-T receipts taken before the first model call (internal; `ComposerStartInput.taint`). */
+  readonly taint?: readonly unknown[];
   /**
    * Re-checked under the project mutex, before the trust gate: throws to refuse, or returns the launch read fresh there,
    * which the run then takes instead of the one read before the wait (an `update` does not take the mutex).
@@ -121,6 +123,7 @@ export async function startComposerRun(deps: ComposerRunsHandlerDeps, req: Compo
           initiator: { kind: "user" }, // this handler serves the user only today; PV-K1e-b derives a plugin initiator from the attested identity, never from the request
           ...(context.idempotencyKey === undefined ? {} : { idempotencyKey: context.idempotencyKey }),
           ...(req.worker === undefined ? {} : { worker: req.worker }),
+          ...(req.taint === undefined ? {} : { taint: req.taint }),
         },
         context.signal,
         // The gate, inside the mutex and right before the run is created (project-registration-and-trust.md §5.4).
@@ -163,7 +166,7 @@ export async function startPluginComposerRun(deps: ComposerRunsHandlerDeps, req:
           modelId: req.modelId,
           windowId: hostWindowId,
           initiator: { kind: "plugin", pluginId, generation },
-          recheck: holds,
+          grantHolds: holds,
           ...(context.idempotencyKey === undefined ? {} : { idempotencyKey: context.idempotencyKey }),
         },
         context.signal,

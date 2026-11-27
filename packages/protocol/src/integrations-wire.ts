@@ -62,22 +62,40 @@ const DOT_SEGMENT = /(?:^|\/)(?:\.|%2e){1,2}(?=[/;]|%3b|$)/i;
  * A request path with its query. Refused: any character outside the unreserved, sub-delimiter and `:@%/?` set (so no
  * control character, CR, LF, space, `\`, `#`, quote or non-ASCII character); a malformed percent escape; `%2f` and `%5c`
  * anywhere; an escaped control character; a double-encoded dot, slash or backslash (`%252e`); an overlong UTF-8 lead byte
- * (`%c0`, `%c1`, `%e0%80`, `%f0%80`); an escaped `;` (`%3b`); `//` in the path part (a protocol-relative path would name another host if it were
+ * (`%c0`, `%c1`, `%e0%80`, `%f0%80`); an escaped `;` (`%3b`); any `%25` in the path part (a double decode makes it another escape); `//` in the path part (a protocol-relative path would name another host if it were
  * resolved against the origin); and a dot segment in the path part. At most 2,048 characters. Control characters in a
  * path or query value are also refused where the daemon composes it (PV-N1f's composition test): this is the first fence.
  */
-export const netPathSchema = z
-  .string()
-  .max(2048)
-  .regex(PATH_CHARS)
-  .refine((p) => !/%(?![0-9a-fA-F]{2})/.test(p), "malformed percent escape")
-  .refine((p) => !/%(?:2f|5c|[01][0-9a-f]|7f)/i.test(p), "an escaped slash, backslash or control character")
-  .refine((p) => !/%3b/i.test(p), "an escaped path-parameter separator")
-  .refine((p) => !/%25(?:2e|2f|5c)/i.test(p), "a double-encoded dot, slash or backslash")
-  .refine((p) => !/%(?:c0|c1|e0%80|f0%80)/i.test(p), "an overlong UTF-8 encoding")
-  .refine((p) => !(p.split("?", 1)[0] as string).includes("//"), "no empty segment or protocol-relative path")
-  .refine((p) => !DOT_SEGMENT.test(p.split("?", 1)[0] as string), "no dot segments")
-  .refine((p) => p.split("?").length <= 2, "one query only");
+/**
+ * The path refusals as one ordered table, the single source for the contract schema below and the daemon's re-check of a
+ * composed path (PV-N1e, `packages/daemon-host/src/net/compose-request.ts`), so the two can never drift.
+ */
+export const NET_PATH_REFUSALS: ReadonlyArray<readonly [reason: string, refused: (p: string) => boolean]> = [
+  ["too long", (p) => p.length > 2048],
+  ["a character outside the path set", (p) => !PATH_CHARS.test(p)],
+  ["malformed percent escape", (p) => /%(?![0-9a-fA-F]{2})/.test(p)],
+  ["an escaped slash, backslash or control character", (p) => /%(?:2f|5c|[01][0-9a-f]|7f)/i.test(p)],
+  ["an escaped path-parameter separator", (p) => /%3b/i.test(p)],
+  ["a double-encoded dot, slash or backslash", (p) => /%25(?:2e|2f|5c)/i.test(p)],
+  // Any escaped percent sign in the PATH part: a second decode of `%25XX` is another escape, so `/a/%25%32%65` (one decode:
+  // `/a/%2e`) would be a dot segment to a server that decodes twice (PV-N1e review 1 SF4). The query part may keep `%25`.
+  ["an escaped percent sign in the path", (p) => /%25/i.test(p.split("?", 1)[0] as string)],
+  ["an overlong UTF-8 encoding", (p) => /%(?:c0|c1|e0%80|f0%80)/i.test(p)],
+  ["no empty segment or protocol-relative path", (p) => (p.split("?", 1)[0] as string).includes("//")],
+  ["no dot segments", (p) => DOT_SEGMENT.test(p.split("?", 1)[0] as string)],
+  ["one query only", (p) => p.split("?").length > 2],
+];
+
+/** Why `path` (a path with its query) is refused, or null: the first matching row of NET_PATH_REFUSALS. */
+export function netPathRefusal(path: string): string | null {
+  for (const [reason, refused] of NET_PATH_REFUSALS) if (refused(path)) return reason;
+  return null;
+}
+
+export const netPathSchema = z.string().superRefine((p, ctx) => {
+  const reason = netPathRefusal(p);
+  if (reason !== null) ctx.addIssue({ code: "custom", message: reason });
+});
 
 /** `axis.net/1.read` allows `GET` and `HEAD`; `axis.net/1.send` is a `POST` and has no method field. */
 export const NET_READ_METHODS = ["GET", "HEAD"] as const;
