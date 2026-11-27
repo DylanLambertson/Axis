@@ -1,6 +1,6 @@
 # The `axis-messages` shim (PV-M7 slice 2): design note
 
-- **Status:** Proposed; review 1 folded. For review before any code.
+- **Status:** Proposed shim; no `packages/axis-messages` package is merged. PV-M7's enable rules and user-controlled CLI endpoint switch are built (`packages/daemon-host/test/messages-enable-check.test.ts`, `messages-cli-switch.test.ts`, `packages/journal/test/migration-v20.test.ts`). Setup copy and the full Phase 2a gate review remain open.
 - **Builds on:** `inter-agent-cli-endpoint.md` (sections 2 to 6), `messages-contract.md` (sections 12 to 14) and ADR 0007 section 7.6.
 - **Off by default.** Nothing here turns messaging on by itself.
 - **Scope:** the stdio program a CLI starts to reach its run's endpoint, the user's setup of it, and the one way messaging is switched on in production (decision 2 of 2026-11-27).
