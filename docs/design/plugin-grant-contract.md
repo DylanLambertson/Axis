@@ -140,7 +140,7 @@ project and the permission's wording. So the line follows the task Start pattern
 - `already_granted`;
 - a no-op disable and the revoke of a missing grant leave the generation unchanged;
 - revoke and disable end only that plugin's open challenges at once, and never a user challenge;
-- a run started before the revoke keeps running;
+- a run started before the revoke keeps running (in K2-g2, which can start a plugin run; K2-g1 cannot make one);
 - disable then enable keeps the grants and the hourly count (v17).
 
 **Mutants:**

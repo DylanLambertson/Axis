@@ -69,13 +69,21 @@ async function setup(t: TestContext, over: { endPlugin?: (pluginId: string, proj
     db.close();
   });
   // A plugin's open run-start challenge, issued through the real gate (as the pipeline would for its axis.runs/1.start).
+  // Each issued request is kept, so a spend replays exactly what was approved (the same identity, request and content).
+  const issued = new Map<string, { readonly input: never; readonly content: { readonly target: string; readonly contentDigest: string } }>();
   const pluginChallenge = async (pluginId: string, projectId: "p1" | "p2", host = "w1"): Promise<Challenge> => {
-    const identity = verifier.verify(`plugin:${pluginId}#P${pluginId.replace(/\./g, "_")}${projectId}#p9#${host}#${projectId}`) as Identity;
+    const identity = verifier.verify(`plugin:${pluginId}#P${pluginId.replace(/[.-]/g, "_")}${projectId}#p9#${host}#${projectId}`) as Identity;
     const args = { workspaceId: wsOf[projectId], mode: "edit", prompt: "Summarise", providerId: "mock", modelId: "mock-model" };
-    return (await approvals.gate.issue(
-      { identity, actor: identity.actor, connectionId: identity.connectionId, requestId: "r", correlationId: "x", contract: "axis.runs", contractVersion: 1, method: "start", tier: 3, args, digest: requestDigest("axis.runs", 1, "start", args), signal: new AbortController().signal } as never,
-      { target: `workspace:${wsOf[projectId]}`, contentDigest: "e".repeat(64) },
-    )) as Challenge;
+    const input = { identity, actor: identity.actor, connectionId: identity.connectionId, requestId: "r", correlationId: "x", contract: "axis.runs", contractVersion: 1, method: "start", tier: 3, args, digest: requestDigest("axis.runs", 1, "start", args), signal: new AbortController().signal } as never;
+    const content = { target: `workspace:${wsOf[projectId]}`, contentDigest: "e".repeat(64) };
+    const c = (await approvals.gate.issue(input, content)) as Challenge;
+    issued.set(c.challengeId, { input, content });
+    return c;
+  };
+  /** Spend an approved plugin challenge with exactly the request it was issued for. */
+  const spend = (challengeId: string, action: () => Promise<unknown>): Promise<unknown> => {
+    const i = issued.get(challengeId) as { input: never; content: { target: string; contentDigest: string } };
+    return Promise.resolve(approvals.gate.execute(i.input, { challengeId }, i.content, action as never));
   };
   // The user's own tier-3 challenge in the same window.
   const userChallenge = async (): Promise<Challenge> => {
@@ -87,7 +95,7 @@ async function setup(t: TestContext, over: { endPlugin?: (pluginId: string, proj
     )) as Challenge;
   };
   const pendingIds = (windowId = "w1"): string[] => approvals.port.pending(windowId).map((c) => c.challengeId).sort();
-  return { journal, audit, approvals, connect, pluginChallenge, userChallenge, pendingIds };
+  return { journal, audit, approvals, connect, pluginChallenge, userChallenge, pendingIds, spend };
 }
 const gen = (s: Awaited<ReturnType<typeof setup>>, plugin: string, project: string): number | undefined => s.journal.plugins.state(plugin, project)?.generation;
 
@@ -132,7 +140,6 @@ test("revoke: one permission goes, the generation grows by one, and that plugin'
   // One plugin holds one open challenge across projects (OI-2), so the project filter is checked by ending p2's: p1's stays.
   assert.equal(s.approvals.endPlugin("acme.board", "p2"), 0);
   assert.deepEqual(s.pendingIds(), [target.challengeId, otherPlugin.challengeId, mine.challengeId].sort());
-  assert.deepEqual(s.pendingIds(), [target.challengeId, otherPlugin.challengeId, mine.challengeId].sort());
   const user = await s.connect("user#Uone#w1");
   const res = await user.call("axis.plugins", "revoke", { projectId: "p1", pluginId: "acme.board", permission: "runs.start" }, randomUUID());
   assert.deepEqual(res.result, { plugin: { pluginId: "acme.board", enabled: true, generation: 2, permissions: ["pages.read"] } });
@@ -166,15 +173,46 @@ test("disable: the switch goes off, the grants stay, the generation grows by one
   assert.deepEqual(again.result, { plugin: { pluginId: "acme.board", enabled: false, generation: 2, permissions: ["pages.read", "runs.start"] } }, "a no-op disable leaves the generation unchanged");
 });
 
-test("an approval already given cannot be spent after a revoke", async (t) => {
+test("an approved challenge is spent without a revoke, and refused after one, even when endPlugin fails", async (t) => {
+  for (const [label, revoke, endFails] of [["no revoke", false, false], ["revoke", true, false], ["revoke, endPlugin throws", true, true]] as const) {
+    const s = await setup(t, endFails ? { endPlugin: () => { throw new Error("boom"); } } : {});
+    const c = await s.pluginChallenge("acme.board", "p1");
+    assert.equal(s.approvals.port.resolve({ actor: "user", windowId: "w1" }, { challengeId: c.challengeId, decision: "approve", digest: c.digest }).state, "approved", label);
+    if (revoke) {
+      const user = await s.connect("user#Uone#w1");
+      assert.equal((await user.call("axis.plugins", "revoke", { projectId: "p1", pluginId: "acme.board", permission: "runs.start" }, randomUUID())).ok, true, label);
+    }
+    let ran = 0;
+    const outcome = await s.spend(c.challengeId, async () => void ran++).then(() => "ran", () => "refused");
+    // Without the revoke the same spend runs, so the refusal below is the revoke's (the grant generation moved), not a mismatch.
+    assert.equal(outcome, revoke ? "refused" : "ran", label);
+    assert.equal(ran, revoke ? 0 : 1, label);
+  }
+});
+
+test("endPlugin matches the plugin id exactly: ending acme leaves acme-x; an id with a colon can never be added", async (t) => {
   const s = await setup(t);
-  const c = await s.pluginChallenge("acme.board", "p1");
-  assert.equal(s.approvals.port.resolve({ actor: "user", windowId: "w1" }, { challengeId: c.challengeId, decision: "approve", digest: c.digest }).state, "approved");
+  for (const id of ["acme", "acme-x"]) {
+    s.journal.plugins.add(id, "p1");
+    s.journal.plugins.setEnabled(id, "p1", true);
+    s.journal.plugins.grant(id, "p1", "runs.start");
+  }
+  const acme = await s.pluginChallenge("acme", "p1");
+  const acmeX = await s.pluginChallenge("acme-x", "p1");
+  assert.deepEqual(s.pendingIds(), [acme.challengeId, acmeX.challengeId].sort());
+  assert.equal(s.approvals.endPlugin("acme", "p1"), 1);
+  assert.deepEqual(s.pendingIds(), [acmeX.challengeId]);
+  assert.throws(() => s.journal.plugins.add("acme:evil", "p1"));
+});
+
+test("list carries a project's 64 plugins, the journal's cap", async (t) => {
+  const s = await setup(t);
+  for (let i = 0; i < 62; i++) s.journal.plugins.add(`bulk.t${i}`, "p1"); // with acme.board and other.tool: 64
+  assert.throws(() => s.journal.plugins.add("bulk.over", "p1"), "a 65th is refused by the journal");
   const user = await s.connect("user#Uone#w1");
-  await user.call("axis.plugins", "revoke", { projectId: "p1", pluginId: "acme.board", permission: "runs.start" }, randomUUID());
-  const identity = verifier.verify("plugin:acme.board#Pacme_boardp1#p9#w1#p1") as Identity;
-  const args = { workspaceId: "x" };
-  await assert.rejects(Promise.resolve(s.approvals.gate.execute({ identity, actor: identity.actor, connectionId: identity.connectionId, contract: "axis.runs", contractVersion: 1, method: "start", tier: 3, args, digest: requestDigest("axis.runs", 1, "start", args), signal: new AbortController().signal } as never, { challengeId: c.challengeId }, { target: "x", contentDigest: "e".repeat(64) }, () => Promise.reject(new Error("must not run")))));
+  const res = await user.call("axis.plugins", "list", { projectId: "p1" });
+  assert.equal(res.ok, true, JSON.stringify(res.error));
+  assert.equal((res.result?.["plugins"] as unknown[]).length, 64);
 });
 
 test("the handlers refuse every caller but the user's desktop connection, before reading anything", async (t) => {
