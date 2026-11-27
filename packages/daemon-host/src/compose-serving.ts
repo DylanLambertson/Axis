@@ -28,8 +28,9 @@ import { createHostProjectTrustGate } from "./gate/project-trust-gate.js";
 import { ticketedStart, type TrustCall } from "./gate/project-trust.js";
 import type { HandlerRegistrar } from "./handlers/anchor-guard.js";
 import { createApprovalsHandlers } from "./handlers/approvals.js";
-import { registerCliRunsHandlers, startCliRun } from "./handlers/cli-runs.js";
-import { registerComposerRunsHandlers, startComposerRun, type ComposerRunsHandlerDeps } from "./handlers/composer-runs.js";
+import { registerCliRunsHandlers, startCliRun, type CliStart } from "./handlers/cli-runs.js";
+import { registerComposerRunsHandlers, startComposerRun, type ComposerRunsHandlerDeps, type ComposerStart } from "./handlers/composer-runs.js";
+import type { HandlerContext } from "@axis/daemon";
 import { PushedBases } from "./handlers/git-common.js";
 import { registerGitHandlers } from "./handlers/git.js";
 import { registerAgentsHandlers } from "./handlers/agents.js";
@@ -39,6 +40,8 @@ import { registerPagesHandlers } from "./handlers/pages.js";
 import { createPagesContentHooks } from "./pages/confirm.js";
 import type { PagesService } from "./pages/service.js";
 import { registerTasksHandlers } from "./handlers/tasks.js";
+import { createTaskStart } from "./tasks/start.js";
+import { createTasksContentHooks } from "./tasks/confirm.js";
 import type { TasksService } from "./tasks/service.js";
 import { createProvidersHandlers } from "./handlers/providers.js";
 import { createReviewAuditSink } from "./handlers/review-audit.js";
@@ -124,8 +127,21 @@ export function registerServing(registrar: HandlerRegistrar, services: HostServi
   // axis.pages/1 (PV-Q1 slice 2): the user's own connection only; main's dialog for markReviewed and delete names the page.
   registerPagesHandlers(registrar, built.pages, createPagesContentHooks({ journal, onPreview: built.approvals?.onPreview ?? (() => undefined) }));
   if (built.tasks === undefined) throw new AxisError("E_INTERNAL", "The host composition is incomplete", { reason: "not_built" });
-  registerTasksHandlers(registrar, built.tasks); // axis.tasks/1 (PV-T1 slice 2a): the user's own connection only
   const cliRuns = { service: runs.service, journal, control, gate, minter: ctx.minter, mutex: worktrees.mutex, needsAttention: worktrees.needsAttention, platform: config.platform };
+  // One worker start for agents and tasks: the CLI and composer start paths, each through the project trust gate.
+  const agentStart = {
+    journal,
+    startCli: (req: CliStart, context: HandlerContext) => startCliRun(cliRuns, req, context),
+    startComposer: (req: ComposerStart, context: HandlerContext) => startComposerRun(composerRuns, req, context),
+    providerFor: (connection: string) => providerForConnection(agent.providers(), connection),
+  };
+  // axis.tasks/1 (PV-T1 slices 2a, 2b): the user's own connection only; Start and delete name the task in main's dialog.
+  registerTasksHandlers(
+    registrar,
+    built.tasks,
+    createTaskStart({ journal, audit: { append: (e) => (audit.append(e), services.anchors.noteWrite()) }, agentStart }),
+    createTasksContentHooks({ journal, onPreview: built.approvals?.onPreview ?? (() => undefined) }),
+  );
   registerAgentsHandlers(registrar, {
     journal,
     mutex: worktrees.mutex,
@@ -135,11 +151,11 @@ export function registerServing(registrar: HandlerRegistrar, services: HostServi
     // worktree's create goes through the project trust gate like any other (the worktrees port spends its ticket).
     admitNewHome: (_caller, projectId) => journal.getProject(projectId)?.trusted === true,
     worktrees: { create: (req, ctx) => worktrees.service.create(req, { ...ctx, trust: (scope) => gate.admit({ ...scope, caller: ctx.caller.trust as TrustCall, signal: ctx.signal }) }) },
-    // PV-G4: an agent's CLI run goes through the one CLI start path, so the same project trust gate and ticket apply.
-    startCli: (req, context) => startCliRun(cliRuns, req, context),
-    // Composer agents: the same composer start path; the stored connection resolved to the provider that serves it now.
-    startComposer: (req, context) => startComposerRun(composerRuns, req, context),
-    providerFor: (connection) => providerForConnection(agent.providers(), connection),
+    // PV-G4: an agent's CLI run goes through the one CLI start path, so the same project trust gate and ticket apply;
+    // a composer agent's goes through the composer start path, the stored connection resolved to the provider serving it now.
+    startCli: agentStart.startCli,
+    startComposer: agentStart.startComposer,
+    providerFor: agentStart.providerFor,
   });
   registerCliRunsHandlers(registrar, cliRuns);
   registrar.register(
