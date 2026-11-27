@@ -140,4 +140,3 @@ test("review 1 SF3: at mint, a project-configuration file present now that was n
     { runId: "r", agentId: "w1", event: "mint_refused", rule: "repo_config_unacknowledged", warnings: 2 },
   ]);
 });
-

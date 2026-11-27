@@ -117,4 +117,3 @@ test("review 1 nits: an empty argv refuses; .com and trailing dots or spaces lea
   assert.deepEqual(decideCliMessaging({ argv: [""], bypassesPrompts: false, exists: none }), { allowed: false, rule: "empty_argv" });
   assert.deepEqual([cliOf("CODEX.COM"), cliOf("claude. "), cliOf("C:\\x\\codex.exe..")], ["codex", "claude", "codex"]);
 });
-
