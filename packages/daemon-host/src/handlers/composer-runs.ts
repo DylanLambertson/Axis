@@ -14,7 +14,7 @@ import { composerFailure, toComposerError } from "../composer/errors.js";
 import type { ComposerRunsService, ComposerStartInput } from "../ports/composer.js";
 import type { ProjectMutex } from "../worktrees/project-mutex.js";
 import type { HandlerRegistrar } from "./anchor-guard.js";
-import { approvedStartOf, grantedGeneration, pluginOf, runStartContentHook, scopedWorkspace, type PluginRunStartJournal } from "../gate/plugin-run-start.js";
+import { approvedStartOf, grantedGeneration, hostWindowAlive, pluginOf, runStartContentHook, scopedWorkspace, type HostWindows, type PluginRunStartJournal } from "../gate/plugin-run-start.js";
 
 /**
  * `axis.runs/1` (docs/design/composer-runtime.md section 3) over the `ComposerRunsService` port. Who is calling comes
@@ -40,6 +40,8 @@ export interface ComposerRunsHandlerDeps {
    * every other method refuses a plugin whatever is given here.
    */
   readonly pluginStarts?: PluginRunStartJournal;
+  /** The host windows' lifetimes (PV-K2 K2-g4b). Absent, a plugin start is refused (`E_NOT_FOUND`). */
+  readonly hostWindows?: Pick<HostWindows, "alive">;
 }
 
 const DEFAULT_LIST = 50;
@@ -147,7 +149,17 @@ export async function startPluginComposerRun(deps: ComposerRunsHandlerDeps, req:
   const pluginId = pluginOf(identity);
   // What the user approved, as the gate handed it over (review K2 S2): only a start the gate's binding minted counts.
   const approved = approvedStartOf(context.approved?.capability);
-  if (journal === undefined || pluginId === undefined || identity.hostWindowId === undefined || approved === undefined) throw composerFailure("E_NOT_FOUND");
+  const windows = deps.hostWindows;
+  if (journal === undefined || windows === undefined || pluginId === undefined || identity.hostWindowId === undefined || approved === undefined) throw composerFailure("E_NOT_FOUND");
+  if (approved.hostWindowId !== identity.hostWindowId) throw composerFailure("E_NOT_FOUND");
+  // The host window's lifetime pinned at issue and the plugin's own connection (PV-K2 K2-g4b): checked here, after the daemon's
+  // execute audit row; under the mutex, before the trust gate; and in the service's synchronous step, after every other wait.
+  const alive = (): boolean => !context.signal.aborted && hostWindowAlive(windows, approved.hostWindowId, approved.hostEpoch);
+  const live = (): void => {
+    if (context.signal.aborted) throw composerFailure("E_CANCELLED");
+    if (!alive()) throw composerFailure("E_CONFLICT", "host_window_closed");
+  };
+  live();
   const scope = scopedWorkspace(journal, identity, req.workspaceId);
   if (scope === undefined) throw composerFailure("E_NOT_FOUND", "out_of_scope");
   if (approved.pluginId !== pluginId || approved.projectId !== scope.projectId || approved.workspaceId !== scope.workspaceId) throw composerFailure("E_NOT_FOUND");
@@ -162,6 +174,7 @@ export async function startPluginComposerRun(deps: ComposerRunsHandlerDeps, req:
     scope.projectId,
     async () => {
       if (!holds()) throw composerFailure("E_CONFLICT", "grant_changed");
+      live();
       return deps.service.start(
         {
           workspaceId: scope.workspaceId,
@@ -172,6 +185,7 @@ export async function startPluginComposerRun(deps: ComposerRunsHandlerDeps, req:
           windowId: hostWindowId,
           initiator: { kind: "plugin", pluginId, generation },
           grantHolds: holds,
+          hostAlive: alive,
           ...(context.idempotencyKey === undefined ? {} : { idempotencyKey: context.idempotencyKey }),
         },
         context.signal,

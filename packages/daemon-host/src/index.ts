@@ -114,7 +114,7 @@ export * from "./tasks/service.js";
 export { createTaskStart, startReceipt, startState, taskPrompt, type TaskStartDeps } from "./tasks/start.js";
 export { createTasksContentHooks, taskContent, type TasksConfirmDeps } from "./tasks/confirm.js";
 export { createTasksHandlers, registerTasksHandlers, toTasksError } from "./handlers/tasks.js";
-export { CREATE_TASK, LIST_TASKS, READ_TASK, TASK_TOOL_SPECS, TaskRead, UPDATE_TASK, createTaskArgs, createTaskPreview, listTasksArgs, readTaskArgs, taskReceipt, taskTools, tasksReason, updateTaskArgs, updateTaskPreview } from "./bindings/agent-tasks.js";
+export { CREATE_TASK, LIST_TASKS, WORKER_CREATES_PER_RUN, READ_TASK, TASK_TOOL_SPECS, TaskRead, UPDATE_TASK, createTaskArgs, createTaskPreview, listTasksArgs, readTaskArgs, taskReceipt, taskTools, tasksReason, updateTaskArgs, updateTaskPreview } from "./bindings/agent-tasks.js";
 export { createPagesContentHooks, pageContent, type PagesConfirmDeps } from "./pages/confirm.js";
 export { PAGE_TOOL_SPECS, PageRead, READ_PAGE, WRITE_PAGE, lineChange, pageTools, pagesReason, readPageArgs, writePageArgs, writePagePreview } from "./bindings/agent-pages.js";
 export * from "./messages/delivery.js";

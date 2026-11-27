@@ -4,6 +4,7 @@ import { DaemonError, requestDigest, type ApprovalContentHook, type ApprovalCont
 import type { PluginState } from "@axis/journal";
 import { COMPOSER_RUNS_CONTRACT, COMPOSER_RUNS_VERSION, composerRunsMethods, type ChallengeDetail } from "@axis/protocol";
 import { escapedHead } from "../composer/preview.js";
+import type { WindowLifetimes } from "../plugins/window-lifetimes.js";
 import type { PluginChallengeDeps } from "./plugin-approvals.js";
 import { forcedScope } from "./plugin-scope.js";
 
@@ -52,6 +53,21 @@ export interface ApprovedPluginStart {
   readonly projectId: string;
   readonly workspaceId: string;
   readonly generation: number;
+  /** The host window and its lifetime epoch when the challenge was issued (PV-K2 K2-g4b); every later check uses these. */
+  readonly hostWindowId: string;
+  readonly hostEpoch: string;
+}
+
+/** The host windows' lifetimes as the binding and the handler read them (`plugins/window-lifetimes.ts`). */
+export type HostWindows = Pick<WindowLifetimes, "current" | "alive">;
+
+/** Whether a host window is still in the pinned lifetime; a throw is a closed window. */
+export function hostWindowAlive(windows: Pick<HostWindows, "alive">, hostWindowId: string, epoch: string): boolean {
+  try {
+    return windows.alive(hostWindowId, epoch) === true;
+  } catch {
+    return false;
+  }
 }
 const MINTED = new WeakSet<object>();
 function mintApprovedStart(facts: ApprovedPluginStart): ApprovedPluginStart {
@@ -95,11 +111,11 @@ export function runStartContentHook(journal: PluginRunStartJournal): ApprovalCon
 
 /**
  * The gate's plugin dependencies for run starts (`PluginChallengeDeps`, PV-K1e-a2-1b): the full request the user approves, built
- * from the journal and the parsed request, and a binding that holds while the plugin keeps `runs.start` at the same generation.
- * The host window needs no check here: main destroys a plugin's views with their host window, which closes the plugin connection,
- * and that withdraws its challenges.
+ * from the journal and the parsed request, and a binding that holds while the plugin keeps `runs.start` at the same generation
+ * and its host window stays in the lifetime it was in at issue (PV-K2 K2-g4b, `plugin-grant-contract.md` section 8.4). A host
+ * window with no live lifetime refuses the challenge; a close, even one followed by a reopen, ends the binding for good.
  */
-export function pluginRunStartChallenges(journal: PluginRunStartJournal, issues: PluginChallengeDeps["issues"], now: () => number): PluginChallengeDeps {
+export function pluginRunStartChallenges(journal: PluginRunStartJournal, issues: PluginChallengeDeps["issues"], now: () => number, windows: HostWindows): PluginChallengeDeps {
   return {
     bind(input) {
       const pluginId = pluginOf(input.identity);
@@ -110,6 +126,11 @@ export function pluginRunStartChallenges(journal: PluginRunStartJournal, issues:
       if (scope === undefined) return undefined;
       const generation = grantedGeneration(journal, pluginId, scope.projectId);
       if (generation === undefined) return undefined;
+      // Pinned now, at issue: the host window's live lifetime. None (the window has no desktop connection) refuses the challenge.
+      const hostWindowId = input.identity.hostWindowId;
+      if (hostWindowId === undefined) return undefined;
+      const hostEpoch = windows.current(hostWindowId);
+      if (typeof hostEpoch !== "string") return undefined;
       // Escaped whole: a prompt whose escaped form passes the cap fails the detail's contract and the start is refused, never cut.
       const prompt = escapedHead(req.data.prompt, Number.MAX_SAFE_INTEGER).head;
       const detail = {
@@ -126,8 +147,8 @@ export function pluginRunStartChallenges(journal: PluginRunStartJournal, issues:
         pluginId,
         projectId: scope.projectId,
         detail,
-        valid: () => grantedGeneration(journal, pluginId, scope.projectId) === generation,
-        approved: mintApprovedStart({ pluginId, projectId: scope.projectId, workspaceId: scope.workspaceId, generation }),
+        valid: () => grantedGeneration(journal, pluginId, scope.projectId) === generation && hostWindowAlive(windows, hostWindowId, hostEpoch),
+        approved: mintApprovedStart({ pluginId, projectId: scope.projectId, workspaceId: scope.workspaceId, generation, hostWindowId, hostEpoch }),
       };
     },
     issues,

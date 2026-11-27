@@ -43,6 +43,7 @@ import type { Logger } from "./log/logger.js";
 import { checkCoverage } from "./policy/coverage.js";
 import { createRunTaint } from "./composer/taint.js";
 import { pluginRunStartChallenges } from "./gate/plugin-run-start.js";
+import { createWindowLifetimes, type WindowLifetimes } from "./plugins/window-lifetimes.js";
 import type { PtyExecPort, PtyForgePort, PtyPort, PtyPushPort } from "./ports/pty.js";
 import type { ChannelMux } from "./transport/mux.js";
 
@@ -109,6 +110,8 @@ export interface ComposeOptions {
    * binding's sink), so a test can prove a write after shutdown is refused. It can only observe them, never unseal them.
    */
   readonly observeSealedWriters?: (writers: { readonly challenge: { append(e: never): unknown }; readonly composer: { append(e: never): unknown } }) => void;
+  /** TEST ONLY: sees the host windows' lifetimes the composition feeds (PV-K2 K2-g4b); it can read them, never feed them. */
+  readonly observeWindowLifetimes?: (lifetimes: Pick<WindowLifetimes, "current" | "status">) => void;
   /** TEST ONLY: sees whether the composer binding was given the WT-2 guard (review c3 r1 N-6). */
   readonly observeAgent?: (agent: { readonly commands: boolean; readonly gitReads: boolean; readonly commandLimits: CommandLimits }) => void;
   /** TEST ONLY: sees the `agentOf` the messaging binding was given (PV-G4: it knows no run unless `messaging.enabled`), the CLI endpoint path's own lookup and whether its relay was wired (PV-M7 slice 2: the user's switch alone decides both). */
@@ -156,6 +159,10 @@ export function composeDaemonHost(options: ComposeOptions): ComposedHost {
   const scanner = createSecretScanner({ mode: options.scanMode ?? "refuse" });
   // Closed when the final anchor is taken: no composer or challenge row may land after it (review r1 S1).
   const auditSeal = createAuditSeal();
+  // The host windows' lifetimes (PV-K2 K2-g4b, plugin-grant-contract.md section 8.4): fed by the daemon's session lifecycle and
+  // main's `window.gone`; a plugin's run start is bound to the lifetime its host window was in when the challenge was issued.
+  const windowLifetimes = createWindowLifetimes({ randomBytes: (n) => randomBytes(n) });
+  options.observeWindowLifetimes?.(windowLifetimes);
 
   /** Undo, in reverse order, what composition created (everything below is idempotent). */
   const cleanups: Array<() => void> = [];
@@ -209,7 +216,7 @@ export function composeDaemonHost(options: ComposeOptions): ComposedHost {
           ...(logger === undefined ? {} : { logger }),
           preflight: anchorPreflight(parts.anchors),
           // PV-K1e-b: a plugin's run start is challenged in its host window, bound to its grant, and counted (journal v17).
-          plugins: pluginRunStartChallenges(parts.journal, parts.journal.pluginIssues, () => ports.clock.now()),
+          plugins: pluginRunStartChallenges(parts.journal, parts.journal.pluginIssues, () => ports.clock.now(), windowLifetimes),
         });
         cleanups.push(() => approvals.dispose());
         const worktrees = createWorktreesBinding({
@@ -334,6 +341,7 @@ export function composeDaemonHost(options: ComposeOptions): ComposedHost {
       ...(config.limits.maxConnections === undefined ? {} : { maxConnections: config.limits.maxConnections }),
       ...(options.shutdown === undefined ? {} : { shutdown: options.shutdown }),
       ...(events === undefined ? {} : { events }),
+      lifecycle: windowLifetimes,
     });
     cleanups.push(() => daemon.stop());
     const recorded = recordingRegistrar(createHandlerRegistrar(daemon, services.anchors));
@@ -345,7 +353,7 @@ export function composeDaemonHost(options: ComposeOptions): ComposedHost {
     registrar.register(PROJECTS_CONTRACT, PROJECTS_VERSION, createProjectsHandlers({ projects: () => services.journalRead.listProjects() }));
     // A revoke (a gesture, or the gate's lost binding) stops the project's live runs (project-registration-and-trust.md §5.4).
     const stopProjectRuns = createProjectRunStopper({ mutex: () => built.worktrees?.mutex, journal: () => services.journal, runs: () => built.runs?.service, composer: () => built.composer });
-    if (writable) registerServing(registrar, services, { built, config, control, ports, pty, scanner, ptyGitRunnerFor, logger, runHooks: options.runHooks ?? false, sshSpawn: options.sshSpawn, pluginGrants: options.pluginGrants === true, stopProjectRuns, minter: createRunTrustMinter(ports.clock) });
+    if (writable) registerServing(registrar, services, { built, config, control, ports, pty, scanner, ptyGitRunnerFor, logger, runHooks: options.runHooks ?? false, sshSpawn: options.sshSpawn, pluginGrants: options.pluginGrants === true, stopProjectRuns, minter: createRunTrustMinter(ports.clock), hostWindows: windowLifetimes });
     if (events !== undefined) {
       registrar.register(EVENTS_CONTRACT, EVENTS_VERSION, events.handlers());
       const approvals = built.approvals;
@@ -377,6 +385,7 @@ export function composeDaemonHost(options: ComposeOptions): ComposedHost {
       offPort?.();
     };
     cleanups.push(() => offConnect?.());
+    cleanups.push(control.onWindowGone((m) => windowLifetimes.gone(m.windowId)));
     cleanups.push(control.onTrustSet((m) => {
       try {
         services.trust.set({ windowId: m.windowId, ...(m.workspaceId === undefined ? {} : { workspaceId: m.workspaceId }) }, m.trusted);

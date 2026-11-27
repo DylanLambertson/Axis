@@ -430,7 +430,12 @@ export function createApprovals(deps: ApprovalsDeps): Approvals {
       } else forget(result.challengeId);
       return result;
     },
-    pending: (windowId) => registry.list(windowId),
+    // A plugin challenge whose binding no longer holds (its host window's lifetime ended, PV-K2 K2-g4b; or its grant changed) is
+    // ended here too, so a reopened window never lists a card from the lifetime before.
+    pending: (windowId) => {
+      for (const c of registry.list(windowId)) endUnbound(c.challengeId);
+      return registry.list(windowId);
+    },
     detail: (caller, challengeId) => {
       endUnbound(challengeId);
       return plugins.detail(caller, challengeId, registry.has(challengeId));

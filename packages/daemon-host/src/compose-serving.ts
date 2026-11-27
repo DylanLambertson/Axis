@@ -57,6 +57,7 @@ import type { HostServices, StartupPorts } from "./host.js";
 import type { Logger } from "./log/logger.js";
 import type { PtyExecPort, PtyForgePort, PtyPort } from "./ports/pty.js";
 import { loadPushedBases, savePushedBases } from "./storage/pushed-bases-file.js";
+import type { WindowLifetimes } from "./plugins/window-lifetimes.js";
 
 /** What `registerServing` takes from the composition (moved out of compose.ts unchanged, plus the project trust gate). */
 /**
@@ -92,6 +93,8 @@ export interface ServingContext {
   readonly stopProjectRuns: (projectId: string) => void;
   /** The CLI run trust minter (made by the composition root, the only module that may import it). */
   readonly minter: RunTrustMinter;
+  /** The host windows' lifetimes (PV-K2 K2-g4b): a plugin's run start is checked against the one pinned at issue. */
+  readonly hostWindows: Pick<WindowLifetimes, "alive">;
 }
 
 /** The services of a healthy host, each registered through the registrar and nothing else. */
@@ -127,7 +130,8 @@ export function registerServing(registrar: HandlerRegistrar, services: HostServi
     service: { cancel: (id) => composer.cancel(id), get: (id) => composer.get(id), list: (o) => composer.list(o), events: (id, a, l) => composer.events(id, a, l), start: ticketedStart((i, s) => composer.start(i, s), (id) => journal.getWorkspace(id)?.projectId, () => ports.clock.monotonic()) },
     gate,
     journal, mutex: worktrees.mutex, needsAttention: worktrees.needsAttention,
-    pluginStarts: journal }; // PV-K1e-b: a plugin's start reads its scope and grant from the journal
+    pluginStarts: journal, // PV-K1e-b: a plugin's start reads its scope and grant from the journal
+    hostWindows: ctx.hostWindows }; // PV-K2 K2-g4b: and is checked against its host window's pinned lifetime
   registerComposerRunsHandlers(registrar, composerRuns);
   // PV-K2 K2-g1: the user's plugin list, revoke and disable; a decrease ends the plugin's open challenges at once.
   registerPluginsHandlers(registrar, {

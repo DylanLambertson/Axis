@@ -31,6 +31,12 @@ export interface ComposerStartInput {
    */
   readonly grantHolds?: () => boolean;
   /**
+   * Also in that step, after `grantHolds` (PV-K2 K2-g4b): whether the plugin's host window is still in the lifetime pinned when
+   * its challenge was issued, and the plugin's connection is still open. False, or a throw, refuses with `host_window_closed`.
+   * Required for a plugin initiator.
+   */
+  readonly hostAlive?: () => boolean;
+  /**
    * IAC-T receipts the run takes before its first model call (PV-T1 slice 2b: a Start of an untrusted task, source 5).
    * Internal to the daemon, never on the wire: the run's tools are built only after every receipt is recorded, and a
    * receipt that cannot be recorded ends the run START_FAILED with nothing sent.
