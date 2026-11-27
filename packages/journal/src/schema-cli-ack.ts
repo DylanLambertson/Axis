@@ -4,7 +4,7 @@ import { SQL_RULES } from "./schema-pages.js";
 
 /*
  * Acknowledged CLI project-configuration files (ticket PV-M7 slice 1, review 1 SF3 and SF4; `docs/design/messages-contract.md`
- * section 14): forward-only. When the user enables a CLI worker's messaging while CLI project-configuration files exist in its
+ * section 14): schema version 18, forward-only. When the user enables a CLI worker's messaging while CLI project-configuration files exist in its
  * home, the enable is a second step that names them; the paths acknowledged are kept here, and every mint compares the files
  * present then against them (a file that appeared since gets no endpoint until the user confirms again).
  *
@@ -20,7 +20,7 @@ const { id, time } = SQL_RULES;
 export const CLI_ACK_LIMITS = Object.freeze({ pathsPerWorker: 16 });
 
 export const CLI_ACK_MIGRATION: Migration = {
-  version: 17,
+  version: 18,
   sql: `
     CREATE TABLE messaging_cli_acknowledged (
       agent_id        TEXT NOT NULL CHECK (${id("agent_id")}),
