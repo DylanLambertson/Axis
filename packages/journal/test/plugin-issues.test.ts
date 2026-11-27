@@ -34,14 +34,14 @@ const fill = (journal: Journal, at: number, count: number = PLUGIN_ISSUE_LIMITS.
   for (let i = 0; i < count; i++) assert.deepEqual(journal.pluginIssues.record(plugin, "p1", at + i), { ok: true }, `issue ${i}`);
 };
 
-test("version 17 is the latest; a populated version 16 database gains the empty table and keeps its rows", () => {
+test("version 17: a populated version 16 database gains the empty table and keeps its rows", () => {
   const db = openDatabase(":memory:");
   new AuditLog(db);
   runMigrations(db, "journal", JOURNAL_MIGRATIONS.slice(0, 16));
   db.prepare("INSERT INTO projects (id, path, display_name, trusted, created_at, updated_at) VALUES ('p9', '/r9', 'Nine', 0, ?, ?)").run("2026-11-26T00:00:00.000Z", "2026-11-26T00:00:00.000Z");
   Journal.open(db, { audit: new AuditLog(db) });
-  assert.equal(JOURNAL_SCHEMA_VERSION, 17);
-  assert.equal(schemaVersion(db, "journal"), 17);
+  assert.ok(JOURNAL_SCHEMA_VERSION >= 17); // a later version is added after it (v18: the acknowledged CLI files)
+  assert.equal(schemaVersion(db, "journal"), JOURNAL_SCHEMA_VERSION, "opened at the latest version");
   assert.equal(n(db), 0);
   assert.equal(Number((db.prepare("SELECT count(*) AS n FROM projects WHERE id = 'p9'").get() as Row)["n"]), 1);
 });

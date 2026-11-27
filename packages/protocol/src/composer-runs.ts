@@ -1,6 +1,6 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import { z } from "zod";
-import { requestDigestSchema } from "./challenge.js";
+import { challengeReferenceSchema, requestDigestSchema } from "./challenge.js";
 import { CF_RANGES, rangesToClass } from "./display.js";
 import { countSchema, displayTextSchema, guarded, reasonCodeSchema, timestampSchema } from "./guard.js";
 import { runIdSchema, workspaceIdSchema, type MethodSpec } from "./worktrees.js";
@@ -213,7 +213,8 @@ export type RunEvent = z.infer<typeof runEventSchema>;
 const runResponse = guarded(z.strictObject({ run: composerRunSchema }));
 const runIdRequest = guarded(z.strictObject({ runId: runIdSchema }));
 
-// start (write, tier 2, idempotency required, trusted project)
+// start (write, tier 2, idempotency required, trusted project). The policy raises a plugin's start to tier 3 (PV-K1e-b), so the
+// request takes the optional `approval` reference of the retry that spends it; a user's tier-2 start never sends one.
 export const composerStartRequestSchema = guarded(
   z.strictObject({
     workspaceId: workspaceIdSchema,
@@ -221,6 +222,7 @@ export const composerStartRequestSchema = guarded(
     prompt: z.string().min(1).max(MAX_PROMPT_CHARS),
     providerId: composerProviderIdSchema,
     modelId: composerModelIdSchema,
+    approval: challengeReferenceSchema.optional(),
   }),
 );
 export const composerStartResponseSchema = guarded(z.strictObject({ run: composerRunSchema, replayed: z.boolean() }));

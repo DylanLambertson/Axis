@@ -265,6 +265,9 @@ export function createAgentBinding(deps: AgentBindingDeps): AgentBinding {
         taint.receive(input);
       },
     };
+    // IAC-T (PV-T1 slice 2b): receipts the run was started with are taken before any tool exists. A throw (a bad receipt, an
+    // audit row that cannot be written) leaves the run tainted and ends it START_FAILED with nothing sent.
+    for (const r of run.receipts ?? []) received.receive(r);
     // The worker's own tools (messaging, pages): offered, previewed and unwrapped in `agent-optional-tools.ts`.
     const extra = optionalTools({ runId: run.runId, messaging: runMessaging, pages: deps.pages, tasks: deps.tasks, receivedHop: () => receivedHop });
     const previewed = extra.previews.length === 0 ? PREVIEWED : new Map([...PREVIEWED, ...extra.previews]);

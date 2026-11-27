@@ -12,9 +12,18 @@
  * everything below it. Root-anchored on purpose: a copy in a subdirectory (`sub/.claude/settings.json`) is not matched,
  * although a CLI started in that subdirectory would read it (a residual: the worktree root is where Axis starts CLI runs).
  *
- * Not listed, deliberately: instruction ("memory") files, `.claude/rules/` and `CLAUDE.local.md`, which the CLI also reads.
- * They instruct rather than run or pre-approve, the same class as `CLAUDE.md` and `AGENTS.md`, which are not protected
- * either (git-snapshot flags them as `instruction-file`); protecting instruction files is one decision for the whole class.
+ * Not listed, deliberately: instruction ("memory") files, `.claude/rules/` and `CLAUDE.local.md`, the same class as
+ * `CLAUDE.md` and `AGENTS.md`, which are not protected either; protecting instruction files is one decision for the whole
+ * class (owner decisions OD-1). In review, git-snapshot shows `CLAUDE.local.md` as an `instruction-file` and
+ * `.claude/rules/` as `hidden-config` (its generic dot-name rule).
+ *
+ * Listed by the OD-1 decision (2026-11-27): `.claude/output-styles/` and `.claude/loop.md`, which the CLI's own
+ * protected-path table (Claude Code 2.1.332) protects with the same fixed flag as `skills`, `commands`, `agents`, `hooks`,
+ * `settings.json` and `.mcp.json`; and `.lsp.json`, precautionary, read at a plugin's root (a repository that is itself a
+ * plugin has one there: language-server commands the CLI launches).
+ *
+ * Not listed, residual: Codex's exec policies, which its text names among "project-local config, hooks, and exec
+ * policies" without a path this environment shows.
  */
 export interface CliProjectConfig {
   readonly cli: "claude" | "codex";
@@ -24,20 +33,31 @@ export interface CliProjectConfig {
   readonly source: string;
 }
 
-const CLAUDE = "Claude Code 2.1.330: the path string is in the installed binary (~/.local/share/claude/versions/2.1.330)";
+const CLAUDE = "Claude Code 2.1.332: the path string is in the installed binary (~/.local/share/claude/versions/2.1.332; first sourced in 2.1.330, every path checked again in 2.1.332)";
 const CODEX = "codex-cli 0.166.0: the installed package (@openai/codex)";
 
 export const CLI_PROJECT_CONFIG: readonly CliProjectConfig[] = Object.freeze([
   Object.freeze({ cli: "claude", segments: Object.freeze([".claude", "settings.json"]), severity: "warn", source: `${CLAUDE}; its --help lists the "project" setting source` }),
   Object.freeze({ cli: "claude", segments: Object.freeze([".claude", "settings.local.json"]), severity: "warn", source: `${CLAUDE}; its --help lists the "local" setting source` }),
   Object.freeze({ cli: "claude", segments: Object.freeze([".claude", "hooks"]), severity: "warn", source: CLAUDE }),
-  // Paths that run something or pre-approve tools (review 1 of the first list): an MCP server entry is a command the CLI
-  // launches; skills, subagent definitions and plugins carry tools, scripts and hooks; commands can pre-approve tools.
+  // Paths that run something or pre-approve tools: an MCP server entry is a command the CLI launches; skills, subagent
+  // definitions and plugins carry tools, scripts and hooks; commands can pre-approve tools; a workflow is a script.
   Object.freeze({ cli: "claude", segments: Object.freeze([".mcp.json"]), severity: "warn", source: `${CLAUDE}: project MCP servers` }),
   Object.freeze({ cli: "claude", segments: Object.freeze([".claude", "skills"]), severity: "warn", source: CLAUDE }),
   Object.freeze({ cli: "claude", segments: Object.freeze([".claude", ["age", "nts"].join("")]), severity: "warn", source: `${CLAUDE}: subagent definitions` }),
-  Object.freeze({ cli: "claude", segments: Object.freeze([".claude", "plugins"]), severity: "warn", source: CLAUDE }),
+  Object.freeze({ cli: "claude", segments: Object.freeze([".claude", "plugins"]), severity: "warn", source: "precautionary: Claude Code 2.1.332's binary (as 2.1.330's) shows only the user-level ~/.claude/plugins, not a project one" }),
   Object.freeze({ cli: "claude", segments: Object.freeze([".claude", "commands"]), severity: "warn", source: `${CLAUDE}: slash commands (marked deprecated there, still loaded)` }),
+  Object.freeze({ cli: "claude", segments: Object.freeze([".claude", "workflows"]), severity: "warn", source: `${CLAUDE}: a project workflow is ".claude/workflows/<name>.js", which "resolves to a self-contained script"` }),
+  // Named in the CLI's own table of project paths it protects (it joins ".claude" with each name): a preview launch
+  // configuration, routines and durable scheduled tasks all run something.
+  Object.freeze({ cli: "claude", segments: Object.freeze([".claude", "launch.json"]), severity: "warn", source: `${CLAUDE}: its own protected-path table (the preview launch configuration)` }),
+  Object.freeze({ cli: "claude", segments: Object.freeze([".claude", "routines"]), severity: "warn", source: `${CLAUDE}: its own protected-path table` }),
+  Object.freeze({ cli: "claude", segments: Object.freeze([".claude", "scheduled_tasks.json"]), severity: "warn", source: `${CLAUDE}: its own protected-path table (durable scheduled jobs)` }),
+  // The OD-1 decision: what the CLI's own table protects like skills and settings, and a plugin root's language servers.
+  Object.freeze({ cli: "claude", segments: Object.freeze([".claude", "output-styles"]), severity: "warn", source: `${CLAUDE}: its own protected-path table, the same flag as skills and settings` }),
+  Object.freeze({ cli: "claude", segments: Object.freeze([".claude", "loop.md"]), severity: "warn", source: `${CLAUDE}: its own protected-path table, the same flag as skills and settings` }),
+  Object.freeze({ cli: "claude", segments: Object.freeze([".lsp.json"]), severity: "warn", source: `precautionary, ${CLAUDE}: read at a plugin's root (language-server commands); a repository that is itself a plugin has one` }),
+  Object.freeze({ cli: "claude", segments: Object.freeze([".claude-plugin"]), severity: "warn", source: `precautionary, ${CLAUDE}: a folder with ".claude-plugin/plugin.json" is a plugin whose skills it auto-loads` }),
   Object.freeze({ cli: "codex", segments: Object.freeze([".codex", "config.toml"]), severity: "warn", source: `${CODEX}, whose text reads "Project \`.codex/config.toml\`: settings for a trusted repository, including sandbox, MCP, hooks"` }),
   Object.freeze({ cli: "codex", segments: Object.freeze([".codex", "hooks"]), severity: "warn", source: `${CODEX}: the path string is in its code` }),
 ] as const satisfies readonly CliProjectConfig[]);

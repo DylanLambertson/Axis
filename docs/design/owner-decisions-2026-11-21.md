@@ -124,7 +124,7 @@ Decided by the project lead under the owner's delegation, after two design revie
 
 | Item | State and recommended default |
 |---|---|
-| OD-1 | **Open.** Instruction ("memory") files a CLI reads from the repository: `CLAUDE.md`, `AGENTS.md`, `.claude/rules/`, `CLAUDE.local.md`. They instruct the CLI rather than run a command or pre-approve a tool, so they are NOT in the protected set (unlike a CLI's settings, hooks, MCP servers, skills, subagent definitions, plugins and commands, which are, through `CLI_PROJECT_CONFIG`); git-snapshot flags them in review as `instruction-file`. **Recommended default (master, 2026-11-26):** keep them flagged (highlighted in review, no approval gate) until a worker-driven rewrite of an instruction file is shown to matter; then decide for the whole class, not file by file. |
+| OD-1 | **Decided (master, under the owner's delegation, 2026-11-27; reversible).** Instruction files as a class, `CLAUDE.md`, `AGENTS.md`, `CLAUDE.local.md` and `.claude/rules/`, stay flagged in review (git-snapshot shows the first three as `instruction-file` and `.claude/rules/` as `hidden-config`) with no approval gate, until a worker-driven rewrite of one is shown to matter. What the CLI's own protected-path table protects is protected here too: `.claude/output-styles/` and `.claude/loop.md` (Claude Code 2.1.332 protects them with the same fixed flag as `skills`, `commands`, `agents`, `hooks`, `settings.json` and `.mcp.json`) are rows of `CLI_PROJECT_CONFIG`, and so is `.lsp.json`, precautionary (read at a plugin's root: language-server commands). |
 
 ## 7. What these decisions unblock
 

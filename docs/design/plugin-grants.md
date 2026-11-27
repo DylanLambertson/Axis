@@ -12,7 +12,7 @@
 
 ## 2. Who may write
 
-Only the user. **PV-K1b adds no contract or handler for these writes**: the store is called by tests only. The contract methods PV-K2 adds for install, grant, revoke, enable and disable must be tier 4 (native confirmation, ADR 0003 D4) or main-owned (a dialog main draws), so neither a renderer nor a plugin can grant.
+Only the user. **PV-K1b adds no contract or handler for these writes**: the store is called by tests only. The contract methods PV-K2 adds for install, grant and enable must be tier 4 (native confirmation, ADR 0003 D4) or main-owned (a dialog main draws), so neither a renderer nor a plugin can grant. *Superseded in part (2026-11-27):* revoke and disable are tier 2, because a decrease applies at once (ADR 0008 decision 8); the accepted availability risk and the rest are in `plugin-grant-contract.md`.
 
 ## 3. The plugin policy
 

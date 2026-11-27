@@ -1,6 +1,7 @@
 # ADR 0004: Agent-first workspace shell
 
 - **Status:** Proposed. Becomes Accepted when the Phase 0 gate in `docs/ROADMAP.md` is met, including the agent-view skeleton (validation criteria below).
+- **To be partly superseded by:** ADR 0011 (Proposed 2026-11-26; takes effect when it is accepted): the Code OSS parts (decisions 2, 3 and 5, the IDE view parts of 4 and 12, and the Phase 0 gate impact) are replaced by our own shell with the IDE as an optional module.
 - **Date:** 2026-11-02. Open questions resolved by the owner on 2026-11-02 (see Resolved questions).
 - **Decision owner:** Dylan Lambertson (product direction given 2026-11-02).
 - **Depends on:** ADR 0002 (Code OSS integration strategy, Proposed) and ADR 0003 (Electron IPC bridge, Proposed). This ADR changes neither decision; it changes what the Axis shell layer shows first and when product services are needed.

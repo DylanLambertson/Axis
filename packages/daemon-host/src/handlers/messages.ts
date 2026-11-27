@@ -12,6 +12,7 @@ import {
 import { MessageRefusal, type MessageCaller } from "../messages/policy.js";
 import type { MessageService } from "../messages/service.js";
 import { InvalidMessageRequest } from "../messages/wire.js";
+import type { EnableDecision } from "../messages/enable-rule.js";
 import type { MessagingSettingsService } from "../messages/settings.js";
 import type { HandlerRegistrar } from "./anchor-guard.js";
 
@@ -28,6 +29,8 @@ import type { HandlerRegistrar } from "./anchor-guard.js";
 export interface MessagesHandlerDeps {
   readonly service: MessageService;
   readonly settings: MessagingSettingsService;
+  /** The CLI messaging enable rule's facts and decision (PV-M7 slice 1); absent, enabling is refused (`bypass_entry`). */
+  readonly checkEnable?: (agentId: string, signal: AbortSignal) => Promise<EnableDecision>;
 }
 
 const fail = (code: "E_CANCELLED" | "E_INTERNAL" | "E_NOT_FOUND" | "E_CONFLICT" | "E_INVALID_ARGUMENT" | "E_BACKPRESSURE", reason?: string): never => {
@@ -46,7 +49,7 @@ const USER: MessageCaller = Object.freeze({ kind: "user" });
 
 export function createMessagesHandlers(deps: MessagesHandlerDeps): Readonly<Record<MessagesMethod, Handler>> {
   const guarded =
-    <M extends MessagesMethod>(method: M, call: (caller: MessageCaller, payload: MessagesRequest<M>) => unknown): Handler =>
+    <M extends MessagesMethod>(method: M, call: (caller: MessageCaller, payload: MessagesRequest<M>, signal: AbortSignal) => unknown): Handler =>
     async (context: HandlerContext, payload: never): Promise<unknown> => {
       if (context.signal.aborted) return fail("E_CANCELLED");
       // Defence in depth behind the policy row: only the user's own attested connection.
@@ -54,7 +57,7 @@ export function createMessagesHandlers(deps: MessagesHandlerDeps): Readonly<Reco
       if (context.identity.actor !== "user" || context.identity.clientKind !== "desktop") return fail("E_NOT_FOUND", "not_found");
       let out: unknown;
       try {
-        out = await call(USER, payload as MessagesRequest<M>);
+        out = await call(USER, payload as MessagesRequest<M>, context.signal);
       } catch (e) {
         return toMessagesError(e);
       }
@@ -72,7 +75,13 @@ export function createMessagesHandlers(deps: MessagesHandlerDeps): Readonly<Reco
     pause: guarded("pause", (c, p) => settings.pause(c, p)),
     resume: guarded("resume", (c, p) => settings.resume(c, p)),
     settings: guarded("settings", (c, p) => settings.settings(c, p)),
-    updateSettings: guarded("updateSettings", (c, p) => settings.updateSettings(c, p)),
+    updateSettings: guarded("updateSettings", async (c, p, signal) => {
+      // Enabling a CLI worker's messaging: the rule's facts need main (its entry) and the file system, so they are read
+      // here, before the service's synchronous write; the service refuses without a decision.
+      const enabling = p.setting === "cliMessaging" && p.value === true && deps.checkEnable !== undefined;
+      const decision = enabling ? await deps.checkEnable!(p.agentId, signal) : undefined;
+      return settings.updateSettings(c, p, decision);
+    }),
   };
 }
 
