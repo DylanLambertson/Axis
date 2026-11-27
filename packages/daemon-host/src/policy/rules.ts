@@ -123,4 +123,9 @@ export const RULES: Readonly<Record<string, Rule>> = Object.freeze({
   "axis.agent-groups/1.assign": userRule(2),
   "axis.attention/1.summary": userRule(0),
   "axis.usage/1.summary": userRule(0),
+  // axis.integrations/1, the PV-N1f read slice (net-read-slice.md §6): list and status reveal and send nothing; read reaches the
+  // network with a credential, so it is gated on project trust. connect, disconnect and write stay planned.
+  "axis.integrations/1.list": userRule(0),
+  "axis.integrations/1.status": userRule(0),
+  "axis.integrations/1.read": userRule(0, "project"),
 });
