@@ -5,6 +5,7 @@ import {
   resolveChallengeRequestSchema,
   resolveChallengeResponseSchema,
 } from "./challenge.js";
+import { approvalsDetailRequestSchema, approvalsDetailResponseSchema, challengeRequesterSchema, MAX_PLUGIN_CHALLENGES_PER_WINDOW } from "./approvals-detail.js";
 import { displayTextSchema, emptyRequestSchema, guarded } from "./guard.js";
 import type { MethodSpec } from "./worktrees.js";
 
@@ -42,12 +43,17 @@ export const MAX_PENDING_CHALLENGES = 1024;
  */
 export const MAX_LISTED_SUMMARY = 192;
 
-/** A challenge as `pending` lists it: the issued shape, with the text fields held to display rules. */
+/**
+ * A challenge as `pending` lists it: the issued shape, with the text fields held to display rules. `requester` is present only
+ * on a challenge a plugin caused (PV-K1e-a2): optional and additive, emitted by no production path until PV-K1e-b, which must
+ * not merge before the renderer's reader accepts it (PV-K1e-a2-2).
+ */
 export const listedChallengeSchema = z.strictObject({
   ...challengeSchema.shape,
   contract: z.string().regex(/^[a-z][a-z0-9.-]{0,63}$/),
   method: z.string().regex(/^[A-Za-z][A-Za-z0-9]{0,63}$/),
   targetSummary: displayTextSchema(MAX_LISTED_SUMMARY),
+  requester: challengeRequesterSchema.optional(),
 });
 
 // resolve (write, tier 2, user only)
@@ -68,7 +74,9 @@ export const approvalsPendingResponseSchema = guarded(
     challenges: z
       .array(listedChallengeSchema)
       .max(MAX_PENDING_CHALLENGES)
-      .refine((cs) => new Set(cs.map((c) => c.challengeId)).size === cs.length, "duplicate challenge id"),
+      .refine((cs) => new Set(cs.map((c) => c.challengeId)).size === cs.length, "duplicate challenge id")
+      // The gate holds a window to this many plugin challenges, which keeps a full listing inside one message.
+      .refine((cs) => cs.filter((c) => c.requester !== undefined).length <= MAX_PLUGIN_CHALLENGES_PER_WINDOW, "too many plugin challenges"),
   }),
 );
 
@@ -84,6 +92,15 @@ export const approvalsMethods = {
   pending: {
     request: approvalsPendingRequestSchema,
     response: approvalsPendingResponseSchema,
+    sideEffect: "read",
+    tier: 0,
+    idempotency: "none",
+    timeoutMs: 5_000,
+  },
+  // PV-K1e-a2: the full request of one pending plugin challenge of the caller's window (user only, never a web client).
+  detail: {
+    request: approvalsDetailRequestSchema,
+    response: approvalsDetailResponseSchema,
     sideEffect: "read",
     tier: 0,
     idempotency: "none",

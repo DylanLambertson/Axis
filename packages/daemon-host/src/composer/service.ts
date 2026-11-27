@@ -326,20 +326,26 @@ export function createComposerService(deps: ComposerServiceDeps): ComposerServic
       const l: Live = { runId, workspaceId: input.workspaceId, controller, budget, awaiting: 0, done: Promise.resolve() };
       let tools;
       try {
-        tools =
-        input.mode === "ask"
+        // IAC-T (PV-T1 slice 2b): receipts are taken inside `build`, before it returns the tools; an ask-mode run has no tools
+        // but is built for its receipts all the same, so its record says tainted (the tools are closed at once).
+        const taint = input.taint ?? [];
+        const built =
+        input.mode === "ask" && taint.length === 0
           ? undefined
           : build({
               runId,
               workspaceId: input.workspaceId,
               windowId: input.windowId,
               mode: input.mode,
+              receipts: taint,
               onApproval: (note) => {
                 if (note.state === "requested") l.awaiting += 1;
                 else l.awaiting = Math.max(0, l.awaiting - 1);
                 emit(runId, { type: "approval", ...note, reasons: [...note.reasons], paths: note.paths.map((p) => ({ ...p })) });
               },
             });
+        if (input.mode === "ask") built?.close?.();
+        tools = input.mode === "ask" ? undefined : built;
       } catch {
         // The run exists but can never be driven: end it now rather than leave it QUEUED until a restart.
         internal("tools");

@@ -120,6 +120,12 @@ Decided by the project lead under the owner's delegation, after two design revie
 | SB-D5 | Entry names: the vault rule plus the `integration:<id>` prefix only, at most 100 characters. |
 | SB-D6 | Timeouts: main answers `get` and `put` within 60 s (macOS and Linux unlock prompts), the daemon waits 65 s, so main answers first. |
 
+## 6c. Open: instruction files as a class (recorded 2026-11-26)
+
+| Item | State and recommended default |
+|---|---|
+| OD-1 | **Open.** Instruction ("memory") files a CLI reads from the repository: `CLAUDE.md`, `AGENTS.md`, `.claude/rules/`, `CLAUDE.local.md`. They instruct the CLI rather than run a command or pre-approve a tool, so they are NOT in the protected set (unlike a CLI's settings, hooks, MCP servers, skills, subagent definitions, plugins and commands, which are, through `CLI_PROJECT_CONFIG`); in review, git-snapshot shows `CLAUDE.md`, `AGENTS.md` and `CLAUDE.local.md` as `instruction-file` and `.claude/rules/` as `hidden-config` (its generic dot-name rule). **Recommended default (master, 2026-11-26):** keep them flagged (highlighted in review, no approval gate) until a worker-driven rewrite of an instruction file is shown to matter; then decide for the whole class, not file by file. |
+
 ## 7. What these decisions unblock
 
 PV-R1 (ADR 0006) and the docs wave PV-R2, PV-R3 and PV-R7; then PV-G1 (journal migration), PV-D1 to PV-D4 (project home), PV-V0 to PV-V4 (agent view), PV-M4 to PV-M8 (messaging), PV-T, PV-Q, PV-K and PV-N as their dependencies land; and the project registration and trust slice in §5.

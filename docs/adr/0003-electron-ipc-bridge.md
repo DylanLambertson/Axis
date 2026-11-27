@@ -1,6 +1,7 @@
 # ADR 0003: Electron IPC bridge for Axis services
 
 - **Status:** Proposed. Becomes Accepted after the Phase 1 bridge spike meets the validation criteria below.
+- **To be amended by:** ADR 0011 (Proposed 2026-11-26; takes effect when it is accepted): D1's handshake and sender checks move to our own window registry, D6 and I7 have no upstream footprint, D7 allows one fixed preload, and validation criteria 1 and 4 to 7 are re-stated there.
 - **Date:** 2026-11-01.
 - **Depends on:** ADR 0002 (Code OSS integration strategy, Proposed): Axis shell code in `src/vs/axis`, no deep upstream patches, decision 6 (Copilot and agent host removal as a separate patch set) and decision 7 (security-hardening patch range).
 - **Related:** `docs/security/threat-model-phase0.md`. Threat IDs such as EL-2 and DMN-1 refer to that document.
@@ -393,3 +394,7 @@ export interface IAxisPolicyEngine { evaluate(req: PolicyRequest, token: Cancell
 ## Amendment (2026-11-22, ADR 0008)
 
 ADR 0008 ("Axis plugins") adds a fourth principal kind, `plugin:<id>`, to D4. Main mints one connection per plugin view when it creates the view, signed like a window connection with `clientKind: plugin` and a `p<n>` window id; a plugin view never uses `vscode:axisConnect`, and D1.3's checks still refuse it there. A plugin actor never resolves an approval, the D5 record may name it, and D7 is unchanged (the plugin port shim adds no `contextBridge` global). Its section "Amendment to ADR 0003" governs where wording differs.
+
+## Amendment (2026-11-26, PV-K1e-a2)
+
+A challenge raised by a `plugin:<id>` request is addressed to the plugin view's attested host window: it is listed and resolved there by a `user` actor only, under the same window rule as any challenge, and consumed only by the plugin's own connection. The plugin learns only the challenge id. The approval is bound to the plugin's grant generation and host window, and is refused if either changes before it is consumed. The full request a user approves is read through `axis.approvals/1.detail`, built by the daemon; the 192-character summary stays as it is. Native confirmation applies only at tier >= 4; a plugin run start is tier 3 and is resolved by the renderer's own resolve. (`docs/design/plugin-run-start.md` section 2.)

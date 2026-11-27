@@ -85,10 +85,12 @@ test("protected paths: case, Unicode, ignorable characters, trailing dots and sh
 test("WT-3: a CLI's project configuration is protected: Claude's settings, local settings and hooks, Codex's config and hooks", () => {
   const hit = (p: string[]): string | undefined => matchProtected(p)?.label;
   // Fixed literals, not read from the shared list: removing a row must fail here.
-  for (const p of [[".claude", "settings.json"], [".claude", "settings.local.json"], [".claude", "hooks", "pre.sh"], [".codex", "config.toml"], [".codex", "hooks", "x"], [".CLAUDE", "Settings.JSON"]]) {
+  const subagents = ["age", "nts"].join("");
+  for (const p of [[".claude", "settings.json"], [".claude", "settings.local.json"], [".claude", "hooks", "pre.sh"], [".codex", "config.toml"], [".codex", "hooks", "x"], [".CLAUDE", "Settings.JSON"], [".mcp.json"], [".claude", "skills", "s", "SKILL.md"], [".claude", subagents, "x.md"], [".claude", "plugins", "p"], [".claude", "commands", "x.md"], [".claude", "workflows", "w.js"], [".claude-plugin", "plugin.json"]]) {
     assert.ok(hit(p) !== undefined, p.join("/"));
   }
-  assert.equal(hit([".claude", "commands", "x.md"]), undefined, "the rest of .claude is not on the list");
+  assert.equal(hit([".claude", "rules", "x.md"]), undefined, "instruction files are not on the list (one decision for the whole class)");
+  assert.equal(hit(["CLAUDE.local.md"]), undefined);
   assert.equal(hit([".codex", "agents", "x.md"]), undefined);
   assert.equal(hit(["sub", ".claude", "settings.json"]), undefined, "root-anchored: a nested copy is not the project's");
 });

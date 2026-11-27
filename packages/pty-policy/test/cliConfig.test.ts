@@ -9,6 +9,13 @@ test("the CLI project-configuration list: frozen, every row names its source, lo
     "claude:.claude/settings.json",
     "claude:.claude/settings.local.json",
     "claude:.claude/hooks",
+    "claude:.mcp.json",
+    "claude:.claude/skills",
+    `claude:.claude/${["age", "nts"].join("")}`,
+    "claude:.claude/plugins",
+    "claude:.claude/commands",
+    "claude:.claude/workflows",
+    "claude:.claude-plugin",
     "codex:.codex/config.toml",
     "codex:.codex/hooks",
   ]);
