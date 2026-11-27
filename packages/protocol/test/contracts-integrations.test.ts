@@ -5,6 +5,9 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   reservedKey,
+  NET_PATH_REFUSALS,
+  netPathRefusal,
+  netPathSchema,
   argsSchema,
   netBodySchema,
   resultValueSchema,
@@ -19,7 +22,7 @@ import {
   plannedContracts,
   tableProblems,
 } from "../src/index.js";
-import { INTEGRATIONS_SAMPLES, github } from "./samples-integrations.js";
+import { INTEGRATIONS_SAMPLES, NET_PATHS_ACCEPTED, NET_PATHS_REFUSED, github } from "./samples-integrations.js";
 import { accepts, rejects, runSuite, schemaOf } from "./suite.js";
 
 runSuite(INTEGRATIONS_SAMPLES);
@@ -130,17 +133,19 @@ test("an origin is a punycode https host: no IP literal in any spelling, port, u
 
 test("a path is composed: no CR, LF, control, space, backslash, fragment, dot segment in any spelling, escaped slash or backslash", () => {
   const request = schemaOf(N, "read", "request");
-  for (const path of ["/", "/v1", "/a;b/c", "/x?u=//y", "/..a;b", "/%25", "/%2541", "/v1/items/", "/v1/items?limit=10&after=a%20b", "/a.b/c..d/...", "/a%2Eb", "/~user/@x", "/a:b;c=d", "/..a/b..", "/%41", "/x?next=%2e%2e", "/x".padEnd(2048, "a")]) {
-    accepts(request, { ...net, path }, path.slice(0, 30));
+  for (const path of NET_PATHS_ACCEPTED) accepts(request, { ...net, path }, path.slice(0, 30));
+  for (const path of NET_PATHS_REFUSED) rejects(request, { ...net, path }, JSON.stringify(path).slice(0, 40));
+});
+
+test("the schema and netPathRefusal agree on the whole table, and every refusal row is reached", () => {
+  assert.ok(NET_PATHS_ACCEPTED.length + NET_PATHS_REFUSED.length >= 60);
+  for (const p of NET_PATHS_ACCEPTED) assert.equal(netPathRefusal(p), null, p.slice(0, 40));
+  for (const p of NET_PATHS_REFUSED) {
+    assert.notEqual(netPathRefusal(p), null, JSON.stringify(p).slice(0, 40));
+    assert.equal(netPathSchema.safeParse(p).success, false);
   }
-  for (const path of [
-    "", "v1", "/a\r\nHost: evil", "/a\nb", "/a\rb", "/a\tb", "/a b", "/a\u0000b", "/a\u007fb", "/a\u0085b", "/a\\b", "/a#frag", "/a\"b", "/a<b", "/é", "/a‮b",
-    "//", "//evil.com/x", "//evil.com", "/a//b", "/x//", "/..;/x", "/x/..;/y", "/.;/x", "/..;", "/%2e;/x", "/..%3b/x", "/%2e%2e%3b/x", "/x/..%3B/y", "/a%3bb", "/%252e%252e/x", "/%252e/x", "/%252f", "/%255c", "/%c0%ae%c0%ae/x", "/%c0%af", "/%C1%9c", "/%e0%80%af", "/%f0%80%80%af",
-    "/.", "/..", "/./x", "/x/..", "/x/../y", "/x/./y", "/%2e", "/%2E", "/%2e%2e", "/%2E%2e", "/.%2e", "/%2e./x", "/x/%2E%2E/y", "/x/%2e", "/x/.%2E/y",
-    "/a%2fb", "/a%2Fb", "/a%5cb", "/a%5Cb", "/x?q=%2f", "/x?q=%5c", "/a%00b", "/a%0db", "/a%0Ab", "/a%1fb", "/a%7fb", "/a%", "/a%2", "/a%zz", "/a?b?c", "/x".padEnd(2049, "a"),
-  ]) {
-    rejects(request, { ...net, path }, JSON.stringify(path).slice(0, 40));
-  }
+  const reached = new Set(NET_PATHS_REFUSED.map(netPathRefusal));
+  assert.deepEqual([...NET_PATH_REFUSALS.map(([r]) => r)].filter((r) => !reached.has(r)), [], "a refusal row no spelling reaches");
 });
 
 test("axis.net/1.read allows GET and HEAD only; axis.net/1.send is a POST with no method field and a JSON object body", () => {

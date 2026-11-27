@@ -18,9 +18,8 @@ test("the contract is served (PV-T1 slice 2a), no longer planned, with the desig
   assert.deepEqual(Object.entries(tasksMethods).map(([m, s]) => [m, s.sideEffect, s.tier, s.idempotency]), [
     ["list", "read", 0, "none"], ["get", "read", 0, "none"], ["revisions", "read", 0, "none"], ["create", "write", 1, "required"],
     ["update", "write", 1, "none"], ["setStatus", "write", 1, "none"], ["assign", "write", 1, "none"], ["link", "write", 1, "none"],
-    ["unlink", "write", 1, "none"], ["delete", "destructive", 4, "none"],
+    ["unlink", "write", 1, "none"], ["delete", "destructive", 4, "none"], ["startPreview", "read", 0, "none"], ["start", "write", 4, "required"],
   ]);
-  assert.equal("start" in tasksMethods, false, "Start is slice 2b's, with the run it taints");
 });
 
 test("no request names an author, a source, a hop, a trust flag or a command", () => {
@@ -62,9 +61,27 @@ test("delete takes an optional approval; the refusals are closed", () => {
   const del = schemaOf("axis.tasks", "delete", "request");
   accepts(del, { taskId: "t" }, "without an approval");
   rejects(del, { taskId: "t", approval: { challengeId: "x" } }, "a bad approval");
-  assert.deepEqual(Object.keys(TASKS_REFUSALS), ["E_NOT_FOUND", "E_INVALID_ARGUMENT", "E_CONFLICT"]);
+  assert.deepEqual(Object.keys(TASKS_REFUSALS), ["E_NOT_FOUND", "E_INVALID_ARGUMENT", "E_CONFLICT", "E_UNAVAILABLE"]);
   assert.equal(new Set(TASKS_REASONS).size, TASKS_REASONS.length);
   assert.equal(isTasksRefusal("E_CONFLICT", "assignee_refused"), true);
   assert.equal(isTasksRefusal("E_NOT_FOUND", "assignee_refused"), false);
   assert.equal(isTasksRefusal("toString", "not_found"), false);
+});
+
+test("Start (slice 2b): the request names the revision and the prompt digest the user saw, never a prompt; the answer is a run or the text to copy", () => {
+  const start = schemaOf("axis.tasks", "start", "request");
+  const ok = { taskId: "t1", worker: "w1", seq: 2, promptDigest: "a".repeat(64) };
+  accepts(start, ok, "a start");
+  accepts(start, { ...ok, approval: { challengeId: "A".repeat(43) } }, "with its approval");
+  rejects(start, { ...ok, prompt: "do this" }, "a prompt of the caller's");
+  rejects(start, { ...ok, promptDigest: "A".repeat(64) }, "an upper-case digest");
+  rejects(start, { taskId: "t1", worker: "w1", promptDigest: "a".repeat(64) }, "no revision");
+  const res = schemaOf("axis.tasks", "start", "response");
+  accepts(res, { kind: "cli", text: "the prompt" }, "the text to copy");
+  rejects(res, { kind: "cli", text: "x".repeat(20_001) }, "a text over the prompt cap");
+  rejects(res, { kind: "composer", text: "x" }, "a composer start with no run");
+  const preview = schemaOf("axis.tasks", "startPreview", "request");
+  rejects(preview, { taskId: "t1" }, "no worker");
+  assert.equal(tasksMethods.start.tier, 4);
+  assert.equal(tasksMethods.start.idempotency, "required");
 });

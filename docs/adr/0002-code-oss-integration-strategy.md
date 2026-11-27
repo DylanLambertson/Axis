@@ -1,6 +1,7 @@
 # ADR 0002: Code OSS integration strategy
 
 **Status:** Proposed. Becomes Accepted, or is replaced, once the Phase 0 M3–M6 work reports against the criteria below.
+**To be superseded by:** ADR 0011 (`0011-own-shell-ide-as-optional-feature.md`, Proposed 2026-11-26; takes effect when it is accepted): our own shell replaces the Code OSS integration.
 **Date:** 2026-11-01
 **Upstream baseline:** `microsoft/vscode` tag `1.144.0`, commit `2c33b50b16c472efe58357d1d2a8a5414bc23fbf`.
 

@@ -25,6 +25,12 @@ export interface ComposerStartInput {
    * recorded as `plugin:<id>` and is tainted before its first model call.
    */
   readonly initiator: RunInitiator;
+  /**
+   * IAC-T receipts the run takes before its first model call (PV-T1 slice 2b: a Start of an untrusted task, source 5).
+   * Internal to the daemon, never on the wire: the run's tools are built only after every receipt is recorded, and a
+   * receipt that cannot be recorded ends the run START_FAILED with nothing sent.
+   */
+  readonly taint?: readonly unknown[];
 }
 
 export type RunInitiator = { readonly kind: "user" } | { readonly kind: "plugin"; readonly pluginId: string; readonly generation: number };
@@ -139,6 +145,8 @@ export interface ComposerRunContext {
   readonly windowId: string;
   readonly mode: ComposerMode;
   readonly onApproval: (note: ComposerApprovalNote) => void;
+  /** Receipts the run takes before its tools are returned (`ComposerStartInput.taint`). */
+  readonly receipts?: readonly unknown[];
 }
 
 export interface ComposerEngine {

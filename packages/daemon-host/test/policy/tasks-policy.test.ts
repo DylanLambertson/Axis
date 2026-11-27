@@ -6,7 +6,7 @@ import { TASK_LIMITS } from "@axis/journal";
 import { MAX_TASK_BODY_CHARS, MAX_TASK_LINKS, MAX_TASK_REVISIONS, MAX_TASKS_PER_PROJECT, contracts, plannedContracts, tasksMethods } from "@axis/protocol";
 import { coverageProblems, PLANNED_RULES, RULES } from "../../src/policy/index.js";
 
-test("every method has one served, user-only row at the contract's tier, with no trust mode, and none is planned", () => {
+test("every method has one served, user-only row at the contract's tier, none is planned; only Start is gated on the project's trust", () => {
   assert.ok(contracts["axis.tasks/1"] !== undefined);
   assert.equal(plannedContracts["axis.tasks/1"], undefined);
   for (const [method, spec] of Object.entries(tasksMethods)) {
@@ -14,9 +14,10 @@ test("every method has one served, user-only row at the contract's tier, with no
     assert.equal(PLANNED_RULES[key], undefined, `${key} is not a planned rule`);
     assert.deepEqual(RULES[key]?.actors, ["user"], key);
     assert.equal(RULES[key]?.tier, spec.tier, key);
-    assert.equal(RULES[key]?.trust, "none", key);
+    assert.equal(RULES[key]?.trust, method === "start" ? "project" : "none", key);
   }
   assert.equal(RULES["axis.tasks/1.delete"]?.tier, 4);
+  assert.equal(RULES["axis.tasks/1.start"]?.tier, 4);
   assert.deepEqual(coverageProblems(), []);
 });
 

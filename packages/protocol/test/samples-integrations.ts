@@ -44,3 +44,13 @@ export const INTEGRATIONS_SAMPLES: readonly Sample[] = [
   res(N, "read", "a JSON body", { status: 201, body: { id: "abc", ok: true } }, { toleratedPattern: FREE }),
   res(N, "send", "the answer", { status: 201, body: { id: "abc" } }, { toleratedPattern: FREE }),
 ];
+
+/** The path spelling table: the contract schema and the daemon's composition re-check (PV-N1e) judge it alike. */
+export const NET_PATHS_ACCEPTED = ["/", "/v1", "/a;b/c", "/x?u=//y", "/..a;b", "/v1/items/", "/v1/items?limit=10&after=a%20b", "/a.b/c..d/...", "/a%2Eb", "/~user/@x", "/a:b;c=d", "/..a/b..", "/%41", "/x?next=%2e%2e", "/x?pct=%25", "/x".padEnd(2048, "a")];
+export const NET_PATHS_REFUSED = [
+  "/%25", "/%2541", "/a/%25%32%65%25%32%65/b", "/a/%2532%2565/b", "/%25%35%63", "/a%25b",
+  "", "v1", "/a\r\nHost: evil", "/a\nb", "/a\rb", "/a\tb", "/a b", "/a\u0000b", "/a\u007fb", "/a\u0085b", "/a\\b", "/a#frag", "/a\"b", "/a<b", "/é", "/a‮b",
+  "//", "//evil.com/x", "//evil.com", "/a//b", "/x//", "/..;/x", "/x/..;/y", "/.;/x", "/..;", "/%2e;/x", "/..%3b/x", "/%2e%2e%3b/x", "/x/..%3B/y", "/a%3bb", "/%252e%252e/x", "/%252e/x", "/%252f", "/%255c", "/%c0%ae%c0%ae/x", "/%c0%af", "/%C1%9c", "/%e0%80%af", "/%f0%80%80%af",
+  "/.", "/..", "/./x", "/x/..", "/x/../y", "/x/./y", "/%2e", "/%2E", "/%2e%2e", "/%2E%2e", "/.%2e", "/%2e./x", "/x/%2E%2E/y", "/x/%2e", "/x/.%2E/y",
+  "/a%2fb", "/a%2Fb", "/a%5cb", "/a%5Cb", "/x?q=%2f", "/x?q=%5c", "/a%00b", "/a%0db", "/a%0Ab", "/a%1fb", "/a%7fb", "/a%", "/a%2", "/a%zz", "/a?b?c", "/x".padEnd(2049, "a"),
+];
