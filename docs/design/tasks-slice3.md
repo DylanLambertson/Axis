@@ -43,8 +43,8 @@ The raise:
 - An untainted run, `update_task` over a user revision: asks the user. Denied: nothing written. Approved: written, with `broker.decision` at tier `network`. The card must be whole: an untainted run's raised update too long to show is refused `content-not-reviewable` with no card.
 - Over a worker revision: writes without asking.
 - **Base, not newest.**
-  - The run edits a worker revision while a newer user revision already exists: no approval request, `stale_version`, nothing written. Raising from the newest revision would ask here.
-  - The reverse order (a user base with a newer worker revision): no approval either, `stale_version`.
+  - A worker base with a newer user revision (revision 1 by a worker, revision 2 by the user, `baseSeq` 1): no approval request, `stale_version`, nothing written, the last seq stays 2. The "no approval request" assertion kills the newest-author mutant (it would ask here) and the any-author mutant.
+  - A user base with a newer worker revision (revision 1 by the user, revision 2 by a worker, `baseSeq` 1): exactly one card, `broker.decision` at tier `network`. Approved: `stale_version`, nothing written, the last seq stays 2. Denied: `approval-declined`, nothing written. The card assertion kills the newest-author mutant (it reads revision 2, a worker's, and does not ask) and the no-raise mutant. The store checks staleness only when the call runs, so the card comes first.
   - A race on the non-raised path: a user edit lands between the call and the write; `stale_version`, nothing written.
 - A user edit between the card and the write: `stale_version`, nothing written.
 - A user revision that kept a worker's text (it is the user's revision, so it still asks): the raise follows the author of the revision, not the trust of the text.
@@ -61,7 +61,7 @@ The store:
 
 Mutants:
 
-- no raise; raise on any author; raise read from the newest instead of `baseSeq`;
+- no raise; raise on any author; raise read from the newest instead of `baseSeq` (killed by both base-not-newest cases above);
 - the eviction that ignores the author; **pin the oldest user revision** (`min` for `max`); `<>` for `IS NOT` (pruning off for tasks with no user revision);
 - the `kept` trigger loosened.
 
@@ -89,7 +89,7 @@ For the own-shell plan. Most of it is served already. The gaps are marked.
    - The first call answers `E_APPROVAL_REQUIRED` with a tier-4 challenge (its id, digest, method, tier, target summary, expiry and `nativeConfirmationRequired: true`). **Main's native dialog is launched when the challenge is issued**, not when the user answers the card.
    - **The card is the shell's own, built from the `startPreview` answer it kept** (the whole prompt, the worker, the trust of the text) and the challenge. `axis.approvals/1.detail` serves plugin challenges only; it answers `not_found` for a task Start, and no new endpoint is planned. The card is bound to what it shows: `start` names the preview's `seq` and `promptDigest`, which are part of the request the challenge covers.
    - The user answers the card (`axis.approvals/1.resolve`). For a tier-4 challenge that answer is `approved, nativeRequired: true`, which is **not yet a grant**: the challenge waits for main's dialog.
-   - The shell then retries `start` with `approval` and the same key. A retry before main's dialog has confirmed is refused `E_CONFLICT` and spends nothing, so the shell may retry after the dialog closes. The daemon sends no event when the dialog confirms. A confirmed challenge must be used within its short window, or it expires and the shell starts again from the first call.
+   - The shell then retries `start` with `approval` and the same key. A retry before main's dialog has confirmed is refused `E_CONFLICT` and spends nothing, so the shell may retry after the dialog closes. The daemon sends no event that says the dialog's confirmation has completed (the other `axis.events/1` topics still flow, and the confirmation's audit row may raise a generic audit hint, which says nothing about this challenge). A confirmed challenge must be used within its short window, or it expires and the shell starts again from the first call.
    - On `stale_version`, preview again and ask again.
    - Refusals are the contract's closed reasons.
 5. **The result:**
