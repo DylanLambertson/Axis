@@ -31,6 +31,7 @@ test("request headers: client-owned, proxy, malformed and duplicate names and no
   for (const n of ["Host", "content-length", "Transfer-Encoding", "Accept-Encoding", "connection", "keep-alive", "upgrade", "TE", "trailer", "expect", "proxy-authorization", "Proxy-Connection", "proxy-anything", "bad name", "", "x:y", "é"]) {
     assert.equal(code(() => requestHeaders({ [n]: "v" })), "header_refused", n);
   }
+  for (const n of ["\u212aey", "x-\u212a", "\u0130d", "\u017fet"]) assert.equal(code(() => requestHeaders({ [n]: "v" })), "header_refused", `${JSON.stringify(n)} lower-cases to ASCII`);
   for (const v of ["a\r\nX-Injected: 1", "a\nb", "a\0b", "é"]) assert.equal(code(() => requestHeaders({ "x-ok": v })), "header_refused", JSON.stringify(v));
   assert.equal(code(() => requestHeaders({ "X-A": "1", "x-a": "2" })), "header_refused", "the same name twice");
   const built = requestHeaders({ Authorization: "Bearer t", "X-Tab": "a\tb", Accept: "application/json" });

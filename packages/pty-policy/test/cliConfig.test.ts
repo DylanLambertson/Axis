@@ -14,6 +14,8 @@ test("the CLI project-configuration list: frozen, every row names its source, lo
     `claude:.claude/${["age", "nts"].join("")}`,
     "claude:.claude/plugins",
     "claude:.claude/commands",
+    "claude:.claude/workflows",
+    "claude:.claude-plugin",
     "codex:.codex/config.toml",
     "codex:.codex/hooks",
   ]);
