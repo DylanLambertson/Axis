@@ -151,37 +151,65 @@ PV-M1 put the policy refusals under `E_POLICY_DENIED`. A handler cannot raise th
 - **Where.** `packages/daemon-host/src/messages/enable-rule.ts` (the pure rule), `enable-check.ts` (the host's facts), the `updateSettings` handler (asks first), and `cliEndpointPty`, which asks again at mint. Endpoint design section 6, M-3; ADR 0007 §6.
 - **Tier (unchanged).** Enabling is `axis.messages/1.updateSettings`, a user-only tier 2 write. The rule can only refuse an enable or ask for its second step; it never approves anything, and no method's tier or side effect changes.
 - **The second confirmation (M-3).** It is the shell's own dialog, resolved in the renderer as a tier 2 user action. It is NOT a native or main-drawn confirmation, and the daemon contract carries only codes, no wording.
+  - The daemon cannot tell whether a dialog was shown. Only user-only access through an attested desktop connection protects the second step: the handler refuses any other caller, and the policy row is `userRule(2)`. So a worker or a plugin cannot acknowledge.
+  - Re-confirming needs a second toggle. A worker whose messaging is already on cannot confirm again in place: `value: true` on an enabled worker skips the check and leaves the acknowledged files as they are. The user turns messaging off and on.
 - **The facts.** The worker's `axis.cliAgents` entry as main returns it (user, application or machine scope only, the CLI start's own path), the real path of an absolute executable, the worker's home worktree, and which CLI project-configuration files exist there (`CLI_PROJECT_CONFIG` of `@axis/pty-policy`, the same list as the protected set).
   - Any gap refuses (`no_entry`): an unknown, archived or composer worker, no live home, no answer from main, or no such entry.
+- **Which rows apply.** The CLIs named by the executable's base name AND by its real path, as a union. When neither names a known CLI, every CLI's rows apply, over all of its arguments.
+  - So for a wrapper, Codex's `-p/--profile` row also refuses an argument meant as another CLI's `-p` (`npx <package> -p hi`). That fails closed.
 - **The rule, in order.**
   1. **User marking.** The entry's `bypassesPrompts` marking, a closed boolean set in user-scope settings: `user_marked`.
-  2. **Empty argv.** An empty argv: `empty_argv`.
-  3. **Inline code.** A shell or interpreter given inline code (`sh`, `bash`, `zsh`, `dash`, `ksh`, `fish` and similar with `-c`; `cmd /c`; `powershell` and `pwsh -Command` or `-EncodedCommand`; `python -c`; `node -e` or `--eval`; `perl` and `ruby -e`; `env -S`) is `wrapper_unparsed`, since its command is a string the rule cannot parse.
-  4. **Flag table.** A frozen table of bypass flags, each verified in the CLI's own `--help`:
+  2. **Empty argv:** `empty_argv`.
+  3. **Shells and interpreters** (`wrapper_unparsed`).
+     - **The names, exactly:** `sh`, `bash`, `zsh`, `dash`, `ksh`, `ash`, `fish`, `busybox`, `cmd`, `powershell`, `pwsh`, `python`, `pythonw`, `py`, `node`, `nodejs`, `deno`, `bun`, `perl`, `ruby`, `php`, `lua`, `luajit`, `awk`, `gawk`, `mawk`, `nawk`, `rscript`, `osascript`, `tclsh`. Each is matched by its base name with a trailing version dropped (`python3.12`, `ruby3.2`).
+     - **As the executable,** a shell or interpreter with an inline-code argument is refused; an `awk`-family executable always is.
+     - **For an executable that is not a known CLI,** an interpreter named in ANY argument (`env bash`, `nice sh`, `sudo zsh`, `xargs node`) is refused, and so is an inline-code argument in any position.
+     - **Inline-code arguments, exactly:**
+       - `-c`, `-e`, `-r` and short clusters ending in them (`-lc`, `-ec`, `-Ic`);
+       - a value attached to `-c` or `-e` (`-cCODE`);
+       - `--eval`, `--command` and `--print`, with or without `=`;
+       - `-Command`, `-EncodedCommand`, `-enc` and `-ec` in any case;
+       - `/c` and `/k`;
+       - `-S` clusters and `--split-string`;
+       - a bare `eval`.
+     - **Anything outside these two lists is a residual.**
+  4. **Codex `-c`/`--config` values.** A value with a backslash or a non-ASCII character, or a quoted key, is a TOML construct the rule does not parse: `config_unparsed`. For a security key, plain or dotted (`profiles.x.approval_policy`), only a safe value from codex-cli 0.166.0's own `--help` is allowed, bare or in plain quotes:
+     - `approval_policy`: `on-request` only, the one non-bypass value the help lists;
+     - `sandbox_mode`: `read-only` or `workspace-write`;
+     - anything else is `codex.config.<key>`.
+  5. **Flag table.** A frozen table of bypass flags, each verified in the CLI's own `--help`:
      - Claude Code 2.1.330: `--dangerously-skip-permissions`, `--allow-dangerously-skip-permissions`, `--permission-mode bypassPermissions | auto | acceptEdits`, `--settings` (any value).
-     - codex-cli 0.166.0: `--dangerously-bypass-approvals-and-sandbox`, `-a/--ask-for-approval never`, `-s/--sandbox danger-full-access`, `--approve-for-me`, `-c approval_policy=never`, `-c sandbox_mode=danger-full-access`, `-p/--profile` (any value; Codex only, because in Claude Code `-p` is print).
-     - Rows match `--flag value`, `--flag=value`, and for a short flag also the value attached (`-anever`, `-capproval_policy=never`).
-     - The rows of the CLI named by the executable's base name or its real path apply. Any other executable (a wrapper such as `env`, `npx` or `node cli.js`) gets every CLI's rows over all of its arguments.
+     - codex-cli 0.166.0: `--dangerously-bypass-approvals-and-sandbox`, `-a/--ask-for-approval never`, `-s/--sandbox danger-full-access`, `--approve-for-me`, `-p/--profile` (any value).
+     - Rows match `--flag value`, `--flag=value` and attached short values (`-anever`).
      - Every row refuses.
-     - There are no Gemini rows: Gemini is not installed here, so only the pattern rule covers it.
-  5. **Pattern rule.** A fail-closed rule over any argument (`dangerously`, `yolo`, `bypass`, `skip-permissions`, `no-confirm`, `auto-approve`, `full-auto`, `approval-mode`, `danger-full-access`, `no-sandbox`, `sandbox=false`): `bypass_pattern`.
-  6. **Project-configuration files.** Each file present (of that CLI, or of every CLI for an unknown executable) is a structured warning `{ code: "repo_config", path, cli }`, at most 8. A row whose `severity` is `refuse` refuses instead (`repo_config`; none in slice 1).
-- **Two steps.** With warnings, the first `updateSettings` writes nothing and answers `changed: false` with the warnings. The request that names every warned file in `acknowledged` (closed, at most 8, path and CLI bound by regular expressions) writes the setting and keeps the acknowledged paths (`messaging_cli_acknowledged`, ids and paths only). Turning messaging off clears them.
+     - There are no Gemini rows: it is not installed here.
+  6. **Pattern rule.** A fail-closed rule over any argument (`dangerously`, `yolo`, `bypass`, `skip-permissions`, `no-confirm`, `auto-approve`, `full-auto`, `approval-mode`, `danger-full-access`, `no-sandbox`, `sandbox=false`): `bypass_pattern`.
+  7. **Project-configuration files.** Each file present, for the CLIs that apply, is a structured warning `{ code: "repo_config", path, cli }`.
+     - More than 8 refuses (`too_many_repo_files`); a list is never truncated, because a dropped warning would be a file never confirmed.
+     - A row whose `severity` is `refuse` refuses instead (`repo_config`; none in slice 1).
+- **Two steps.** With warnings, the first `updateSettings` writes nothing and answers `changed: false` with the warnings.
+  - The request that names every warned file in `acknowledged` (closed, at most 8, path and CLI bound by regular expressions, compared by path AND cli) writes the setting.
+  - It also writes the freshly computed warned paths, never the caller's list, to `messaging_cli_acknowledged` (schema v18): a foreign key to the worker, ids and paths only, no NUL.
+  - Turning messaging off clears them.
 - **At mint.** The same rule runs over the argv that actually spawns and the entry's marking read again.
-  - A file present now that was not acknowledged (it appeared since) gets no endpoint until the user confirms again: `repo_config_unacknowledged`.
-  - An entry edited or marked after enabling gets no endpoint either.
+  - A file present now that was not acknowledged gets no endpoint until the user confirms again: `repo_config_unacknowledged`.
+  - So does an entry edited or marked since, or more than 8 files.
   - The check is bounded at 2 s (no answer: no endpoint), inside the supervisor's 10 s start bound.
 - **Audit.** `message.endpoint` rows, never an argument or a path:
   - `enable_refused`, with the rule's id;
   - `enable_needs_confirmation` and `enable_allowed`, with the warning count;
   - `mint_refused`, with the rule's id and, for unacknowledged files, their count.
 - **Known evasions (residuals; the user's own entry is the trust anchor, so these are ways it can still auto-approve):**
-  - **Abbreviated or combined flags.** An abbreviated long flag the CLI's parser might accept (`--permission-m auto`) is not matched, and `auto` is not a pattern word. Combined short flags (`-xa never`) are not split. A value containing `danger-full-access` is still caught.
-  - **Unlisted config keys.** Codex `-c` keys other than the two listed are not checked.
+  - **Abbreviated or combined flags.** An abbreviated long flag (`--permission-m auto`) is not matched, and combined short flags (`-xa never`) are not split.
+  - **Unlisted config keys.** Codex `-c` keys other than the two security keys are not checked.
+  - **Interpreters off the list.** Shells, interpreters and inline-code forms not in the two exact lists above are not caught.
+  - **Other working directories.** Project configuration in another directory than the worker's home (Codex `-C/--cd DIR`, Claude `--add-dir`) is never checked.
+  - **Tool permissions.** Tool pre-approval by `--allowedTools`, or a `--permission-prompt-tool`, is not inspected.
   - **Environment and user-level files.** `envPassthrough` variables and the CLI's environment-driven settings are not inspected. User-level CLI configuration (`~/.claude`, `~/.codex/config.toml`) is not inspected either.
-  - **File contents.** Project-configuration content is never read, only its presence. A script file run by a shell (`bash run.sh`) is not read either.
+  - **File contents.** Project-configuration content is never read, only its presence (by `lstat` of the final component; a file reached through a linked parent directory counts as present). A script run by a shell as a file (`bash run.sh`, a shell as the executable) is not read.
   - **Argument files.** Arguments read from a file (an `@argfile` form, if a CLI has one) are not inspected.
-  - **Marking a live endpoint.** Marking an entry as bypassing prompts, or adding a flag to it, after enabling does not revoke a run's live endpoint; the next mint refuses.
-  - **Content changes.** A project file whose content changes between enable and mint is not detected.
+  - **Marking a live endpoint.** Marking an entry, or adding a flag to it, after enabling does not revoke a run's live endpoint; the next mint refuses.
+  - **Content and path races.** A project file whose content changes between enable and mint is not detected. A file that appears between the mint's `lstat` and the CLI reading it is not either.
+  - **Real-path race.** The real path is taken only for an absolute `argv[0]`, by the daemon at mint, while the executable is resolved later at exec: a link swapped in between is a race. A bare name gets no real path.
   - **Closed, for comparison.** A later overriding flag never re-allows, because any listed occurrence refuses (stricter than the CLI). Between the mint check and the spawn, the spec is the same object, so the argv cannot change.
   - **Not here.** The open question of messaging while BLOCKED stays for slice 2.

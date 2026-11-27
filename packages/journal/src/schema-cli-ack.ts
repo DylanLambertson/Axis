@@ -13,6 +13,9 @@ import { SQL_RULES } from "./schema-pages.js";
  *   new list entry needs no migration). At most 16 per worker.
  * - Insert once, never updated; the user is the only writer (`acknowledged_by`); turning messaging off, or acknowledging
  *   again, deletes the worker's rows in the same transaction as the setting.
+ * - The worker must exist (a foreign key to `agents`). An archived worker keeps its rows, as its messaging settings do: an
+ *   archived worker has no runs, so nothing is minted for it. A NUL in a path is refused (SQLite's `length` and `GLOB` stop
+ *   at one).
  */
 
 const { id, time } = SQL_RULES;
@@ -23,8 +26,8 @@ export const CLI_ACK_MIGRATION: Migration = {
   version: 18,
   sql: `
     CREATE TABLE messaging_cli_acknowledged (
-      agent_id        TEXT NOT NULL CHECK (${id("agent_id")}),
-      path            TEXT NOT NULL CHECK (length(path) BETWEEN 1 AND 64 AND path NOT GLOB '*[^a-z0-9._/-]*'),
+      agent_id        TEXT NOT NULL REFERENCES agents(id) CHECK (${id("agent_id")}),
+      path            TEXT NOT NULL CHECK (instr(path, char(0)) = 0 AND length(path) BETWEEN 1 AND 64 AND path NOT GLOB '*[^a-z0-9._/-]*'),
       acknowledged_by TEXT NOT NULL CHECK (acknowledged_by = 'user'),
       acknowledged_at TEXT NOT NULL CHECK (${time("acknowledged_at")}),
       PRIMARY KEY (agent_id, path)

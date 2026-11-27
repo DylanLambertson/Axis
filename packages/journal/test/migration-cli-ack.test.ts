@@ -10,6 +10,16 @@ import { CLI_ACK_LIMITS, CLI_ACK_MIGRATION, JOURNAL_MIGRATIONS, JOURNAL_SCHEMA_V
 const T = "2026-11-26T00:00:00.000Z";
 type Val = string | number | null;
 const one = (db: DatabaseSync, sql: string, ...a: Val[]): Val => Object.values(db.prepare(sql).get(...a) as Record<string, Val>)[0] as Val;
+/** A journal with two CLI workers, w1 and w2 (the table's foreign key needs real workers). */
+function withWorkers(): { db: DatabaseSync; journal: Journal } {
+  const db = openDatabase(":memory:");
+  const journal = Journal.open(db, { audit: new AuditLog(db) });
+  journal.registerProject({ id: "p1", path: "/repo/p1", displayName: "p1", trusted: false, actor: "user" });
+  const home = journal.createWorkspace({ projectId: "p1", branch: "axis/home", baseRef: "HEAD", baseSha: "c".repeat(40), createdBy: "user" }).value.id;
+  journal.transitionWorkspace(home, "READY");
+  for (const w of ["w1", "w2"]) journal.agents.create({ id: w, projectId: "p1", name: w.toUpperCase(), launch: { kind: "cli", entryId: "e" }, homeWorkspaceId: home, groupId: null });
+  return { db, journal };
+}
 const put = (db: DatabaseSync, agent: string, path: string, by = "user", at = T, verb = "INSERT", tail = ""): void =>
   void db.prepare(`${verb} INTO messaging_cli_acknowledged (agent_id, path, acknowledged_by, acknowledged_at) VALUES (?, ?, ?, ?)${tail}`).run(agent, path, by, at);
 
@@ -29,10 +39,11 @@ test("a populated database of the previous version gains the empty table and kee
   db.close();
 });
 
-test("the table: closed columns, insert once by every verb, at most 16 per worker, never updated", () => {
-  const db = openDatabase(":memory:");
-  Journal.open(db, { audit: new AuditLog(db) });
+test("the table: a real worker, closed columns, no NUL, insert once by every verb, at most 16 per worker, never updated", () => {
+  const { db } = withWorkers();
   put(db, "w1", ".claude/settings.json");
+  assert.throws(() => put(db, "ghost", ".claude/settings.json"), Error, "the worker must exist");
+  assert.throws(() => put(db, "w1", "a\0../../../etc/passwd x"), Error, "a NUL is refused (length and GLOB stop at it)");
   for (const [verb, tail] of [["INSERT", ""], ["INSERT OR REPLACE", ""], ["REPLACE", ""], ["INSERT OR IGNORE", ""], ["INSERT", " ON CONFLICT DO NOTHING"]] as const) {
     assert.throws(() => put(db, "w1", ".claude/settings.json", "user", T, verb, tail), Error, `${verb}${tail}`);
   }
@@ -42,7 +53,7 @@ test("the table: closed columns, insert once by every verb, at most 16 per worke
   assert.throws(() => put(db, "w1", "a".repeat(65)), Error, "at most 64");
   put(db, "w1", "a".repeat(64));
   assert.throws(() => put(db, "w1", ".claude/y", "user", "yesterday"), Error, "a time");
-  assert.throws(() => db.prepare("UPDATE messaging_cli_acknowledged SET path = '.codex/config.toml'").run(), Error, "never updated");
+  assert.throws(() => db.prepare("UPDATE messaging_cli_acknowledged SET acknowledged_at = ? WHERE agent_id = 'w1' AND path = '.claude/settings.json'").run("2026-11-27T00:00:00.000Z"), Error, "never updated (one row, so no key collision decides it)");
   for (let i = 2; i < CLI_ACK_LIMITS.pathsPerWorker; i++) put(db, "w1", `p${i}`);
   assert.throws(() => put(db, "w1", "one-too-many"), Error, "at most 16");
   put(db, "w2", "one-too-many");
@@ -50,8 +61,7 @@ test("the table: closed columns, insert once by every verb, at most 16 per worke
 });
 
 test("the store replaces a worker's acknowledged paths, sorted and unique; an empty list clears them", () => {
-  const db = openDatabase(":memory:");
-  const journal = Journal.open(db, { audit: new AuditLog(db) });
+  const { db, journal } = withWorkers();
   journal.messages.setCliAcknowledged("w1", [".codex/config.toml", ".claude/settings.json", ".claude/settings.json"]);
   assert.deepEqual(journal.messages.cliAcknowledged("w1"), [".claude/settings.json", ".codex/config.toml"]);
   journal.messages.setCliAcknowledged("w1", [".mcp.json"]);

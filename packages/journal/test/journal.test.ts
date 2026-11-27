@@ -437,7 +437,7 @@ test("the shipped journal migration is pinned by hash (add a new migration inste
   assert.equal(createHash("sha256").update(JOURNAL_MIGRATIONS[14]?.sql ?? "").digest("hex"), "cc9fa1464a03d3002d4b556c92003fd8f4d707754a23447599d58627839999b1");
   assert.equal(createHash("sha256").update(JOURNAL_MIGRATIONS[15]?.sql ?? "").digest("hex"), "2c3c5659a4e5d62c738cba7e38ad5de9252f89ba807f49c744ddfdafe35bbc7d");
   assert.equal(createHash("sha256").update(JOURNAL_MIGRATIONS[16]?.sql ?? "").digest("hex"), "402a861efd7308b2288b276f42fd14f61e045d9ae9b20747ac01e673c87c8dc9");
-  assert.equal(createHash("sha256").update(JOURNAL_MIGRATIONS[17]?.sql ?? "").digest("hex"), "472379ac719ee7eeffa899516ae67fb4bcf21115366439df20c19bc5793510e7");
+  assert.equal(createHash("sha256").update(JOURNAL_MIGRATIONS[17]?.sql ?? "").digest("hex"), "d1c712fd13537e242e0b6cb7bb04c9f8471d90da8091612f497fef5b9524099c");
 });
 
 // ---- the user principal is a brand the daemon mints, not a value a caller can assert ----

@@ -35,8 +35,6 @@ export const BYPASS_FLAGS: readonly FlagRow[] = Object.freeze([
   row("codex.ask-for-approval.never", "codex", ["--ask-for-approval", "-a"], CODEX_HELP, "never"),
   row("codex.sandbox.danger-full-access", "codex", ["--sandbox", "-s"], CODEX_HELP, "danger-full-access"),
   row("codex.approve-for-me", "codex", ["--approve-for-me"], CODEX_HELP),
-  row("codex.config.approval_policy.never", "codex", ["--config", "-c"], CODEX_HELP, "approval_policy=never"),
-  row("codex.config.sandbox_mode.danger-full-access", "codex", ["--config", "-c"], CODEX_HELP, "sandbox_mode=danger-full-access"),
   // A settings or profile file named in argv can switch auto-approval on from content the rule never reads (review 1:
   // decided by master, 2026-11-26). `-p` is Codex's profile only: in Claude Code `-p` is print.
   row("claude.settings", "claude", ["--settings"], CLAUDE_HELP),
@@ -50,6 +48,8 @@ export const BYPASS_WORDS: readonly string[] = Object.freeze([
   "dangerously", "yolo", "bypass", "skip-permissions", "no-confirm", "auto-approve", "full-auto", "approval-mode", "danger-full-access", "no-sandbox", "sandbox=false",
 ]);
 
+/** The most warnings one answer carries (the protocol's bound); more refuse the enable and the mint. */
+export const MAX_WARNINGS = 8;
 export type EnableWarning = { readonly code: "repo_config"; readonly path: string; readonly cli: string };
 export type EnableDecision = { readonly allowed: false; readonly rule: string } | { readonly allowed: true; readonly warnings: readonly EnableWarning[] };
 
@@ -72,20 +72,66 @@ export function cliOf(executable: string): string {
 }
 
 const KNOWN_CLIS: ReadonlySet<string> = new Set(["claude", "codex"]);
+
 /**
- * Shells and interpreters whose inline code the rule cannot parse (review 1 SF2 b): with an inline-code argument they are
- * refused outright (`wrapper_unparsed`), since the CLI and its flags would be inside a string.
+ * Shells and interpreters (review 2 SF8), by base name with any version suffix dropped (`python3.12`, `ruby3.2`, `php8`).
+ * As the executable, with inline code they are refused (`wrapper_unparsed`): the CLI and its flags would be inside a string.
+ * Named in ANY argument of an executable that is not a known CLI (`env bash -c`, `nice python3 -c`, `sudo sh -c`), they are
+ * refused too. EXACTLY these names; any other interpreter is a residual (messages-contract section 14).
  */
-const shellInline = (a: string): boolean => /^-[a-z]*c[a-z]*$/i.test(a) || a === "--command";
-const INLINE: ReadonlyMap<string, (arg: string) => boolean> = new Map<string, (arg: string) => boolean>([
-  ...["sh", "bash", "zsh", "dash", "ksh", "ash", "fish", "busybox"].map((n): [string, (a: string) => boolean] => [n, shellInline]),
-  ["cmd", (a) => /^\/[ck]$/i.test(a)],
-  ...["powershell", "pwsh"].map((n): [string, (a: string) => boolean] => [n, (a) => /^-(c|e|command|encodedcommand|ec)/i.test(a)]),
-  ...["python", "python3", "pythonw", "py"].map((n): [string, (a: string) => boolean] => [n, (a) => /^-[a-z]*c$/i.test(a)]),
-  ...["node", "deno", "bun"].map((n): [string, (a: string) => boolean] => [n, (a) => /^-(e|p|pe|ep)$|^--(eval|print)(=|$)/.test(a)]),
-  ...["perl", "ruby"].map((n): [string, (a: string) => boolean] => [n, (a) => /^-[a-z]*e[a-z]*$/i.test(a)]),
-  ["env", (a) => /^-[a-z]*s[a-z]*$/i.test(a) || a.startsWith("--split-string")],
+export const INTERPRETERS: readonly string[] = Object.freeze([
+  "sh", "bash", "zsh", "dash", "ksh", "ash", "fish", "busybox", "cmd", "powershell", "pwsh", "python", "pythonw", "py",
+  "node", "nodejs", "deno", "bun", "perl", "ruby", "php", "lua", "luajit", "awk", "gawk", "mawk", "nawk", "rscript", "osascript", "tclsh",
 ]);
+const INTERP = new Set(INTERPRETERS);
+/** An executable's interpreter name, or undefined: the CLI-style name with a trailing version (`3.12`, `8`) dropped. */
+const interpreterOf = (exe: string): string | undefined => {
+  const n = cliOf(exe).replace(/[0-9][0-9.]*$/, "");
+  return INTERP.has(n) ? n : undefined;
+};
+/**
+ * Inline-code arguments, exactly: `-c`, `-e`, `-r` and short clusters ending in them (`-lc`, `-ec`, `-Ic`), the value
+ * attached to `-c` or `-e` (`-cCODE`), `--eval`, `--command`, `--print` (with or without `=`), PowerShell's `-Command`,
+ * `-EncodedCommand`, `-enc`, `-ec` in any case, cmd's `/c` and `/k`, `env`'s `-S` and `--split-string`, and a bare `eval`
+ * (`deno eval`). For an `awk`-family executable every program argument is inline code.
+ */
+export function isInlineCode(arg: string): boolean {
+  return (
+    /^-[a-z]{0,3}[cer]$/i.test(arg) ||
+    /^-[ce][^-]/i.test(arg) ||
+    /^--(eval|command|print)(=|$)/i.test(arg) ||
+    /^-(command|encodedcommand|enc|ec)$/i.test(arg) ||
+    /^\/[ck]$/i.test(arg) ||
+    /^-[a-z]{0,3}s$/i.test(arg) || arg.startsWith("--split-string") ||
+    arg === "eval"
+  );
+}
+
+/** The Codex configuration keys that decide approvals and the sandbox, and their safe values (codex-cli 0.166.0 --help). */
+const CODEX_SAFE: ReadonlyMap<string, readonly string[]> = new Map([
+  ["approval_policy", ["on-request"]],
+  ["sandbox_mode", ["read-only", "workspace-write"]],
+]);
+/**
+ * One Codex `-c key=value` (review 2 SF7): a value with a backslash or a non-ASCII character, or a quoted key, is a TOML
+ * construct the rule does not parse: refused (`config_unparsed`). For a security key (also dotted, `profiles.x.sandbox_mode`)
+ * only an explicit safe value is allowed, bare or in plain quotes.
+ */
+function codexConfigRule(kv: string): string | undefined {
+  if (/[\\]|[^\x20-\x7e]/.test(kv)) return "config_unparsed";
+  const eq = kv.indexOf("=");
+  if (eq < 0) return undefined;
+  const key = kv.slice(0, eq).trim();
+  if (/["']/.test(key)) return "config_unparsed";
+  const last = key.split(".").pop() ?? "";
+  const safe = CODEX_SAFE.get(last);
+  if (safe === undefined) return undefined;
+  const raw = kv.slice(eq + 1).trim();
+  const quoted = /^(["'])([^"']*)\1$/.exec(raw);
+  const value = quoted === null ? raw : quoted[2] as string;
+  if (quoted === null && /["']/.test(raw)) return "config_unparsed";
+  return safe.includes(value) ? undefined : `codex.config.${last}`;
+}
 
 /**
  * One argument against one flag: `--flag`, `--flag=value`, `--flag value`, and for a short flag also with the value attached
@@ -118,16 +164,27 @@ export function decideCliMessaging(facts: EnableFacts, config: readonly CliProje
   if (facts.bypassesPrompts) return { allowed: false, rule: "user_marked" };
   if (facts.argv.length === 0 || facts.argv[0] === "") return { allowed: false, rule: "empty_argv" };
   const [executable = "", ...args] = facts.argv;
-  const names = [cliOf(executable), ...(facts.executableReal === undefined ? [] : [cliOf(facts.executableReal)])];
-  for (const n of names) {
-    const inline = INLINE.get(n);
-    if (inline !== undefined && args.some(inline)) return { allowed: false, rule: "wrapper_unparsed" };
+  const exes = [executable, ...(facts.executableReal === undefined ? [] : [facts.executableReal])];
+  // The union of the rows of every known CLI the name or the real path names (review 2 SF9); none known: every CLI's rows.
+  const knownNames = [...new Set(exes.map(cliOf).filter((n) => KNOWN_CLIS.has(n)))];
+  const clis: ReadonlySet<string> = knownNames.length === 0 ? KNOWN_CLIS : new Set(knownNames);
+  for (const exe of exes) {
+    const interp = interpreterOf(exe);
+    if (interp === undefined) continue;
+    if (interp.endsWith("awk") || args.some(isInlineCode)) return { allowed: false, rule: "wrapper_unparsed" };
   }
-  // A known CLI's rows; an unknown executable (a wrapper such as `env`, `npx`, `node cli.js`) gets EVERY CLI's rows over
-  // all of its arguments, so a wrapper cannot hide a row (review 1 SF2 a).
-  const known = names.find((n) => KNOWN_CLIS.has(n));
-  const cli = known ?? "";
-  const hit = tableHit(known === undefined ? KNOWN_CLIS : new Set([known]), args);
+  // Not a known CLI (a wrapper): any interpreter named, or any inline-code argument, in ANY position (review 2 SF8).
+  if (knownNames.length === 0 && args.some((a) => interpreterOf(a) !== undefined || isInlineCode(a))) return { allowed: false, rule: "wrapper_unparsed" };
+  if (clis.has("codex")) {
+    for (let i = 0; i < args.length; i++) {
+      for (const flag of ["-c", "--config"]) {
+        const { hit, value } = flagValue(flag, args, i);
+        const rule = hit && value !== undefined ? codexConfigRule(value) : undefined;
+        if (rule !== undefined) return { allowed: false, rule };
+      }
+    }
+  }
+  const hit = tableHit(clis, args);
   if (hit !== undefined) return { allowed: false, rule: hit.id };
   for (const a of args) {
     const f = fold(a).replace(/_/g, "-");
@@ -135,12 +192,13 @@ export function decideCliMessaging(facts: EnableFacts, config: readonly CliProje
   }
   const warnings: EnableWarning[] = [];
   for (const r of config) {
-    // A row of another known CLI does not apply; an unknown executable (a wrapper) gets every row.
-    if (cli !== "" && r.cli !== cli) continue;
+    // The rows of the CLIs that apply (every CLI's for a wrapper).
+    if (!clis.has(r.cli)) continue;
     if (!facts.exists(r.segments)) continue;
-    const path = r.segments.join("/");
     if (r.severity === "refuse") return { allowed: false, rule: "repo_config" }; // never a path in the audit row
-    if (warnings.length < 8) warnings.push({ code: "repo_config", path, cli: r.cli });
+    warnings.push({ code: "repo_config", path: r.segments.join("/"), cli: r.cli });
   }
+  // More than the answer can carry: refused, never truncated (review 2 SF6: a dropped warning is a file never confirmed).
+  if (warnings.length > MAX_WARNINGS) return { allowed: false, rule: "too_many_repo_files" };
   return { allowed: true, warnings };
 }

@@ -10,10 +10,17 @@ import { deliveryRig } from "./messages-delivery-rig.js";
 // the argv that actually runs.
 
 const USER = { kind: "user" } as const;
+/** The rig's CLI worker c1 as a real journal worker (the acknowledged-files table has a foreign key to it). */
+function journalWorker(r: Awaited<ReturnType<typeof deliveryRig>>): void {
+  const home = r.c.journal.createWorkspace({ projectId: "p", branch: "axis/c1-home", baseRef: "HEAD", baseSha: "c".repeat(40), createdBy: "user" }).value.id;
+  r.c.journal.transitionWorkspace(home, "READY");
+  r.c.journal.agents.create({ id: "c1", projectId: "p", name: "C1", launch: { kind: "cli", entryId: "e" }, homeWorkspaceId: home, groupId: null });
+}
 const endpointRows = (r: Awaited<ReturnType<typeof deliveryRig>>) => r.c.audit.list({ limit: 5000 }).filter((e) => e.action === "message.endpoint").map((e) => e.payload as Record<string, unknown>);
 
 test("settings: enabling without a decision, or with a refusal, is bypass_entry and audited by rule; allowed, it is written with its warnings", async (t) => {
   const r = await deliveryRig(t, { noDelivery: true });
+  journalWorker(r);
   const on = { setting: "cliMessaging", agentId: "c1", value: true } as const;
   assert.throws(() => r.m.settings.updateSettings(USER, on), (e: { reason?: string }) => e.reason === "bypass_entry", "no decision: fails closed");
   assert.throws(() => r.m.settings.updateSettings(USER, on, { allowed: false, rule: "claude.dangerously-skip-permissions" }), (e: { reason?: string }) => e.reason === "bypass_entry");
@@ -107,6 +114,7 @@ test("review 1 SF5: an entry the user marks as bypassing prompts after enabling 
 
 test("review 1 SF4: an enable with warnings is two steps: the first answer writes nothing and names the files; the second, naming them all, writes and keeps them", async (t) => {
   const r = await deliveryRig(t, { noDelivery: true });
+  journalWorker(r);
   const w1 = { code: "repo_config", path: ".claude/settings.json", cli: "claude" } as const;
   const w2 = { code: "repo_config", path: ".mcp.json", cli: "claude" } as const;
   const decision = { allowed: true, warnings: [w1, w2] } as const;
@@ -118,9 +126,10 @@ test("review 1 SF4: an enable with warnings is two steps: the first answer write
   assert.equal(partial.changed, false, "naming only some of the files is not the second step");
   const wrongCli = r.m.settings.updateSettings(USER, { ...on, acknowledged: [{ path: w1.path, cli: "codex" }, { path: w2.path, cli: "claude" }] }, decision);
   assert.equal(wrongCli.changed, false, "a path with the wrong CLI does not count");
-  const second = r.m.settings.updateSettings(USER, { ...on, acknowledged: [{ path: w2.path, cli: "claude" }, { path: w1.path, cli: "claude" }] }, decision);
+  // An extra path the user names that was NOT warned about is not stored, so a file added later is never pre-acknowledged.
+  const second = r.m.settings.updateSettings(USER, { ...on, acknowledged: [{ path: w2.path, cli: "claude" }, { path: w1.path, cli: "claude" }, { path: ".codex/config.toml", cli: "codex" }] }, decision);
   assert.equal(second.changed, true);
-  assert.deepEqual(r.c.journal.messages.cliAcknowledged("c1"), [".claude/settings.json", ".mcp.json"], "the acknowledged files are kept, paths only");
+  assert.deepEqual(r.c.journal.messages.cliAcknowledged("c1"), [".claude/settings.json", ".mcp.json"], "the freshly warned files are kept (not the caller's list), paths only");
   assert.deepEqual(endpointRows(r).filter((p) => p["event"] === "enable_needs_confirmation").map((p) => p["warnings"]), [2, 2, 2]);
   r.m.settings.updateSettings(USER, { ...on, value: false });
   assert.deepEqual(r.c.journal.messages.cliAcknowledged("c1"), [], "turning it off clears them");

@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { BYPASS_FLAGS, BYPASS_WORDS, cliOf, decideCliMessaging } from "../src/messages/enable-rule.js";
+import { BYPASS_FLAGS, BYPASS_WORDS, MAX_WARNINGS, cliOf, decideCliMessaging } from "../src/messages/enable-rule.js";
 
 // PV-M7 slice 1: the CLI messaging enable rule (endpoint design section 6, M-3). Literal argv, never read from the tables,
 // so removing a row or a word fails a test by name.
@@ -33,9 +33,9 @@ test("every known flag refuses, in both forms, short and long, case-folded value
     [["codex", "--sandbox", "danger-full-access"], "codex.sandbox.danger-full-access"],
     [["codex", "-s", "danger-full-access"], "codex.sandbox.danger-full-access"],
     [["codex", "--approve-for-me"], "codex.approve-for-me"],
-    [["codex", "-c", 'approval_policy="never"'], "codex.config.approval_policy.never"],
-    [["codex", "--config", "approval_policy = 'never'"], "codex.config.approval_policy.never"],
-    [["codex", "-c", 'sandbox_mode="danger-full-access"'], "codex.config.sandbox_mode.danger-full-access"],
+    [["codex", "-c", 'approval_policy="never"'], "codex.config.approval_policy"],
+    [["codex", "--config", "approval_policy = 'never'"], "codex.config.approval_policy"],
+    [["codex", "-c", 'sandbox_mode="danger-full-access"'], "codex.config.sandbox_mode"],
     [["C:\\tools\\codex.exe", "-a", "NEVER"], "codex.ask-for-approval.never"],
   ];
   for (const [argv, rule] of cases) assert.equal(refusedBy(argv), rule, argv.join(" "));
@@ -76,8 +76,8 @@ test("review 1 SF1: a short flag with its value attached is the same flag (-anev
     [["codex", "-anever"], "codex.ask-for-approval.never"],
     [["codex", "-aNEVER"], "codex.ask-for-approval.never"],
     [["codex", "-sdanger-full-access"], "codex.sandbox.danger-full-access"],
-    [["codex", "-capproval_policy=never"], "codex.config.approval_policy.never"],
-    [["codex", '-csandbox_mode="danger-full-access"'], "codex.config.sandbox_mode.danger-full-access"],
+    [["codex", "-capproval_policy=never"], "codex.config.approval_policy"],
+    [["codex", '-csandbox_mode="danger-full-access"'], "codex.config.sandbox_mode"],
     [["codex", "-pfast"], "codex.profile"],
   ] as [string[], string][]) assert.equal(refusedBy(argv), rule, argv.join(" "));
   assert.deepEqual(decide(["codex", "-aon-request"]), { allowed: true, warnings: [] }, "another value of the same flag is allowed");
@@ -116,4 +116,45 @@ test("review 1 nits: an empty argv refuses; .com and trailing dots or spaces lea
   assert.deepEqual(decideCliMessaging({ argv: [], bypassesPrompts: false, exists: none }), { allowed: false, rule: "empty_argv" });
   assert.deepEqual(decideCliMessaging({ argv: [""], bypassesPrompts: false, exists: none }), { allowed: false, rule: "empty_argv" });
   assert.deepEqual([cliOf("CODEX.COM"), cliOf("claude. "), cliOf("C:\\x\\codex.exe..")], ["codex", "claude", "codex"]);
+});
+
+test("review 2 SF7: a Codex security key takes only a sourced safe value after unquoting; an escape, a non-ASCII value or a quoted key is unparsed", () => {
+  for (const [argv, rule] of [
+    [["codex", "-c", 'approval_policy="nev\\u0065r"'], "config_unparsed"],
+    [["codex", "-c", "approval_policy=nevér"], "config_unparsed"],
+    [["codex", "-c", '"approval_policy"=never'], "config_unparsed"],
+    [["codex", "-c", "approval_policy='never\""], "config_unparsed"], // mismatched quotes: not a value it parses
+    [["codex", "-c", "approval_policy=untrusted"], "codex.config.approval_policy"],
+    [["codex", "-c", "profiles.fast.approval_policy=never"], "codex.config.approval_policy"],
+    [["codex", "-c", "sandbox_mode=danger-full-access"], "codex.config.sandbox_mode"],
+    [["codex", "--config=sandbox_mode='x'"], "codex.config.sandbox_mode"],
+  ] as [string[], string][]) assert.equal(refusedBy(argv), rule, argv.join(" "));
+  for (const argv of [["codex", "-c", "approval_policy=on-request"], ["codex", "-c", 'approval_policy="on-request"'], ["codex", "-c", "sandbox_mode=read-only"], ["codex", "-c", "sandbox_mode='workspace-write'"], ["codex", "-c", "model=o3"]]) {
+    assert.deepEqual(decide(argv), { allowed: true, warnings: [] }, argv.join(" "));
+  }
+});
+
+test("review 2 SF8: behind a wrapper, any interpreter named or any inline-code argument in any position is wrapper_unparsed; versioned interpreter names match", () => {
+  for (const argv of [
+    ["env", "bash", "-c", "codex -a never"], ["nice", "sh", "x.sh"], ["timeout", "9", "python3", "x.py"], ["sudo", "-u", "me", "zsh"], ["xargs", "node"],
+    ["npx", "-c", "codex -a never"], ["python3.12", "-c", "x"], ["/usr/bin/ruby3.2", "-e", "x"], ["bash", "-cX"], ["fish", "--command=x"], ["php", "-r", "x"], ["lua5.4", "-e", "x"],
+    ["awk", "BEGIN{}"], ["deno", "eval", "x"], ["Rscript", "-e", "x"], ["osascript", "-e", "x"], ["pwsh", "-EncodedCommand", "eA=="], ["mywrapper", "--eval=x"],
+  ]) assert.equal(refusedBy(argv), "wrapper_unparsed", argv.join(" "));
+  assert.deepEqual(decide(["claude", "-c"]), { allowed: true, warnings: [] }, "a known CLI's own flags are not inline code (Claude's -c continues a session)");
+});
+
+test("review 2 SF9: when the name and the real path name different CLIs, the rows of both apply", () => {
+  const both = decideCliMessaging({ argv: ["/opt/bin/claude", "-a", "never"], executableReal: "/opt/lib/codex.js", bypassesPrompts: false, exists: none });
+  assert.deepEqual(both, { allowed: false, rule: "codex.ask-for-approval.never" });
+  const files = decideCliMessaging({ argv: ["/opt/bin/claude"], executableReal: "/opt/lib/codex", bypassesPrompts: false, exists: (s) => s.join("/") === ".codex/config.toml" });
+  assert.deepEqual(files, { allowed: true, warnings: [{ code: "repo_config", path: ".codex/config.toml", cli: "codex" }] }, "and both CLIs' project files");
+});
+
+test("review 2 SF6: more warnings than an answer carries refuse (too_many_repo_files), never a truncated list", () => {
+  const rows = [...Array(9).keys()].map((i) => ({ cli: (i < 8 ? "claude" : "codex") as "claude" | "codex", segments: [i < 8 ? `.c${i}` : ".codex-x"], severity: "warn" as const, source: "test" }));
+  const all = (): boolean => true;
+  assert.deepEqual(decideCliMessaging({ argv: ["wrapper"], bypassesPrompts: false, exists: all }, rows), { allowed: false, rule: "too_many_repo_files" }, "8 of one CLI and 1 of the other");
+  assert.equal(MAX_WARNINGS, 8);
+  const eight = decideCliMessaging({ argv: ["wrapper"], bypassesPrompts: false, exists: all }, rows.slice(0, 8));
+  assert.equal(eight.allowed ? eight.warnings.length : -1, 8, "exactly the bound is carried");
 });
