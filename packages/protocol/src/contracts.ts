@@ -13,6 +13,7 @@ import { INTEGRATIONS_CONTRACT, INTEGRATIONS_VERSION, NET_CONTRACT, NET_VERSION,
 import { MESSAGES_CONTRACT, MESSAGES_VERSION, messagesMethods } from "./messages.js";
 import { PAGES_CONTRACT, PAGES_VERSION, pagesMethods } from "./pages.js";
 import { TASKS_CONTRACT, TASKS_VERSION, tasksMethods } from "./tasks.js";
+import { PLUGINS_CONTRACT, PLUGINS_VERSION, pluginsMethods } from "./plugins.js";
 import { MAX_TIMEOUT_MS, methodNameSchema } from "./envelope.js";
 import { PROJECTS_CONTRACT, PROJECTS_VERSION, projectsMethods } from "./projects.js";
 import { PROVIDERS_CONTRACT, PROVIDERS_VERSION, providersMethods } from "./providers.js";
@@ -49,6 +50,7 @@ export const contracts: Table = Object.freeze({
   [`${USAGE_CONTRACT}/${USAGE_VERSION}`]: frozen(usageMethods),
   [`${PAGES_CONTRACT}/${PAGES_VERSION}`]: frozen(pagesMethods),
   [`${TASKS_CONTRACT}/${TASKS_VERSION}`]: frozen(tasksMethods),
+  [`${PLUGINS_CONTRACT}/${PLUGINS_VERSION}`]: frozen(pluginsMethods),
 });
 
 /**

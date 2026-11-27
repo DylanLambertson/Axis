@@ -48,6 +48,11 @@ export const cliAgentSchema = z.strictObject({
     .max(64)
     .default([])
     .refine((names) => names.every((n) => classifyDeniedName(n) === undefined), "a PTY-5 denied variable cannot be passed through"),
+  /**
+   * The user's own marking that this entry bypasses the CLI's prompts (endpoint design section 6): messaging cannot be
+   * enabled for a worker launched with it. A closed boolean, written only where the entry is: user-scope settings.
+   */
+  bypassesPrompts: z.boolean().optional(),
   /** How to detect the CLI is installed. Run with the same argv rules; never a shell string. */
   detect: z.strictObject({ args: z.array(argSchema).max(8).default(["--version"]) }).optional(),
 });

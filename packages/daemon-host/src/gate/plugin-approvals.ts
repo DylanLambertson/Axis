@@ -29,6 +29,11 @@ export interface PluginChallengeBinding {
   readonly detail: ChallengeDetail;
   /** Whether the binding still holds now: the plugin's grant generation is unchanged and its host window is open. Synchronous. */
   valid(): boolean;
+  /**
+   * What the user approved, handed to the handler as `ctx.approved.capability` when the approval is spent (review K2 S2): the
+   * handler acts on these facts (the approved grant generation), never on a fresh read that a revoke and re-grant could move.
+   */
+  readonly approved?: object;
 }
 
 export interface PluginChallengeDeps {
@@ -41,12 +46,14 @@ export interface PluginChallengeDeps {
 
 interface Tracked {
   readonly actor: string;
+  readonly projectId: string;
   readonly connectionId: string;
   readonly hostWindowId: string;
   readonly target: string;
   readonly requester: ChallengeRequester;
   readonly detail: ChallengeDetail;
   readonly valid: () => boolean;
+  readonly approved: object | undefined;
   /** Monotonic: past it the challenge and any approval of it have expired, so it no longer counts. */
   readonly deadline: number;
 }
@@ -86,6 +93,7 @@ export class PluginChallenges {
   prepare(input: ApprovalInput, content: ApprovalContent): PreparedPluginChallenge {
     const deps = this.#deps;
     const host = input.identity.hostWindowId;
+    // `input.actor` against the identity is defence in depth behind the bind check below (review a2-1b N1; tested).
     if (deps === undefined || input.tier >= 4 || host === undefined || input.actor !== input.identity.actor) throw new ApprovalError("E_POLICY_DENIED");
     let binding: PluginChallengeBinding | undefined;
     try {
@@ -115,7 +123,7 @@ export class PluginChallenges {
       throw new ApprovalError("E_BACKPRESSURE");
     }
     if (!counted.ok) throw new ApprovalError("E_BACKPRESSURE");
-    const entry = { actor: input.actor, connectionId: input.connectionId, hostWindowId: host, target: content.target, requester: { kind: "plugin" as const, pluginId }, detail: detail.data, valid };
+    const entry = { actor: input.actor, projectId, connectionId: input.connectionId, hostWindowId: host, target: content.target, requester: { kind: "plugin" as const, pluginId }, detail: detail.data, valid, approved: binding.approved };
     return {
       windowId: host,
       track: (challengeId) => void this.#live.set(challengeId, { ...entry, deadline: this.#monotonic() + this.#lifetimeMs }),
@@ -157,6 +165,25 @@ export class PluginChallenges {
       return undefined; // a read that cannot be audited is not answered
     }
     return structuredClone(t.detail);
+  }
+
+  /** The requester of a tracked plugin challenge, or undefined; nothing is ended or checked here. */
+  tracked(challengeId: string): { readonly actor: string; readonly connectionId: string; readonly approved: object | undefined } | undefined {
+    this.#sweep();
+    const t = this.#live.get(challengeId);
+    return t === undefined ? undefined : { actor: t.actor, connectionId: t.connectionId, approved: t.approved };
+  }
+
+  /**
+   * The open challenges of one plugin in one project (`axis.plugins/1` revoke and disable, PV-K2 K2-g1), for the gate to end as
+   * their requester. Never a challenge of another plugin or project, and never a user's: only plugin challenges are tracked here.
+   */
+  ofPlugin(pluginId: string, projectId: string): Array<{ readonly challengeId: string; readonly actor: string; readonly connectionId: string }> {
+    this.#sweep();
+    const actor = `plugin:${pluginId}`;
+    const out: Array<{ readonly challengeId: string; readonly actor: string; readonly connectionId: string }> = [];
+    for (const [challengeId, t] of this.#live) if (t.actor === actor && t.projectId === projectId) out.push({ challengeId, actor: t.actor, connectionId: t.connectionId });
+    return out;
   }
 
   forget(challengeId: string): void {

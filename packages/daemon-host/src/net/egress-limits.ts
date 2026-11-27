@@ -24,7 +24,7 @@ export const EGRESS_LIMITS = Object.freeze({
  * names the host from the checked target and never uses a proxy or an upgrade.
  */
 export const CLIENT_OWNED_HEADERS: ReadonlySet<string> = new Set([
-  "host", "content-length", "transfer-encoding", "accept-encoding", "connection", "keep-alive", "upgrade", "te", "trailer",
+  "host", "content-length", "transfer-encoding", "accept-encoding", "authorization", "connection", "keep-alive", "upgrade", "te", "trailer",
   "expect", "proxy-authorization", "proxy-connection",
 ]);
 
@@ -33,8 +33,10 @@ export function requestHeaders(headers: Readonly<Record<string, string>>): Recor
   const out = Object.create(null) as Record<string, string>; // a fresh null-prototype record: own pairs only, read once
   const seen = new Set<string>();
   for (const [name, value] of Object.entries(headers)) {
+    // The token rule on the name AS GIVEN, before lower-casing: U+212A (Kelvin) lower-cases to "k" (review 3 nit 3).
+    if (typeof name !== "string" || !/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(name)) throw new EgressError("header_refused");
     const n = name.toLowerCase();
-    if (!/^[!#$%&'*+.^_`|~0-9a-z-]+$/.test(n) || CLIENT_OWNED_HEADERS.has(n) || n.startsWith("proxy-") || seen.has(n)) throw new EgressError("header_refused");
+    if (CLIENT_OWNED_HEADERS.has(n) || n.startsWith("proxy-") || seen.has(n)) throw new EgressError("header_refused");
     seen.add(n);
     if (typeof value !== "string" || /[^\t\x20-\x7e]/.test(value)) throw new EgressError("header_refused");
     out[n] = value;

@@ -138,12 +138,17 @@ test("N7: an object with huge numbers of unknown keys costs a bounded walk", () 
   assert.ok(dropped >= 1000 && dropped <= 1024, `counted ${dropped} keys`);
 });
 
+/** A hang guard only: a child ends when its script and its event loop do; on a loaded host importing the host's modules alone took over 4 s. */
+const CHILD_HANG_GUARD_MS = 60_000;
+/** Ends the child with code 3 when a timer that keeps the process alive is pending: the same fact as "it cannot drain", read without waiting for it. */
+const EXIT_IF_REFED = `if (process.getActiveResourcesInfo().includes("Timeout")) process.exit(3);`;
+
 /** Run `body` in a fresh process and report how it ended. */
 function child(body: string): Promise<{ code: number | null; timedOut: boolean }> {
   const url = new URL("../src/index.js", import.meta.url).href;
   const script = `import { Disposables } from ${JSON.stringify(url)};\n${body}`;
   return new Promise((resolve) => {
-    const proc = execFile(process.execPath, ["--input-type=module", "-e", script], { timeout: 4_000, killSignal: "SIGKILL" }, (err) => {
+    const proc = execFile(process.execPath, ["--input-type=module", "-e", script], { timeout: CHILD_HANG_GUARD_MS, killSignal: "SIGKILL" }, (err) => {
       const code = err === null ? 0 : ((err as { code?: number | string }).code as number | string);
       resolve({ code: typeof code === "number" ? code : null, timedOut: proc.killed });
     });
@@ -151,9 +156,9 @@ function child(body: string): Promise<{ code: number | null; timedOut: boolean }
 }
 
 test("N1: unref'ed timers let the process exit by draining; the check fails without unref", async () => {
-  const ok = await child("const d = new Disposables(); d.setInterval(() => {}, 60000); d.setTimeout(() => {}, 60000);");
-  assert.deepEqual(ok, { code: 0, timedOut: false });
-  // The control: a plain ref'ed timer keeps the same process alive until the harness kills it.
-  const control = await child("setInterval(() => {}, 60000);");
-  assert.equal(control.timedOut, true, "the harness detects a process that cannot drain");
+  const ok = await child(`const d = new Disposables(); d.setInterval(() => {}, 60000); d.setTimeout(() => {}, 60000); ${EXIT_IF_REFED}`);
+  assert.deepEqual(ok, { code: 0, timedOut: false }, "no timer of the Disposables keeps the process alive, and it ends by draining");
+  // The control: a plain ref'ed timer is seen as one that keeps the same process alive.
+  const control = await child(`setInterval(() => {}, 60000); ${EXIT_IF_REFED}`);
+  assert.deepEqual(control, { code: 3, timedOut: false }, "the check detects a process that cannot drain");
 });

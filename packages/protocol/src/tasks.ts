@@ -24,6 +24,8 @@ export const MAX_TASK_LINKS = 32;
 export const MAX_TASK_BODY_CHARS = 16_384;
 /** `list` answers at most this many tasks, most recently changed first, with a cursor for the next ones. */
 export const MAX_TASKS_LIST = 100;
+/** A Start prompt: the framing, the title and the body (at most 16,384 characters) fit well inside the composer's 32,768. */
+export const MAX_TASK_PROMPT_CHARS = 20_000;
 
 /** Task text: at most 16,384 characters, well-formed (no lone surrogate), no NUL. */
 export const taskBodySchema = z.string().max(MAX_TASK_BODY_CHARS).refine((t) => !/[\u0000\ud800-\udfff]/u.test(t), { message: "no NUL, well-formed" });
@@ -104,11 +106,43 @@ export const tasksUnlinkResponseSchema = tasksLinkResponseSchema;
 export const tasksDeleteRequestSchema = z.strictObject({ taskId: taskIdSchema, approval: challengeReferenceSchema.optional() });
 export const tasksDeleteResponseSchema = z.strictObject({ deleted: z.literal(true) });
 
+/**
+ * Start (PV-T1 slice 2b): the daemon builds the prompt from the task's newest revision; `startPreview` returns it whole with
+ * its digest, and `start` names the revision and the digest the user saw, so a task changed since is `stale_version`. The
+ * worker is a live agent of the task's project; a CLI worker gets no run: `start` answers the text to copy into it.
+ */
+export const taskPromptDigestSchema = z.string().regex(/^[0-9a-f]{64}$/);
+export const tasksStartPreviewRequestSchema = z.strictObject({ taskId: taskIdSchema, worker: agentIdSchema });
+export const tasksStartPreviewResponseSchema = z.strictObject({
+  taskId: taskIdSchema,
+  seq: seqSchema,
+  worker: agentIdSchema,
+  workerKind: z.enum(["composer", "cli"]),
+  /** The whole prompt, as the run (or the user's CLI) receives it. Untrusted text: shown as text, never as markup. */
+  prompt: z.string().min(1).max(MAX_TASK_PROMPT_CHARS),
+  promptDigest: taskPromptDigestSchema,
+  source: taskSourceSchema,
+  untrusted: z.boolean(),
+  hop: hopSchema,
+});
+export const tasksStartRequestSchema = z.strictObject({
+  taskId: taskIdSchema,
+  worker: agentIdSchema,
+  seq: seqSchema,
+  promptDigest: taskPromptDigestSchema,
+  approval: challengeReferenceSchema.optional(),
+});
+export const tasksStartResponseSchema = z.discriminatedUnion("kind", [
+  z.strictObject({ kind: z.literal("composer"), runId: runIdSchema, workspaceId: workspaceIdSchema, replayed: z.boolean() }),
+  z.strictObject({ kind: z.literal("cli"), text: z.string().min(1).max(MAX_TASK_PROMPT_CHARS) }),
+]);
+
 /** Closed refusals under one fixed message; no stored title or body reaches an error. */
 export const TASKS_REFUSALS = {
   E_NOT_FOUND: ["not_found"],
   E_INVALID_ARGUMENT: ["too_large"],
-  E_CONFLICT: ["stale_version", "limit_reached", "assignee_refused", "link_refused"],
+  E_CONFLICT: ["stale_version", "limit_reached", "assignee_refused", "link_refused", "worker_unavailable", "untrusted_project", "busy"],
+  E_UNAVAILABLE: ["not_available"],
 } as const;
 export type TasksRefusalCode = keyof typeof TASKS_REFUSALS;
 export const TASKS_REASONS = Object.values(TASKS_REFUSALS).flat();
@@ -129,8 +163,10 @@ const spec = <Req extends z.ZodType, Res extends z.ZodType>(
 ) => ({ request: guarded(request), response: guarded(response), sideEffect, tier, idempotency, timeoutMs }) as const;
 
 /**
- * Tiers: reads 0; every record write 1 (nothing runs, assigning starts nothing); delete 4 and destructive: a destructive
- * action is confirmed in main's native dialog (ADR 0003 D4), which tier 4 is the lowest tier to have.
+ * Tiers: reads 0 (`startPreview` too); every record write 1 (nothing runs, assigning starts nothing); delete 4 and
+ * destructive: a destructive action is confirmed in main's native dialog (ADR 0003 D4), which tier 4 is the lowest tier to
+ * have. `start` is 4: it runs a worker on text that may not be the user's, so main's dialog names the task, the worker and
+ * the trust of the text (IAC-T source 5), and the approval is bound to the revision and the prompt's digest.
  */
 export const tasksMethods = {
   list: spec(tasksListRequestSchema, tasksListResponseSchema, "read", 0, "none", 5_000),
@@ -143,6 +179,8 @@ export const tasksMethods = {
   link: spec(tasksLinkRequestSchema, tasksLinkResponseSchema, "write", 1, "none", 5_000),
   unlink: spec(tasksUnlinkRequestSchema, tasksUnlinkResponseSchema, "write", 1, "none", 5_000),
   delete: spec(tasksDeleteRequestSchema, tasksDeleteResponseSchema, "destructive", 4, "none", 30_000),
+  startPreview: spec(tasksStartPreviewRequestSchema, tasksStartPreviewResponseSchema, "read", 0, "none", 5_000),
+  start: spec(tasksStartRequestSchema, tasksStartResponseSchema, "write", 4, "required", 30_000),
 } as const satisfies Record<string, MethodSpec>;
 
 export type TasksMethod = keyof typeof tasksMethods;

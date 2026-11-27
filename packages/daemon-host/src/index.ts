@@ -111,6 +111,8 @@ export * from "./messages/binding.js";
 export * from "./pages/service.js";
 export { createPagesHandlers, registerPagesHandlers, toPagesError } from "./handlers/pages.js";
 export * from "./tasks/service.js";
+export { createTaskStart, startReceipt, startState, taskPrompt, type TaskStartDeps } from "./tasks/start.js";
+export { createTasksContentHooks, taskContent, type TasksConfirmDeps } from "./tasks/confirm.js";
 export { createTasksHandlers, registerTasksHandlers, toTasksError } from "./handlers/tasks.js";
 export { CREATE_TASK, LIST_TASKS, READ_TASK, TASK_TOOL_SPECS, TaskRead, UPDATE_TASK, createTaskArgs, createTaskPreview, listTasksArgs, readTaskArgs, taskReceipt, taskTools, tasksReason, updateTaskArgs, updateTaskPreview } from "./bindings/agent-tasks.js";
 export { createPagesContentHooks, pageContent, type PagesConfirmDeps } from "./pages/confirm.js";

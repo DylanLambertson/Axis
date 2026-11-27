@@ -35,7 +35,9 @@ describe("the run snapshotter over @axis/git-snapshot", { skip }, () => {
   let other: { workTree: string; gitDir: string };
   let n = 0;
   const ctx = (worktree = wt, workspaceId = `ws-${n + 1}`): SnapshotContext => ({ runId: `run-${++n}`, workspaceId, worktree });
-  const make = (over: Partial<RunSnapshotterDeps> = {}, maxHeld?: number): RunSnapshotter => createRunSnapshotter({ gitPath, env: fx.env, projectRoot: () => fx.repo, ...over }, maxHeld);
+  // Every take gets the long hang-guard bound (the production 3 s is pinned by its own test below): a take ends when git does, and on a
+  // loaded host real git children took longer than 3 s, so a run that only writes work files read as "could not be taken".
+  const make = (over: Partial<RunSnapshotterDeps> = {}, maxHeld?: number): RunSnapshotter => createRunSnapshotter({ gitPath, env: fx.env, projectRoot: () => fx.repo, takeMs: SLICE_SNAPSHOT_TAKE_MS, ...over }, maxHeld);
   const linked = (name: string): { workTree: string; gitDir: string } => {
     fx.git(fx.repo, "worktree", "add", "-q", join(fx.root, name), "-b", `axis/${name}`);
     return { workTree: realpathSync(join(fx.root, name)), gitDir: realpathSync(join(fx.repo, ".git", "worktrees", name)) };
@@ -153,6 +155,7 @@ describe("the run snapshotter over @axis/git-snapshot", { skip }, () => {
   });
 
   test("a stable snapshot fits inside the supervisor's bound with room to spawn git, and every take is given that bound", async () => {
+    assert.equal(SNAPSHOT_TAKE_MS, 3000, "the production bound is pinned by its value, not only by the constant");
     assert.ok(SNAPSHOT_TAKE_MS * SNAPSHOT_ATTEMPTS + 2000 <= SUPERVISOR_SNAPSHOT_MS, `${SNAPSHOT_TAKE_MS} x ${SNAPSHOT_ATTEMPTS} vs ${SUPERVISOR_SNAPSHOT_MS}`);
     const seen: Array<Parameters<SnapshotTaker>[0]> = [];
     const spy: SnapshotTaker = (opts) => (seen.push(opts), Promise.reject(new Error("stop here")));

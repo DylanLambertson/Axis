@@ -1,5 +1,7 @@
 # Project registration and the run-trust record
 
+> **To be amended by ADR 0011** (`docs/adr/0011-own-shell-ide-as-optional-feature.md`, Proposed 2026-11-26; takes effect when it is accepted): with no Code OSS workbench, T3 (the Workspace Trust half, §2) is dropped and main's `trust.check` answers only that the window is live; the §4.2 rule that "Add and trust" needs Workspace Trust goes, and main takes the folder from its own picker; the window's project binding is scoping, not trust (§4.3 still holds: main keeps no project store); the §8 threat rows and §9 mutants are redone in plan ticket OS-3b.
+
 Status: design for review (security-relevant), revision 3, after design reviews 1 and 2. It is decided by `owner-decisions-2026-11-21.md` §5; this note specifies it and cuts the slices. Nothing here is built yet.
 
 ## 1. Why
@@ -316,21 +318,21 @@ node:test only. The Electron-free cores live in `packages/daemon-host/src/main/`
 
 ## 10. Slices (one reviewable PR each, in order)
 
-1. **S1a, daemon records (Opus review):**
+1. **S1a, daemon records (security review):**
    - migration v11 (set once) and `setProjectTrust`;
    - the binding of §5.2 and the inspection of §5.3;
    - the control messages and the registration checks.
 
    Nothing grants yet: every row keeps its current trust mode.
-2. **S1b, daemon gate (Opus review):**
+2. **S1b, daemon gate (security review):**
    - trust mode `project`, `requireProjectTrust` with T4 re-read, and `ProjectTrustTicket` at the ports;
    - `projectGated()` marking of the gated handlers and `checkCoverage({ gated })` (not a separate `registerProjectGated`: the mixed contracts register in one call);
    - the rows, `identity.trusted` dropped from policy, and stopping runs on a revoke.
-3. **S2, main (Opus review):**
+3. **S2, main (security review):**
    - `vscode:axisProjectAction` and the dialogs on the shared queue, with the cooldown;
    - `trust.check` answered from `projectPath`, and `trustSource.projectPath` removed;
    - the overlay adapters and `main-seam.test.mjs`.
-4. **S3, shell (Sonnet review):** the actions, the palette command, the row glyphs, the banner action and the announcements.
+4. **S3, shell (standard review):** the actions, the palette command, the row glyphs, the banner action and the announcements.
 5. **S4, evidence:** the GUI driver run, closing the known gap in `pty-exec-node.md` §8. Docs and tests only.
 
 ## 11. Amendments made with this note

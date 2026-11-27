@@ -103,6 +103,11 @@ export interface Approvals {
   /** Composer tool-call approvals over the same manager and listing (`gate/run-approvals.ts`, DMN-3). */
   readonly runs: RunApprovals;
   stats(): ApprovalsStats;
+  /**
+   * End every open challenge of one plugin in one project at once, as its requester (PV-K2 K2-g1: a revoke or a disable). Never
+   * another plugin's, another project's or a user's challenge. Returns how many were ended. Never throws.
+   */
+  endPlugin(pluginId: string, projectId: string): number;
   /** Cancel every native wait and forget every listing. Idempotent. */
   dispose(): void;
 }
@@ -216,7 +221,10 @@ export function createApprovals(deps: ApprovalsDeps): Approvals {
     plugins.forget(challengeId);
   };
 
-  /** A plugin challenge whose binding no longer holds is ended for good: by its requester's own withdraw, never a bystander's. */
+  /**
+   * A plugin challenge whose binding no longer holds is ended for good. Any call on its id may get here (a bystander's too), but
+   * the withdraw always uses the requester's own identity, and it ends only a challenge whose binding has already failed.
+   */
   const endUnbound = (challengeId: string): boolean => {
     const h = plugins.holds(challengeId);
     if (!h.plugin || h.ok) return false;
@@ -323,6 +331,10 @@ export function createApprovals(deps: ApprovalsDeps): Approvals {
       // A plugin approval is spent only while its binding (grant generation, host window) still holds; the content hook's
       // digest is checked again by the manager, and PV-K1e-b's action re-checks under the project mutex.
       if (endUnbound(approval.challengeId)) throw new ApprovalError("E_CONFLICT");
+      // Fail closed (review a2-1b S1): a plugin connection spends only an approval whose binding is tracked. The entry outlives
+      // the manager's token, so this refuses nothing today; it keeps the spend checked if that ever stops being true.
+      const tracked = input.identity.clientKind === "plugin" ? plugins.tracked(approval.challengeId) : undefined;
+      if (input.identity.clientKind === "plugin" && tracked === undefined) throw new ApprovalError("E_CONFLICT");
       try {
         const result = await manager.consume(
           approval.challengeId,
@@ -337,7 +349,9 @@ export function createApprovals(deps: ApprovalsDeps): Approvals {
             currentContentDigest: content.contentDigest,
           },
           (confirmed) => {
-            const capability = issuedAt === input.tier ? deps.capability?.(input, content) : undefined; // an unknown issue tier gets none
+            // An unknown issue tier gets none. A plugin challenge hands the handler what its binding recorded at issue (the approved
+            // grant generation, review K2 S2), so the handler compares the live grant with what the user approved.
+            const capability = issuedAt === input.tier ? (tracked?.approved ?? deps.capability?.(input, content)) : undefined;
             return action(capability === undefined ? confirmed : { ...confirmed, capability });
           },
         );
@@ -350,6 +364,11 @@ export function createApprovals(deps: ApprovalsDeps): Approvals {
         if (e instanceof ChallengeError && e.detail["executed"] === true) {
           forget(approval.challengeId);
           issuedTiers.delete(approval.challengeId);
+        } else if (tracked !== undefined && tracked.actor === input.actor && tracked.connectionId === input.connectionId && e instanceof ChallengeError && (e.code === "E_CONFLICT" || e.code === "E_POLICY_DENIED") && (e.detail["state"] === undefined || TERMINAL.has(String(e.detail["state"])))) {
+          // The plugin's own spend that the manager ended without running it (a request or content mismatch, an expired token):
+          // free its one open slot now instead of at the entry's deadline (review a2-1b N4). A spend that came before the user's
+          // answer (`not_live` with a live state) ends nothing and frees nothing; nor does a bystander's refusal.
+          plugins.forget(approval.challengeId);
         }
         throw toGateError(e);
       }
@@ -424,6 +443,16 @@ export function createApprovals(deps: ApprovalsDeps): Approvals {
     port,
     runs,
     stats: () => Object.freeze({ pending: registry.size, native: bridge.stats(), withdrawErrors }),
+    endPlugin(pluginId: string, projectId: string): number {
+      let ended = 0;
+      for (const c of plugins.ofPlugin(pluginId, projectId)) {
+        quietWithdraw(c.challengeId, { actor: c.actor as ActorId, connectionId: c.connectionId });
+        forget(c.challengeId);
+        runs.ended(c.challengeId);
+        ended++;
+      }
+      return ended;
+    },
     dispose() {
       if (disposed) return;
       disposed = true;

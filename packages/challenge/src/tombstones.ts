@@ -36,7 +36,10 @@ export class Tombstones {
       const a = t.requester === requester;
       const w = t.windowId === windowId;
       if (a) actor++;
-      if (w) window++;
+      // A withdrawn plugin challenge does not hold the host window's quota (PV-K1e-b, review a2-1b N6): the user's own approvals
+      // there are never crowded out by plugins. It still counts for its plugin (per requester, per requester in the window) and
+      // in the total, and the gate bounds a plugin to one open challenge and six an hour.
+      if (w && !t.requester.startsWith("plugin:")) window++;
       if (a && w) actorWindow++;
     }
     return { total: this.#byRef.size, actor, window, actorWindow };

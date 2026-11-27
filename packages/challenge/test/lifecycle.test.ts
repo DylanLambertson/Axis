@@ -300,3 +300,11 @@ test("a withdraw after the challenge expired, before any sweep, reports ended", 
   clock.t += 30_001; // the confirmation window (30 s) has run out; the challenge itself expired too
   assert.deepEqual(manager.withdraw(id, CALLER), { withdrawn: false, reason: "ended" });
 });
+
+// PV-K1e-b (review K1e-b): the plugin exemption from the window quota is for plugin tombstones only.
+test("D1: a user's withdrawn challenge still holds the window's quota until its original expiry (only a plugin's does not)", () => {
+  const { manager } = setup({ perWindow: 1, perActor: 4 });
+  const first = issue(manager);
+  assert.deepEqual(manager.withdraw(first.challenge.challengeId, CALLER), { withdrawn: true });
+  assert.throws(() => issue(manager, { connectionId: "conn-2" }), code("E_BACKPRESSURE"), "the user's tombstone counts for the window");
+});

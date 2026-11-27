@@ -7,6 +7,8 @@ import { PAGES_MIGRATION } from "./schema-pages.js";
 import { TASKS_MIGRATION } from "./schema-tasks.js";
 import { PLUGIN_GRANTS_MIGRATION } from "./schema-plugins.js";
 import { PLUGIN_ISSUES_MIGRATION } from "./schema-plugin-issues.js";
+import { CLI_ACK_MIGRATION } from "./schema-cli-ack.js";
+import { TASKS_KEEP_USER_MIGRATION } from "./schema-tasks-keep.js";
 
 /**
  * Journal schema, versioned in `axis_schema` under component `journal`.
@@ -487,6 +489,8 @@ export const JOURNAL_MIGRATIONS: readonly Migration[] = [
   TASKS_MIGRATION,
   PLUGIN_GRANTS_MIGRATION,
   PLUGIN_ISSUES_MIGRATION,
+  CLI_ACK_MIGRATION,
+  TASKS_KEEP_USER_MIGRATION,
 ];
 
 export const JOURNAL_SCHEMA_VERSION = JOURNAL_MIGRATIONS.length;

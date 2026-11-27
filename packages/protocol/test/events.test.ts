@@ -54,6 +54,7 @@ test("events: every body is closed and strict, so an extra field (a path, a name
     { topic: "approvals" },
     { topic: "anchor", stalled: false },
     { topic: "audit", headSeq: 4 },
+    { topic: "tasks", projectId: "p-1" },
   ];
   for (const b of valid) assert.equal(eventBodySchema.safeParse(b).success, true, JSON.stringify(b));
   const invalid = [
@@ -66,6 +67,10 @@ test("events: every body is closed and strict, so an extra field (a path, a name
     { topic: "audit", headSeq: -1 },
     { topic: "audit", headSeq: 1, hash: "0".repeat(64) },
     { topic: "projects" },
+    { topic: "tasks" },
+    { topic: "tasks", projectId: "/home/x" },
+    { topic: "tasks", projectId: "p-1", taskId: "t1" },
+    { topic: "tasks", projectId: "p-1", title: "Fix it" },
   ];
   for (const b of invalid) assert.equal(eventBodySchema.safeParse(b).success, false, JSON.stringify(b));
 });

@@ -30,5 +30,6 @@ export * from "./integrations-wire.js";
 export * from "./integrations.js";
 export * from "./pages.js";
 export * from "./tasks.js";
+export * from "./plugins.js";
 export * from "./contracts.js";
 export * from "./client.js";

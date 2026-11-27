@@ -39,6 +39,11 @@ export const RULES: Readonly<Record<string, Rule>> = Object.freeze({
   "axis.approvals/1.resolve": userRule(2),
   "axis.approvals/1.pending": userRule(0),
   "axis.approvals/1.detail": userRule(0), // PV-K1e-a2: never a web client (WEB_ALLOWED) or a plugin (the deny list)
+  // PV-K2 K2-g1: the user's view of a project's plugins and the two decreases; never a web client (WEB_ALLOWED) or a plugin
+  // (`axis.plugins/` is on the plugin deny list). `grant` and `enable` (tier 4) are K2-g2's.
+  "axis.plugins/1.list": userRule(0),
+  "axis.plugins/1.revoke": userRule(2),
+  "axis.plugins/1.disable": userRule(2),
   "axis.audit/1.status": userRule(0),
   "axis.audit/1.list": userRule(1),
   "axis.audit/1.verify": userRule(1),
@@ -83,6 +88,10 @@ export const RULES: Readonly<Record<string, Rule>> = Object.freeze({
   "axis.tasks/1.link": userRule(1),
   "axis.tasks/1.unlink": userRule(1),
   "axis.tasks/1.delete": userRule(4),
+  // Start (PV-T1 slice 2b): the preview is a read; the start runs a worker, so it is tier 4 (main's dialog names the task,
+  // the worker and the trust of its text) and gated on the project's trust like any run start.
+  "axis.tasks/1.startPreview": userRule(0),
+  "axis.tasks/1.start": userRule(4, "project"),
   "axis.messages/1.send": userRule(2),
   "axis.messages/1.thread": userRule(1),
   "axis.messages/1.threads": userRule(0),

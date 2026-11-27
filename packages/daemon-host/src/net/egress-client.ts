@@ -18,6 +18,10 @@
  *   `identity` is accepted; the caps of egress-limits.ts; at most 4 requests in flight per integration and the backoff.
  * - Errors are EgressError: a closed code, a fixed text and the status (egress-errors.ts).
  *
+ * - The client OWNS the `authorization` header (PV-N1e review 2, the PV-N1f requirement): a caller can never set it, for
+ *   any host (`header_refused`). It is attached only by `sendAuthorized`, from an `AuthorizedRequest` (url-pattern.ts),
+ *   whose credential it TAKES once, to exactly that request's URL, origin, method and body.
+ *
  * `createEgressClientForTest` takes a CA, a resolver and a dial map for tests against local servers; nothing in src may
  * name it (test/net/egress-wiring.test.ts), and `createEgressClient` passes no test seam.
  */
@@ -25,9 +29,11 @@
 import { lookup } from "node:dns";
 import { Agent, request } from "node:https";
 import { resolvedRefusal } from "./address.js";
+import { copyBytes, isBytes } from "./bytes.js";
 import { EgressError, socketError } from "./egress-errors.js";
 import { BodyCollector, checkContentEncoding, checkRequestBody, EGRESS_LIMITS, IntegrationGate, parseRetryAfter, requestHeaders } from "./egress-limits.js";
 import { declaredOrigins, egressTarget, type EgressTarget } from "./host.js";
+import { type AuthorizedRequest, takeAuthorization, type TakenAuthorization } from "./url-pattern.js";
 
 /** The closed method set, checked at run time. */
 export const EGRESS_METHODS = ["GET", "HEAD", "POST"] as const;
@@ -52,7 +58,10 @@ export interface EgressResponse {
 }
 
 export interface EgressClient {
+  /** A request with no credential: a caller-set `authorization` header is refused. */
   send(req: EgressRequest): Promise<EgressResponse>;
+  /** The one way a credential leaves: an AuthorizedRequest, sent once, to exactly its URL; `headers` may add others, never `authorization`. */
+  sendAuthorized(req: AuthorizedRequest, extra?: { readonly headers?: Readonly<Record<string, string>>; readonly signal?: AbortSignal }): Promise<EgressResponse>;
   close(): void;
   /** True when the agent carries no CA of its own (Node's default CA store only), read from the agent itself. */
   readonly systemTrustOnly: boolean;
@@ -84,6 +93,8 @@ export interface EgressTestSeam {
   readonly dial: (address: string) => string;
   readonly resolve?: (host: string) => Promise<readonly string[]>;
   readonly dnsLookup?: typeof lookup;
+  /** Connect to this port instead of the URL's: an origin carries no port (the contract), so a local test server needs it. */
+  readonly port?: number;
 }
 
 type LookupEntry = { address: string; family: number };
@@ -137,12 +148,13 @@ function snapshot(req: EgressRequest): Snapshot {
   const originList: unknown[] | null = Array.isArray(origins) ? Array.from(origins) : null;
   if (originList === null || originList.some((o) => typeof o !== "string") || typeof url !== "string") throw new EgressError("request_refused");
   if (headers !== undefined && (typeof headers !== "object" || headers === null || ![Object.prototype, null].includes(Object.getPrototypeOf(headers)))) throw new EgressError("header_refused");
-  if (body !== undefined && !(body instanceof Uint8Array)) throw new EgressError("request_refused");
+  if (body !== undefined && !isBytes(body)) throw new EgressError("request_refused");
   if (body !== undefined && (method === "GET" || method === "HEAD")) throw new EgressError("request_refused");
   if (signal !== undefined && !(signal instanceof AbortSignal)) throw new EgressError("request_refused");
   const target = egressTarget(url, declaredOrigins(originList as string[]));
   if (typeof target === "string") throw new EgressError("target_refused");
-  const copy = body === undefined ? undefined : Buffer.from(Uint8Array.prototype.slice.call(body));
+  const bytes = body === undefined ? undefined : copyBytes(body); // no caller code runs: review 3 nit 1
+  const copy = bytes === undefined ? undefined : Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   checkRequestBody(copy);
   const sent = requestHeaders(headers ?? {});
   if (copy !== undefined) sent["content-length"] = String(copy.byteLength);
@@ -159,11 +171,26 @@ function build(options: EgressClientOptions, seam: EgressTestSeam | undefined): 
   const lookupChecked = checkedLookup(resolver, seam?.dial ?? ((a) => a));
   const agent = new Agent({ lookup: lookupChecked as never, autoSelectFamily: true, rejectUnauthorized: true, minVersion: "TLSv1.2", keepAlive: false, ...(seam === undefined ? {} : { ca: seam.ca }) });
 
-  const send = (req: EgressRequest): Promise<EgressResponse> => {
+  const send = (req: EgressRequest): Promise<EgressResponse> => run(() => snapshot(req));
+  const sendAuthorized = (req: AuthorizedRequest, extra?: { readonly headers?: Readonly<Record<string, string>>; readonly signal?: AbortSignal }): Promise<EgressResponse> =>
+    run(() => {
+      let taken: TakenAuthorization;
+      try {
+        taken = takeAuthorization(req); // genuine and unspent, or refused; spent from here on
+      } catch {
+        throw new EgressError("not_authorized");
+      }
+      const snap = snapshot({ integration: req.integration, origins: [req.origin], method: req.method, url: req.url, ...(taken.body === undefined ? {} : { body: taken.body }), ...(extra?.headers === undefined ? {} : { headers: extra.headers }), ...(extra?.signal === undefined ? {} : { signal: extra.signal }) });
+      if (snap.target.url.href !== req.url || snap.target.origin !== req.origin) throw new EgressError("not_authorized");
+      snap.headers.authorization = taken.authorization;
+      return snap;
+    });
+
+  function run(make: () => Snapshot): Promise<EgressResponse> {
     let snap: Snapshot;
     let release: () => void;
     try {
-      snap = snapshot(req);
+      snap = make();
       release = gate.enter(snap.integration);
     } catch (e) {
       return Promise.reject(closed(e));
@@ -194,7 +221,7 @@ function build(options: EgressClientOptions, seam: EgressTestSeam | undefined): 
       }
       function start(): void {
         const sent = request({
-          agent, host: snap.target.host, port: snap.target.port, servername: snap.target.host, method: snap.method, path: `${snap.target.url.pathname}${snap.target.url.search}`,
+          agent, host: snap.target.host, port: seam?.port ?? snap.target.port, servername: snap.target.host, method: snap.method, path: `${snap.target.url.pathname}${snap.target.url.search}`,
           headers: snap.headers, rejectUnauthorized: true, minVersion: "TLSv1.2", maxHeaderSize: EGRESS_LIMITS.responseHeaderBytes, insecureHTTPParser: false, signal: snap.signal,
         });
         r = sent;
@@ -238,8 +265,8 @@ function build(options: EgressClientOptions, seam: EgressTestSeam | undefined): 
         sent.end(snap.body);
       }
     });
-  };
-  return { send, close: () => agent.destroy(), systemTrustOnly: (agent.options as { ca?: unknown }).ca === undefined };
+  }
+  return { send, sendAuthorized, close: () => agent.destroy(), systemTrustOnly: (agent.options as { ca?: unknown }).ca === undefined };
 }
 
 /** The production client: the system resolver, Node's default CA store, no test seam. */
