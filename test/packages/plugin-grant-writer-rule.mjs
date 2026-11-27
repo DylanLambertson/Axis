@@ -106,6 +106,23 @@ export function grantWriterProblems(program, root, checked) {
           if (isStore(arg) && calleeFile !== FILES.action && rel !== FILES.store && rel !== FILES.journal) at(arg, "the grant store passed to a function outside the grant action");
         }
       }
+      // Flow (review K2-g3 S1): a store, a journal or the grant action used as anything but the receiver of a member access is
+      // checked against the type it flows into. A view of another type that still exposes an increase member (a Pick<>, a
+      // structural type, a function's declared return) is refused outside the allowed files, so no alias launders the name.
+      if ((ts.isIdentifier(node) || ts.isPropertyAccessExpression(node) || ts.isCallExpression(node)) && !isReceiver(node) && !isDeclarationName(node)) {
+        const own = checker.getTypeAtLocation(node);
+        const kind = isNamed(own, "PluginGrantRecords") ? "store" : isNamed(own, "GrantAction") ? "action" : isNamed(own, "Journal") && checker.getPropertyOfType(own, "plugins") !== undefined ? "journal" : undefined;
+        const ctx = kind === undefined ? undefined : contextualTypeOf(checker, node);
+        if (kind !== undefined && ctx !== undefined && !(ctx.flags & ts.TypeFlags.Any)) {
+          if (kind === "store" && !isNamed(ctx, "PluginGrantRecords") && exposes(checker, ctx, STORE_INCREASES) && rel !== FILES.store && rel !== FILES.journal && !(rel === FILES.compose && isArgOf(node, "createGrantAction"))) at(node, "the grant store viewed under another type that exposes an increase");
+          if (kind === "action" && !isNamed(ctx, "GrantAction") && exposes(checker, ctx, ["grant", "enable"]) && rel !== FILES.action) at(node, "the grant action viewed under another type");
+          if (kind === "journal") {
+            const plugins = checker.getPropertyOfType(ctx, "plugins");
+            const pt = plugins === undefined ? undefined : checker.getTypeOfSymbolAtLocation(plugins, node);
+            if (pt !== undefined && !(pt.flags & ts.TypeFlags.Any) && !isNamed(pt, "PluginGrantRecords") && exposes(checker, pt, STORE_INCREASES) && rel !== FILES.journal && !(rel === FILES.compose && insideCallOf(node, "registerPluginsHandlers"))) at(node, "the journal viewed under a type whose plugins expose an increase");
+          }
+        }
+      }
       // Tokens, mints and the grant action, wherever a value of their type is declared, read or made.
       if (ts.isCallExpression(node) || ts.isVariableDeclaration(node) || ts.isParameter(node) || ts.isPropertyDeclaration(node) || ts.isPropertySignature(node) || ts.isPropertyAccessExpression(node) || ts.isBindingElement(node)) {
         const target = ts.isCallExpression(node) || ts.isPropertyAccessExpression(node) ? node : node.name;
@@ -141,6 +158,31 @@ export function grantWriterProblems(program, root, checked) {
     ts.forEachChild(sf, visit);
   }
   return out;
+}
+
+const STORE_INCREASES = ["grant", "setEnabled", "takeGrantMint"];
+const exposes = (checker, type, names) => names.some((n) => checker.getPropertyOfType(type, n) !== undefined);
+const isReceiver = (node) => (ts.isPropertyAccessExpression(node.parent) || ts.isElementAccessExpression(node.parent)) && node.parent.expression === node;
+const isDeclarationName = (node) =>
+  ts.isIdentifier(node) &&
+  ((ts.isPropertyAccessExpression(node.parent) && node.parent.name === node) ||
+    ((ts.isVariableDeclaration(node.parent) || ts.isParameter(node.parent) || ts.isPropertyDeclaration(node.parent) || ts.isPropertySignature(node.parent) || ts.isPropertyAssignment(node.parent) || ts.isFunctionDeclaration(node.parent) || ts.isMethodDeclaration(node.parent) || ts.isBindingElement(node.parent) || ts.isImportSpecifier(node.parent) || ts.isExportSpecifier(node.parent) || ts.isImportClause(node.parent) || ts.isClassDeclaration(node.parent) || ts.isInterfaceDeclaration(node.parent) || ts.isTypeAliasDeclaration(node.parent)) && node.parent.name === node) ||
+    ts.isTypeReferenceNode(node.parent) ||
+    ts.isQualifiedName(node.parent) ||
+    ts.isTypeQueryNode(node.parent));
+/** The type a value flows into: its contextual type, or for a shorthand property the contextual type of that property. */
+function contextualTypeOf(checker, node) {
+  if (ts.isShorthandPropertyAssignment(node.parent) && node.parent.name === node) {
+    const obj = checker.getContextualType(node.parent.parent);
+    const prop = obj === undefined ? undefined : checker.getPropertyOfType(obj, node.text);
+    return prop === undefined ? undefined : checker.getTypeOfSymbolAtLocation(prop, node);
+  }
+  return checker.getContextualType(node);
+}
+const isArgOf = (node, callee) => ts.isCallExpression(node.parent) && node.parent.arguments.includes(node) && ts.isIdentifier(node.parent.expression) && node.parent.expression.text === callee;
+function insideCallOf(node, callee) {
+  for (let n = node.parent; n !== undefined; n = n.parent) if (ts.isCallExpression(n) && ts.isIdentifier(n.expression) && n.expression.text === callee) return true;
+  return false;
 }
 
 function isTakeMint(call) {

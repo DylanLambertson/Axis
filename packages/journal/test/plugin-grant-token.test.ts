@@ -38,6 +38,15 @@ test("a grant or an enable needs a token of this store, spent once; a disable ne
   assert.equal(journal.plugins.state("acme.board", "p1")?.enabled, false);
 });
 
+test("a token is a frozen object with no prototype: nothing can be added to it or read from it", () => {
+  const { journal } = setup();
+  const token = journal.plugins.takeGrantMint()() as unknown as Record<string, unknown>;
+  assert.equal(Object.isFrozen(token), true);
+  assert.equal(Object.getPrototypeOf(token), null);
+  assert.deepEqual(Reflect.ownKeys(token), []);
+  assert.throws(() => { "use strict"; token["x"] = 1; }, TypeError);
+});
+
 test("a token of another store is refused, even over a database of the same shape", () => {
   const a = setup();
   const b = setup();

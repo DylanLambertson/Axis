@@ -31,11 +31,13 @@ export function createGrantAction(p: Pick<PluginGrantRecords, "grant">, mint: ()
   [FILES.compose]: `
 import type { Journal } from "../../journal/src/journal.js";
 import { createGrantAction } from "./plugins/grant-action.js";
-export function wire(j: Journal) { return createGrantAction(j.plugins, j.plugins.takeGrantMint()); }`,
+import { registerPluginsHandlers } from "./handlers/plugins.js";
+export function wire(j: Journal) { registerPluginsHandlers({ journal: j }); return createGrantAction(j.plugins, j.plugins.takeGrantMint()); }`,
   [FILES.handler]: `
 import type { GrantAction } from "../plugins/grant-action.js";
 import type { Journal } from "../../../journal/src/journal.js";
-export function revoke(j: Journal, a?: GrantAction) { j.plugins.setEnabled("x", "p", false); a?.grant("x", "p", "runs.start"); }`,
+export function revoke(j: Journal, a?: GrantAction) { j.plugins.setEnabled("x", "p", false); a?.grant("x", "p", "runs.start"); }
+export function registerPluginsHandlers(deps: { journal: { plugins: { setEnabled(a: string, b: string, e: false): void } } }): unknown { return deps; }`,
   [FILES.host]: `
 import { Journal } from "../../journal/src/journal.js";
 export const journal = Journal.open();`,
@@ -79,6 +81,11 @@ const PLANTED = [
   ["the grant action held elsewhere", `import type { GrantAction } from "./plugins/grant-action.js";\nexport function f(a: GrantAction) { a.grant("a", "b", "c"); }`],
   ["a decrease called outside the allowed files", `${J}export function f(j: Journal) { j.plugins.setEnabled("x", "p", false); }`],
   ["a bare reference to grant", `${J}export function f(j: Journal) { const g = j.plugins.grant; return typeof g; }`],
+  ["a structural view of the store", `${J}export function f(j: Journal) { const p: { takeGrantMint(): () => unknown; grant(a: string, b: string, c: string, t: never): void } = j.plugins; return p.takeGrantMint(); }`],
+  ["a Pick<> view of the store", `${J}import type { PluginGrantRecords } from "../../journal/src/plugin-grant-store.js";\nexport function f(j: Journal) { const p: Pick<PluginGrantRecords, "grant"> = j.plugins; return p; }`],
+  ["a structural view of the journal", `${J}export function f(j: Journal) { const v: { plugins: { setEnabled(a: string, b: string, e: boolean): void } } = j; return v; }`],
+  ["a function typed to return a view of the store", `${J}export function view(j: Journal): { setEnabled(a: string, b: string, e: boolean): void } { return j.plugins; }`],
+  ["a function returning a token, alone", `${J}export function f(m: () => PluginGrantWrite) { return typeof m; }`],
   ["Journal.open outside the host", `import { Journal } from "../../journal/src/journal.js";\nexport const j = Journal.open();`],
   ["new PluginGrantRecords outside the journal", `import { PluginGrantRecords } from "../../journal/src/plugin-grant-store.js";\nexport const p = new PluginGrantRecords();`],
   ["the audit openDatabase elsewhere", `import { openDatabase } from "../../audit/src/db.js";\nexport const d = openDatabase("y");`],
@@ -118,4 +125,20 @@ import type { Journal } from "../../journal/src/journal.js";
 import { createGrantAction } from "./plugins/grant-action.js";
 export function wire(j: Journal) { return createGrantAction(j.plugins, (j.plugins.takeGrantMint())); }` });
   assert.ok(problems.some((p) => p.startsWith(`${FILES.compose}:`) && p.includes("takeGrantMint")), JSON.stringify(problems));
+});
+
+test("refused: the composition exporting the store under a structural type", () => {
+  const problems = run({ [FILES.compose]: `${BASE[FILES.compose]}\nexport function leak(j: Journal): { grant(a: string, b: string, c: string, t: never): void } { return j.plugins; }` });
+  assert.ok(problems.some((p) => p.startsWith(`${FILES.compose}:`) && p.includes("another type")), JSON.stringify(problems));
+});
+
+test("refused: the handler passing the grant action out under a structural type", () => {
+  const problems = run({ [FILES.handler]: `${BASE[FILES.handler]}\nexport function out(a: GrantAction) { const g: { grant(a: string, b: string, c: string): void } = a; return g; }` });
+  assert.ok(problems.some((p) => p.startsWith(`${FILES.handler}:`) && p.includes("grant action viewed")), JSON.stringify(problems));
+});
+
+test("allowed: the journal into the plugins handler's deps, at the composition's one site, and nowhere else", () => {
+  assert.deepEqual(run(), []);
+  const elsewhere = run({ [EVIL]: `${J}import { registerPluginsHandlers } from "./handlers/plugins.js";\nexport function f(j: Journal) { return registerPluginsHandlers({ journal: j }); }` });
+  assert.ok(elsewhere.some((p) => p.startsWith(`${EVIL}:`)), JSON.stringify(elsewhere));
 });

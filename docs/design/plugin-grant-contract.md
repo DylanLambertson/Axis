@@ -235,6 +235,8 @@ indirect flows).
      `createGrantAction(…, mint)`, which keeps it in the approved action's closure and nowhere else.
    - If any other code took the mint first, the composition's own call throws and the host does not start. The theft is a visible
      startup failure, never a silent second writer.
+   - A degraded start (the host up without a writable journal) never takes the mint, and it serves no writable journal either: the
+     handlers that write are registered only for a writable host. So nothing can mint there (review K2-g3 N5).
    - **No enrolment.** The minting function takes no argument: it creates a fresh frozen token object, adds it to the brand and
      returns it. Nothing can enrol an object it brings, and the store never exports its check, so no verifier exists that a caller
      could use or misuse.
@@ -269,6 +271,10 @@ startup.
 
   Element access with a non-literal key on that type is refused outright. Passing a `PluginGrantRecords` value to a function is
   flagged at the call site unless the callee is in the allowed files.
+- **Flows** (review K2-g3 S1). A store, a journal or the grant action used as anything but the receiver of a member access is
+  checked against the type it flows into: a view of another type that still exposes an increase member (a `Pick<>`, a
+  structural type, a function's declared return, a journal whose `plugins` does) is refused. The one exception is the journal
+  passed into the plugins handler's deps, at the composition's single `registerPluginsHandlers` call.
 - **Exports.** `grant-action.ts` exports exactly one name.
 - **Construction.** Only `daemon-host/src/host.ts` may call `Journal.open` or the storage port's `openDatabase`. Only
   `audit/src/db.ts` and `daemon-host/src/storage/node-storage.ts` may call the audit package's `openDatabase`. Only

@@ -302,6 +302,10 @@ test("the handlers themselves refuse grant and enable when grants are off, and w
   const off = createPluginsHandlers({ journal: s.journal, mutex: s.mutex, endPlugin: () => 0, grantsEnabled: false });
   assert.equal(await code(off.grant(ctx(true), grantPayload)), "E_UNAVAILABLE:plugin_grants_off");
   assert.equal(await code(off.enable(ctx(true), enablePayload)), "E_UNAVAILABLE:plugin_grants_off");
+  // Review K2-g3 N2: grants switched on but no grant action wired is still off.
+  const noAction = createPluginsHandlers({ journal: s.journal, mutex: s.mutex, endPlugin: () => 0, grantsEnabled: true });
+  assert.equal(await code(noAction.grant(ctx(true), grantPayload)), "E_UNAVAILABLE:plugin_grants_off");
+  assert.equal(await code(noAction.enable(ctx(true), enablePayload)), "E_UNAVAILABLE:plugin_grants_off");
   const on = createPluginsHandlers({ journal: s.journal, mutex: s.mutex, endPlugin: () => 0, grantsEnabled: true, grantAction: createGrantAction(s.journal.plugins, mintOf(s.journal.plugins)) });
   assert.equal(await code(on.grant(ctx(false), grantPayload)), "E_NOT_FOUND");
   assert.equal(await code(on.enable(ctx(false), enablePayload)), "E_NOT_FOUND");
