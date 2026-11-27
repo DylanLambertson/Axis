@@ -155,6 +155,7 @@ describe("the run snapshotter over @axis/git-snapshot", { skip }, () => {
   });
 
   test("a stable snapshot fits inside the supervisor's bound with room to spawn git, and every take is given that bound", async () => {
+    assert.equal(SNAPSHOT_TAKE_MS, 3000, "the production bound is pinned by its value, not only by the constant");
     assert.ok(SNAPSHOT_TAKE_MS * SNAPSHOT_ATTEMPTS + 2000 <= SUPERVISOR_SNAPSHOT_MS, `${SNAPSHOT_TAKE_MS} x ${SNAPSHOT_ATTEMPTS} vs ${SUPERVISOR_SNAPSHOT_MS}`);
     const seen: Array<Parameters<SnapshotTaker>[0]> = [];
     const spy: SnapshotTaker = (opts) => (seen.push(opts), Promise.reject(new Error("stop here")));
