@@ -33,7 +33,7 @@ export const PLUGIN_METHOD_SETS: Readonly<Record<PluginPermission, readonly stri
 export const PLUGIN_SET_TIER: Readonly<Record<string, number>> = Object.freeze({ "axis.pages/1.create": 2, "axis.pages/1.update": 2, "axis.runs/1.start": 3 });
 
 /** Whole contracts no plugin may reach. */
-export const PLUGIN_DENY_CONTRACTS: readonly string[] = Object.freeze(["axis.approvals/", "axis.audit/", "axis.providers/", "axis.projects/", "axis.worktrees/", "axis.git/", "axis.forge/", "axis.events/"]);
+export const PLUGIN_DENY_CONTRACTS: readonly string[] = Object.freeze(["axis.approvals/", "axis.plugins/", "axis.audit/", "axis.providers/", "axis.projects/", "axis.worktrees/", "axis.git/", "axis.forge/", "axis.events/"]);
 
 /** Methods no plugin may reach, whatever is granted (ADR 0008 decision 4's deny list and decision 6's exclusions). */
 export const PLUGIN_DENY_METHODS: ReadonlySet<string> = new Set([

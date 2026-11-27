@@ -103,6 +103,11 @@ export interface Approvals {
   /** Composer tool-call approvals over the same manager and listing (`gate/run-approvals.ts`, DMN-3). */
   readonly runs: RunApprovals;
   stats(): ApprovalsStats;
+  /**
+   * End every open challenge of one plugin in one project at once, as its requester (PV-K2 K2-g1: a revoke or a disable). Never
+   * another plugin's, another project's or a user's challenge. Returns how many were ended. Never throws.
+   */
+  endPlugin(pluginId: string, projectId: string): number;
   /** Cancel every native wait and forget every listing. Idempotent. */
   dispose(): void;
 }
@@ -438,6 +443,16 @@ export function createApprovals(deps: ApprovalsDeps): Approvals {
     port,
     runs,
     stats: () => Object.freeze({ pending: registry.size, native: bridge.stats(), withdrawErrors }),
+    endPlugin(pluginId: string, projectId: string): number {
+      let ended = 0;
+      for (const c of plugins.ofPlugin(pluginId, projectId)) {
+        quietWithdraw(c.challengeId, { actor: c.actor as ActorId, connectionId: c.connectionId });
+        forget(c.challengeId);
+        runs.ended(c.challengeId);
+        ended++;
+      }
+      return ended;
+    },
     dispose() {
       if (disposed) return;
       disposed = true;
