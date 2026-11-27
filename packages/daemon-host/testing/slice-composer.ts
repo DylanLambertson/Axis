@@ -27,7 +27,21 @@ export const NODE_TOKEN = "$NODE";
 const tagOf = (req: ValidRequest): string | undefined => {
   const first = req.messages[0];
   const text = typeof first?.content === "string" ? first.content : first?.content.map((b) => (b.type === "text" ? b.text : "")).join("");
-  return /^\[s:([a-z0-9-]{1,32})\]/.exec(text ?? "")?.[1];
+  // The first tag anywhere in the first message: a task Start frames the task's text, so its tag is not at the start.
+  return /\[s:([a-z0-9-]{1,32})\]/.exec(text ?? "")?.[1];
+};
+
+/** In a script, these stand for the first task id (`t` + 32 hex) and page id (`p` + 32 hex) the conversation holds so far. */
+export const TASK_TOKEN = "{{task}}";
+export const PAGE_TOKEN = "{{page}}";
+const withIds = (reply: MockReply, req: ValidRequest): MockReply => {
+  const seen = JSON.stringify(req.messages);
+  let out = JSON.stringify(reply);
+  for (const [token, re] of [[TASK_TOKEN, /\bt[0-9a-f]{32}\b/], [PAGE_TOKEN, /\bp[0-9a-f]{32}\b/]] as const) {
+    const id = re.exec(seen)?.[0];
+    if (id !== undefined) out = out.split(token).join(id);
+  }
+  return JSON.parse(out) as MockReply;
 };
 
 const withNode = (reply: MockReply, node: string): MockReply =>
@@ -43,7 +57,7 @@ export function scriptedRespond(scripts: Readonly<Record<string, readonly MockRe
     const turn = req.messages.filter((m) => m.role === "assistant").length;
     if (tag === undefined) return turn === 0 ? { kind: "tool_use", name: "write_file", input: { path: "Makefile", content: "all:\n" } } : { kind: "text", text: "done" };
     const reply = scripts[tag]?.[turn];
-    return reply === undefined ? { kind: "text", text: "done" } : withNode(reply, node);
+    return reply === undefined ? { kind: "text", text: "done" } : withIds(withNode(reply, node), req);
   };
 }
 
