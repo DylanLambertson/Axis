@@ -1,6 +1,6 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import { z } from "zod";
-import { approvalRequiredDetailsSchema } from "./challenge.js";
+import { approvalRequiredDetailsSchema, pluginApprovalRequiredDetailsSchema } from "./challenge.js";
 import { boundedJsonSchema, type JsonValue } from "./limits.js";
 
 /** The closed set of error codes (ADR 0003 D3). Unknown codes are rejected. */
@@ -49,7 +49,7 @@ export const errorSchema = z
     .optional(),
   })
   .refine(
-    (e) => e.code !== "E_APPROVAL_REQUIRED" || approvalRequiredDetailsSchema.safeParse(e.details).success,
+    (e) => e.code !== "E_APPROVAL_REQUIRED" || approvalRequiredDetailsSchema.safeParse(e.details).success || pluginApprovalRequiredDetailsSchema.safeParse(e.details).success,
     { message: "E_APPROVAL_REQUIRED must carry a challenge in details", path: ["details"] },
   );
 export type AxisError = z.infer<typeof errorSchema>;

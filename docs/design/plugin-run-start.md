@@ -16,7 +16,7 @@
   `taintAtStart`, a plugin start is refused (`plugin_starts_unavailable`). Source 6 stays PV-K4's for every other plugin output.
 - **Inert.** The `axis.runs/1` handler still refuses every actor but the user (`E_NOT_FOUND`), so nothing reaches this from the wire.
 
-## 2. PV-K1e-a2: the approval card (a2-1a built; a2-1b and a2-2 not built)
+## 2. PV-K1e-a2: the approval card (a2-1a and a2-1b built; a2-2 on hold)
 
 A tier-3 challenge is bound to the requesting connection's window today, so a plugin start's challenge would sit on `p<n>`, which
 the plugin cannot resolve and the user cannot see, and a listed challenge carries only a 192-character summary. PV-K1e-a2 sends the
@@ -32,13 +32,27 @@ Slices, released in this order (each inert until the next):
   not reset it. The newest row is the table's clock: inserts older than it are refused and the store clamps its time to it, so a
   system clock that steps back opens no fresh hour. Rows never change; the one delete is the prune of rows more than 24 hours older
   than the newest, which can never remove a row that still counts. At most 16,384 rows (`issue_cap`). Nothing calls it yet.
-- **a2-1b: the gate.** A plugin's challenge goes to the attested host window, the plugin learns only its id, one pending per plugin,
-  four open per host window, the counter above, the binding (grant generation, host window) re-checked at resolve, detail and
-  consume, the optional closed `requester` on listed challenges and `axis.approvals/1.detail`. The gate refuses every plugin
-  challenge until PV-K1e-b wires its plugin dependency.
-- **a2-2: the renderer** reader (accepts the optional `requester`, strict `detail` reader) and the card.
-- **PV-K1e-b must not merge before a2-2**: it is the first producer of plugin challenges, and today's strict listing reader would
-  refuse a listing carrying `requester`.
+- **a2-1b (built): the gate** (`daemon-host/src/gate/plugin-approvals.ts`). A plugin's challenge is issued with the plugin as
+  requester on its own connection (only it consumes the approval) and the attested `hostWindowId` as its window (only the user's
+  connection there lists, reads and resolves it; another window of the same user is refused, as for every challenge). The
+  plugin's `E_APPROVAL_REQUIRED` carries `{ challenge: { challengeId } }` only; every other requester's details are unchanged.
+  The binding the daemon builds (`PluginChallengeDeps.bind`: the full request and a `valid()` check of the grant generation and the
+  host window) is checked at issue, at resolve, at each detail read and before the approval is spent (an approved plugin challenge
+  keeps its binding until then); one that no longer holds ends the challenge. Bounds: one open challenge per plugin, four per host
+  window, then the hourly counter (a refusal by a bound spends nothing of the hour); tier 4 is refused. Listed challenges carry
+  the optional closed `requester`; `axis.approvals/1.detail` (tier 0, user rows only, never a web client or a plugin, the same
+  `E_NOT_FOUND` for every refusal, audited by reference) returns the request, the prompt escaped and whole up to 65,536 units
+  (a longer one is refused at issue). The challenge manager accepts `plugin:<id>` as a requester (the audit log's rule); only
+  `user` resolves. **Inert:** without `PluginChallengeDeps` (the host composition passes none until PV-K1e-b) every plugin
+  challenge is refused before it exists, which is stricter than before (the challenge used to be issued to the unresolvable
+  `p<n>`).
+- **a2-2: the renderer** reader (accepts the optional `requester`, strict `detail` reader) and the card. **On hold** (owner
+  direction, 2026-11-26): the product gets its own shell instead of Code OSS (ADR 0011), so the card waits until that plan names
+  where it lives. The design assumed Code OSS in two places only: the strict listing reader to update is the Code OSS overlay's
+  (`axisDaemonReplies.ts` `readPendingChallenges`), and the "renderer" that resolves a tier-3 card is the Code OSS workbench. The
+  daemon, protocol and journal parts do not depend on the shell.
+- **PV-K1e-b must not merge before a2-2** (or its own-shell replacement): it is the first producer of plugin challenges, and
+  today's strict listing reader would refuse a listing carrying `requester`.
 
 ### 2.1 The counter's residual (RR-94) and what an operator does
 
