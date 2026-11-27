@@ -173,8 +173,8 @@ tests call `journal.plugins.grant` and `setEnabled`.
 | **K2-g1** | `axis.plugins/1` in the protocol with `list`, `revoke` and `disable` handlers; the policy rows (user only; outside `WEB_ALLOWED`; `axis.plugins/` added to `PLUGIN_DENY_CONTRACTS`); `approvals.endPlugin(pluginId, projectId)`. | PV-K1e-b (merged) | M |
 | **K2-g2** | `grant` and `enable` at tier 4: the content hook (the versioned tuple digest, the project mutex at the spend), the native line builder of section 3.1, and `already_granted`. Registered but switched off: the handler refuses with `E_UNAVAILABLE` unless the host option `pluginGrants` is on, and it is off in production. | K2-g1 | M-L |
 | **K2-g3** | **Condition 4, by construction.** `journal.plugins.grant` and `setEnabled(…, true)` take a write token that only K2-g2's approval action mints (a module-private brand, like PV-K1e-b's `ApprovedPluginStart`). No other code can raise a grant. A source pin lists every caller of the two writers. | K2-g2 | S |
-| **K2-g4** | **Condition 6.** The plugin's run start checks that the plugin's connection is still open in the service's synchronous creation step (next to `grantHolds`); the daemon session's live-connection set is the source. The same check is offered to user starts as an option. | PV-K1e-b | S |
-| **K2-enable** | Turns `pluginGrants` on in the production composition. Merges only when conditions 1, 2, 3 and 5 hold, and K2-g3 and K2-g4 are on `main`. | all above, the own-shell card (OS-30), PV-K3 | S (code), plus the evidence |
+| **K2-g4** | **Condition 6.** Window lifetimes (epochs) in the daemon and main's window-gone notice; the plugin's binding pins the host window's epoch at issue; the start checks it at entry, under the mutex and in the service's synchronous creation step (section 8.4). | PV-K1e-b | M |
+| **K2-enable** | Turns `pluginGrants` on in the production composition. Merges only when conditions 1, 2, 3 and 5 hold, and K2-g3 and K2-g4 are on `main`. | all above; the card (condition 1's owner); PV-K3 | S (code), plus the evidence |
 
 Install, update, signatures and extraction (ADR 0008 decisions 7 and 8) are the other PV-K2 tickets. They propose grants and
 call `grant` once per permission (decision 1). They never write the store directly, because K2-g3's token makes that impossible.
@@ -183,9 +183,9 @@ call `grant` once per permission (decision 1). They never write the store direct
 
 | # | Condition | Evidence that closes it | Where |
 |---|---|---|---|
-| 1 | The card | Own-shell UI tests. The card shows the whole escaped prompt and the project, workspace, mode, provider and model from `axis.approvals/1.detail`, and resolves through `axis.approvals/1.resolve`. A screenshot review is attached to the PR. | OS-30 |
+| 1 | The card | Own-shell UI tests. The card shows the plugin requester, reads `axis.approvals/1.detail` safely, and shows the whole escaped prompt and the project, workspace, mode, provider and model; it resolves through `axis.approvals/1.resolve`. A screenshot review is attached to the PR. | **No ticket owns this yet.** OS-11 (the generic approvals card) does not cover it. Before K2-enable, either OS-11's acceptance gains this plugin extension, or a new own-shell ticket is created for it, with its owner recorded in the PV-K2 row. Until then the condition is unowned and K2-enable cannot merge. |
 | 2 | Every listing reader | Either the Code OSS shell is removed from the build, or a reader test feeds a listing with a `requester` and a `detail` read to every supported reader. | ADR 0011 plan, or an overlay PR |
-| 3 | A real-host test | A test on the composed host with a signed plugin attestation (after PV-K3). It sends a request to the host window's pending list, reads the detail, resolves, spends, and checks the run is created as `plugin:<id>` and tainted. It also covers out of scope, ungranted, a generation change, and a closed host window. | K2-enable |
+| 3 | A real-host test | A test on the composed host with a signed plugin attestation. It sends a request to the host window's pending list, reads the detail, resolves, spends, and checks the run is created as `plugin:<id>` and tainted. It also covers out of scope, ungranted, a generation change, and a closed host window. | K2-enable, after PV-K3 (section 8.5) |
 | 4 | Every grant path | K2-g3's write token, plus a test that a grant written without it is refused, and the caller pin. | K2-g3 |
 | 5 | The tier | The owner's recorded decision on PV-K1e-T4. If tier 4 is chosen, a slice before K2-enable raises `PLUGIN_MAX_TIER` and teaches `PluginChallenges.prepare` the native path, with tests. | decision row, maybe a slice |
 | 6 | The connection | K2-g4's test closes the host window at each step after the spend and asserts that nothing is created. | K2-g4 |
@@ -200,42 +200,94 @@ call `grant` once per permission (decision 1). They never write the store direct
 
 ### 8.4 Two details the slices must get right
 
-**K2-g3: no second writer, now or later.** Three locks, each failing the gate on its own:
+**K2-g3: no second writer.** The locks are of two kinds, and only the runtime ones are a guarantee. The static rules catch
+ordinary mistakes and leave a reviewed boundary, as the existing principal precedent says of itself (ADR 0005, on wrappers and
+indirect flows).
 
-1. **The token is not in the journal's main entry.**
-   - `journal.plugins.grant` and `setEnabled(…, true)` take a `PluginGrantWrite` token. The token class and its minting function
-     live in a subpath export, `@axis/journal/plugin-grant-writer`, the way `./daemon-principal` is kept apart today.
-     `@axis/journal` itself does not export them.
-   - The store checks the token's brand, a module-private `WeakSet` in that subpath. A forged or reused token is refused, and a
-     token is spent once.
-   - `revoke` and `setEnabled(…, false)` need no token: a decrease applies at once.
-2. **An import rule.** `test/packages/plugin-grant-writer-rule.mjs` follows `vault-importers-rule.mjs`: only the approved action's
-   file (`daemon-host/src/plugins/grant-action.ts`) may import `@axis/journal/plugin-grant-writer`. Every other source file of
-   every package fails the gate, tests included, except one named test helper.
-3. **A call rule.** The same rule scans every non-test source file for a call of `.plugins.grant(` or `.plugins.setEnabled(` and
-   fails the gate for any file outside the approved action and the `axis.plugins/1` handlers. So a later module that reached the
-   store some other way, for example through a journal handle passed around, still cannot add a writer unseen.
+*Runtime locks:*
 
-   The rule's own test proves it refuses a planted second writer, by import and by call.
+1. **The token.**
+   - `journal.plugins.grant` and `setEnabled(…, true)` take a `PluginGrantWrite` token. The store checks its brand, a
+     module-private `WeakSet`, and spends it once, so a forged or reused token is refused.
+   - The minting function is not exported by any module. It lives in `daemon-host/src/plugins/grant-action.ts` and is called
+     only inside the approved action's closure.
+   - The journal side exports only a verifier, from the subpath `@axis/journal/plugin-grant-writer`. The main entry
+     `@axis/journal` exports neither the verifier nor the token class.
+2. **No escape of the mint.** `grant-action.ts` exports exactly one name, the action factory the `axis.plugins/1` handler uses. A
+   wrapper that forwards a minted token is a new export there, which the export rule below refuses.
 
-**K2-g4: what tells the start that the plugin or its host window is gone, and when.**
+*Static rules*, in `test/packages/plugin-grant-writer-rule.mjs`. They are wired into the existing source walk of
+`test/packages/imports.test.mjs`, so they run in the gate's tests step on every package's source, not only as helper unit tests.
 
-The facts checked are taken from the attested identity at handler entry, never from the request: the plugin connection's request
-signal, and the plugin's `hostWindowId`.
+- **Imports, resolved.** Every import and re-export is resolved to a file, whether it is a package specifier, a relative path or
+  a barrel. Only the store may resolve to the verifier's source file, and only `grant-action.ts` may import it by any path.
+- **References, type-aware.** The TypeScript checker flags every reference to `grant` or `setEnabled` on a value of type
+  `PluginGrantRecords`:
+  - property access, and element access with a literal key;
+  - destructuring and aliasing (`const { grant } = j.plugins`, `const g = j.plugins.grant`);
+  - calls through `call`, `apply` or `bind`.
 
-- **The plugin connection.** When it closes, the daemon aborts every in-flight request of that connection (`session.ts`,
-  `close()`), and the handler's `context.signal` is that request's. The service already checks the signal before its synchronous
-  creation step; K2-g4 checks it again inside that step, next to `grantHolds`, so no await separates the check from the record.
-- **The host window.** The daemon has no record of it today, so K2-g4 adds one. The daemon counts the attested desktop
-  connections of each window id: up when a handshake is accepted, down when a connection closes. It exposes `windowOpen(windowId)`
-  to the host. A window with no open desktop connection is closed. The plugin's `hostWindowId` must be open.
-- **When it is checked**, every time from the same facts:
+  Element access with a non-literal key on that type is refused outright. Passing a `PluginGrantRecords` value to a function is
+  flagged at the call site unless the callee is in the allowed files.
+- **Exports.** `grant-action.ts` exports exactly one name.
+- **Allowed files:** `grant-action.ts`, the `axis.plugins/1` handlers (revoke and disable only), the store itself, and one named
+  test helper.
+- **The rule's own tests** plant every bypass form that a static rule can see, and each must fail through the real source-walk
+  entry:
+  - an alias, destructuring, bracket access, a helper that receives the plugins object;
+  - a wrapper export, a relative import of the verifier's source, a re-export, and a barrel.
+
+**The boundary.** Code that launders the store through `any`, or through a computed name built at run time, is outside what a
+static rule proves. The runtime locks still hold there: no token, no grant. The minting function never leaves its closure. A new
+writer would have to change `grant-action.ts`, which this rule pins and review sees.
+
+**K2-g4: a closed connection or host window stops the start.**
+
+- **The plugin connection.**
+  - When it closes, the daemon aborts every in-flight request of that connection (`session.ts` `close()`), and the handler's
+    `context.signal` is that request's.
+  - The service checks the signal after `engine.prepare`, and K2-g4 checks it again inside the synchronous creation step, next
+    to `grantHolds`.
+- **The host window: lifetimes, not counts.**
+  - The window id `w<n>` stays the same across a renderer reload or reconnect (main derives it from the code window), so it
+    cannot tell two lifetimes apart. The daemon therefore keeps, per window id, a lifetime **epoch** and a count of accepted
+    desktop connections within it:
+    - the first accepted desktop handshake of a closed window starts a new epoch, an unguessable value never reused;
+    - more connections only raise the count, and closing one of several lowers it, so the epoch stays;
+    - the last close ends the epoch for good;
+    - a rejected handshake changes nothing;
+    - a close reported twice is counted once.
+  - **Unreported death.** Main owns the window lifecycle: when a code window is destroyed or its renderer is gone, main sends the
+    daemon a `window.gone` control notice, which ends that window's epoch even if a connection's close was never reported. The
+    supported transports report a close when their port closes, and the crash tests cover the rest.
+- **Pinned at issue.** The plugin's challenge binding records the host window's epoch when the challenge is issued.
+  - `valid()` fails when that epoch has ended, so resolve, detail and the spend refuse a challenge whose window closed even once,
+    including a close followed by a reconnect.
+  - The binding hands the epoch to the handler inside `ApprovedPluginStart`, with the generation.
+- **When it is checked,** always against the pinned epoch, never a fresh snapshot:
   1. at handler entry, after the daemon's awaited execute audit row;
   2. under the project mutex, before the trust gate;
-  3. inside the service's synchronous creation step, with `grantHolds`, after the trust gate and the provider's model list.
+  3. in the service's synchronous creation step, with `grantHolds`, after the trust gate, the provider's model list and
+     `engine.prepare`. No await separates this check from the record.
 
-  A failure at any of them refuses the start with a closed reason (`host_window_closed`, or `E_CANCELLED` for the plugin
-  connection), and nothing is created.
-- **The test** pauses at each await after the spend: the audit row, the mutex wait, the trust gate and the model list. At each one
-  it closes the plugin connection, then (in a second run) the host window's last desktop connection, and asserts that no run
-  exists.
+  A failure refuses the start with a closed reason (`host_window_closed`; `E_CANCELLED` for the plugin connection) and creates
+  nothing.
+- **Tests:**
+  - the epoch rules: two connections to one, one to none to one, a rejected handshake, a close reported twice, and `window.gone`
+    while a connection's close was never reported;
+  - pausing at each await after the spend (the audit row, the mutex wait, the trust gate, the model list, `engine.prepare`),
+    with three cases at each: the plugin connection closes, the host window's last connection closes, and the host window
+    closes then reconnects. No run may exist in any case.
+
+### 8.5 The PV-K3 ordering
+
+PV-K3 (the plugin host) needs a plugin it can load, so it depends on PV-K2's **manifest and install** slices, with the grant calls
+still off. It does not depend on K2-enable. The order is:
+
+1. PV-K2's manifest, install and K2-g1 to g4 merge, grants off;
+2. PV-K3 merges;
+3. condition 3's real-host test is written on PV-K3;
+4. K2-enable merges last.
+
+The tickets table's PV-K2 and PV-K3 rows are reconciled to say the same: PV-K2's "must not enable" applies to the grant calls and
+K2-enable, and PV-K3 depends on PV-K2's disabled slices only.
