@@ -39,6 +39,11 @@ export const RULES: Readonly<Record<string, Rule>> = Object.freeze({
   "axis.approvals/1.resolve": userRule(2),
   "axis.approvals/1.pending": userRule(0),
   "axis.approvals/1.detail": userRule(0), // PV-K1e-a2: never a web client (WEB_ALLOWED) or a plugin (the deny list)
+  // PV-K2 K2-g1: the user's view of a project's plugins and the two decreases; never a web client (WEB_ALLOWED) or a plugin
+  // (`axis.plugins/` is on the plugin deny list). `grant` and `enable` (tier 4) are K2-g2's.
+  "axis.plugins/1.list": userRule(0),
+  "axis.plugins/1.revoke": userRule(2),
+  "axis.plugins/1.disable": userRule(2),
   "axis.audit/1.status": userRule(0),
   "axis.audit/1.list": userRule(1),
   "axis.audit/1.verify": userRule(1),

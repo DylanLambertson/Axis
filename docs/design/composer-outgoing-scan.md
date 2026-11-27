@@ -111,7 +111,7 @@ new vault purpose and audit value, and does not cover a rotation in the keyring 
 
 Doc: the residual bullet above now says "provider key" (review c7-f3-impl r4 nit) and points here.
 
-Review plan: Opus review of the branch: the order in adapter.ts (no await between check and fetch), the forms set against
+Review plan: a security review of the branch: the order in adapter.ts (no await between check and fetch), the forms set against
 `Redactor.registerSecret`, the GUARD_ONLY decision, the rotation test with a fake fetch, the mutants above.
 
 ## Problem

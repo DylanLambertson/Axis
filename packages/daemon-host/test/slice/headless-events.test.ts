@@ -31,7 +31,7 @@ describe("headless slice: events", { skip: gitSkipReason(), timeout: SUITE_TIMEO
     rmSync(scratch, { recursive: true, force: true });
   });
 
-  test("workspace, run, approvals and audit hints arrive pushed, carry no path, and end at shutdown", async () => {
+  test("workspace, run, approvals, audit and tasks hints arrive pushed, carry no path, and end at shutdown", async () => {
     const h = await startHost(fx, { agents: [{ id: "fake", label: "Fake CLI", command: [process.execPath, FAKE_CLI], args: [join(scratch, "fake.json")] }] });
     const sup = h.sup;
     await h.ready;
@@ -39,7 +39,7 @@ describe("headless slice: events", { skip: gitSkipReason(), timeout: SUITE_TIMEO
     const projectId = await registerProject(sup, fx.repo);
     const user = await TestClient.open(sup);
     const other = await TestClient.open(sup, sup.attest({ windowId: "win-2" }));
-    const sub = await user.ok<{ subscriptionId: string; epoch: string; seq: number; resumed: boolean; window: number }>("axis.events", "subscribe", { topics: ["workspaces", "runs", "approvals", "audit"] });
+    const sub = await user.ok<{ subscriptionId: string; epoch: string; seq: number; resumed: boolean; window: number }>("axis.events", "subscribe", { topics: ["workspaces", "runs", "approvals", "audit", "tasks"] });
     const otherSub = await other.ok<{ subscriptionId: string }>("axis.events", "subscribe", { topics: ["approvals"] });
     assert.equal(sub.resumed, false);
     const events = () => user.frames.filter((f) => f.sub === sub.subscriptionId && f.event !== undefined).map((f) => f.event as Record<string, unknown>);
@@ -53,6 +53,8 @@ describe("headless slice: events", { skip: gitSkipReason(), timeout: SUITE_TIMEO
       const ws = await createWorkspace(user, projectId, "Pushed");
       await until(() => events().some((e) => e["topic"] === "workspaces" && e["workspaceId"] === ws.id), "a workspace event");
       await until(() => events().some((e) => e["topic"] === "audit"), "an audit head event");
+      await user.ok("axis.tasks", "create", { projectId, title: "TASK-TITLE-CANARY", body: "TASK-BODY-CANARY" }, true);
+      await until(() => events().some((e) => e["topic"] === "tasks" && e["projectId"] === projectId), "a tasks hint for the project");
 
       const started = await user.ok<{ run: { runId: string } }>("axis.cli-runs", "start", { workspaceId: ws.id, agentId: "fake" }, true);
       await until(() => events().some((e) => e["topic"] === "runs" && e["runId"] === started.run.runId && e["state"] === "REVIEWING"), "the run reaching REVIEWING");
@@ -83,6 +85,7 @@ describe("headless slice: events", { skip: gitSkipReason(), timeout: SUITE_TIMEO
       assert.equal(wire.includes(fx.repo), false, "no project path in any frame");
       assert.equal(wire.includes(challenge.challengeId), false, "no challenge id in any frame");
       assert.equal(wire.includes("Pushed"), false, "no workspace name in any frame");
+      assert.equal(wire.includes("TASK-"), false, "no task title or body in any frame");
     } finally {
       clearInterval(credit);
     }

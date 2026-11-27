@@ -33,7 +33,7 @@ import { copyBytes, isBytes } from "./bytes.js";
 import { EgressError, socketError } from "./egress-errors.js";
 import { BodyCollector, checkContentEncoding, checkRequestBody, EGRESS_LIMITS, IntegrationGate, parseRetryAfter, requestHeaders } from "./egress-limits.js";
 import { declaredOrigins, egressTarget, type EgressTarget } from "./host.js";
-import { type AuthorizedRequest, takeAuthorization } from "./url-pattern.js";
+import { type AuthorizedRequest, takeAuthorization, type TakenAuthorization } from "./url-pattern.js";
 
 /** The closed method set, checked at run time. */
 export const EGRESS_METHODS = ["GET", "HEAD", "POST"] as const;
@@ -174,15 +174,15 @@ function build(options: EgressClientOptions, seam: EgressTestSeam | undefined): 
   const send = (req: EgressRequest): Promise<EgressResponse> => run(() => snapshot(req));
   const sendAuthorized = (req: AuthorizedRequest, extra?: { readonly headers?: Readonly<Record<string, string>>; readonly signal?: AbortSignal }): Promise<EgressResponse> =>
     run(() => {
-      let value: string;
+      let taken: TakenAuthorization;
       try {
-        value = takeAuthorization(req); // genuine and unspent, or refused; spent from here on
+        taken = takeAuthorization(req); // genuine and unspent, or refused; spent from here on
       } catch {
         throw new EgressError("not_authorized");
       }
-      const snap = snapshot({ integration: req.integration, origins: [req.origin], method: req.method, url: req.url, ...(req.body === undefined ? {} : { body: req.body }), ...(extra?.headers === undefined ? {} : { headers: extra.headers }), ...(extra?.signal === undefined ? {} : { signal: extra.signal }) });
+      const snap = snapshot({ integration: req.integration, origins: [req.origin], method: req.method, url: req.url, ...(taken.body === undefined ? {} : { body: taken.body }), ...(extra?.headers === undefined ? {} : { headers: extra.headers }), ...(extra?.signal === undefined ? {} : { signal: extra.signal }) });
       if (snap.target.url.href !== req.url || snap.target.origin !== req.origin) throw new EgressError("not_authorized");
-      snap.headers.authorization = value;
+      snap.headers.authorization = taken.authorization;
       return snap;
     });
 
