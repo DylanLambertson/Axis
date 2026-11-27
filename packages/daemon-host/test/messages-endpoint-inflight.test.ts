@@ -62,6 +62,10 @@ for (const [label, change, reason] of [
     // Refused as the relay refuses a revoked or paused endpoint: on the connection, which it closes.
     assert.deepEqual(json(out.find((o) => o.t === "relay-reply")), { ok: false, reason }, JSON.stringify(out));
     assert.equal(h.sends(), before, "no message.send row");
+    // Review 1 N3: the refused send revokes the endpoint itself, at once (unless the eager revoke already did).
+    if (!label.startsWith("the switch turned off and every")) assert.ok(out.some((o) => o.t === "endpoint-close" && o.reason === "revoked"), `revoked with the refusal: ${JSON.stringify(out)}`);
+    const again = await h.r.m.endpoints.relay.onRelay(h.r.m.endpoints.source, { t: "relay-open", endpoint: h.ep, conn: "c-2" });
+    assert.ok(again.some((o) => o.t === "endpoint-close" && o.reason === "revoked"), JSON.stringify(again));
     assert.deepEqual(h.r.m.service.read({ kind: "agent", agentId: "a1", runId: null, verified: true, receivedHop: 0 }, {}).messages, [], "no message");
   });
 }

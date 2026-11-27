@@ -1,5 +1,5 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
-import { closeSync, lstatSync, openSync, readSync, realpathSync } from "node:fs";
+import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, realpathSync, statSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import type { Journal } from "@axis/journal";
 import { resolveCliAgentsSetting } from "@axis/pty-policy";
@@ -43,15 +43,29 @@ export const realOf = (exe: string): string | null | undefined => {
   }
 };
 
-/** Audit B F1: whether a file begins with `#!` (a script). A file that cannot be read counts as one (fail closed). */
-export const isScript = (path: string): boolean => {
+/** The 4-byte headers the darwin loader takes itself: Mach-O 32 and 64 bit in either byte order, and fat (universal) files. */
+const MACHO = new Set([0xfeedface, 0xfeedfacf, 0xcefaedfe, 0xcffaedfe, 0xcafebabe, 0xbebafeca, 0xcafebabf, 0xbfbafeca]);
+const ELF = 0x7f454c46;
+
+/**
+ * Audit B F1 (review 1 B1 and S2): whether `path` is a native executable the platform's loader takes itself, so no shell ever
+ * reads it: a regular file (checked before the open, and again on the open descriptor) opened without blocking, whose first four
+ * bytes are ELF (Linux and the other Unix systems) or a Mach-O or fat header (darwin). Anything else is false: a script, a file
+ * with no known header (the loader hands it to `/bin/sh`), a FIFO or other special file, one that cannot be read (fail closed).
+ */
+export const nativeExecutable = (path: string, platform: NodeJS.Platform): boolean => {
+  if (platform === "win32") return false;
   let fd: number | undefined;
   try {
-    fd = openSync(path, "r");
-    const head = Buffer.alloc(2);
-    return readSync(fd, head, 0, 2, 0) === 2 && head[0] === 0x23 && head[1] === 0x21;
+    if (!statSync(path).isFile()) return false;
+    fd = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK);
+    if (!fstatSync(fd).isFile()) return false;
+    const head = Buffer.alloc(4);
+    if (readSync(fd, head, 0, 4, 0) !== 4) return false;
+    const magic = head.readUInt32BE(0);
+    return platform === "darwin" ? MACHO.has(magic) : magic === ELF;
   } catch {
-    return true;
+    return false;
   } finally {
     if (fd !== undefined) closeSync(fd);
   }
@@ -83,7 +97,7 @@ export function hostEnableCheck(deps: EnableCheckDeps): (agentId: string, signal
     if (launch === undefined) return { allowed: false, rule: "no_entry" };
     const real = realOf(launch.argv[0] ?? "");
     if (real === null) return { allowed: false, rule: "real_path_unresolved" };
-    return decideCliMessaging({ argv: launch.argv, ...(real === undefined ? {} : { executableReal: real, executableScript: isScript(real) }), bypassesPrompts: launch.bypassesPrompts, exists: (segments) => exists(join(launch.root, ...segments)) });
+    return decideCliMessaging({ argv: launch.argv, ...(real === undefined ? {} : { executableReal: real, executableNative: nativeExecutable(real, deps.platform ?? process.platform) }), bypassesPrompts: launch.bypassesPrompts, exists: (segments) => exists(join(launch.root, ...segments)) });
   };
 }
 
@@ -105,7 +119,7 @@ export function hostMintRecheck(deps: EnableCheckDeps & { readonly agentOfRun: (
         ? { allowed: false as const, rule: "no_entry" }
         : real === null
           ? { allowed: false as const, rule: "real_path_unresolved" }
-          : decideCliMessaging({ argv: spec.argv, ...(real === undefined ? {} : { executableReal: real, executableScript: isScript(real) }), bypassesPrompts: launch.bypassesPrompts, exists: (segments) => exists(join(launch.root, ...segments)) });
+          : decideCliMessaging({ argv: spec.argv, ...(real === undefined ? {} : { executableReal: real, executableNative: nativeExecutable(real, deps.platform ?? process.platform) }), bypassesPrompts: launch.bypassesPrompts, exists: (segments) => exists(join(launch.root, ...segments)) });
     // A project-configuration file present now that the user did not acknowledge at enable (it appeared since): messaging
     // is suspended for this run until the user confirms again (endpoint design section 6; review 1 SF3).
     // By path: each listed path belongs to exactly one CLI (CLI_PROJECT_CONFIG), so path alone identifies the warning the user
