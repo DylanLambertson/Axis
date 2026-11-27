@@ -5,7 +5,7 @@ import { test } from "node:test";
 import { composeRequest } from "../../src/net/compose-request.js";
 import { createEgressClientForTest, type EgressClient } from "../../src/net/egress-client.js";
 import { declaredOrigins, egressTarget, type EgressTarget } from "../../src/net/host.js";
-import { authorizationOf, authorize, type AuthorizedRequest, Credential, matchTarget, type MatchedTarget } from "../../src/net/url-pattern.js";
+import { authorize, type AuthorizedRequest, Credential, matchTarget, type MatchedTarget } from "../../src/net/url-pattern.js";
 import { CANARY, failure, HOST, PUBLIC, rig, skip, type Rig } from "./egress-rig.js";
 import { NAMED } from "./templates.js";
 
@@ -63,9 +63,20 @@ test("an authorized request is sent once: a replay, a copy or a forgery is not_a
   assert.equal((await failure(c.sendAuthorized(forged))).code, "not_authorized", "a look-alike");
   assert.equal((await failure(c.sendAuthorized(null as never))).code, "not_authorized");
   assert.equal(r.hits.length, 1, "only the first send went out");
-  assert.equal(authorizationOf(fresh), SECRET, "a refused copy does not spend the original");
   await c.sendAuthorized(fresh);
   assert.equal(r.hits.length, 2);
+});
+
+test("the body sent is the authorized one, whatever happens to the request's body array before the send (N1f review 1 nit 4)", { skip }, async (t) => {
+  const r = await rig(t);
+  r.handle((_q, s) => s.end("ok"));
+  const create = { method: "POST" as const, path: [{ literal: "issues" }], body: [{ name: "title", arg: "title", kind: "text" as const, required: true }] };
+  const c = composeRequest(create, "gh", ORIGIN, { title: "ab" });
+  const target = egressTarget(c.url, declaredOrigins([ORIGIN])) as EgressTarget;
+  const req = authorize(matchTarget(c, target) as MatchedTarget, new Credential(SECRET, { integration: "gh", origin: ORIGIN }));
+  (req.body as Uint8Array).fill(0x7a);
+  await clientFor(r, t).sendAuthorized(req);
+  assert.equal(r.hits.at(-1)?.body, '{"title":"ab"}');
 });
 
 test("no error carries the credential", { skip }, async (t) => {
