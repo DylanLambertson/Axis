@@ -4,6 +4,19 @@
 - **Goal:** the owner can click through a first own-shell demo as soon as possible. Then the Phase 1 slice (1a, 1b, 1c) is reached on the own shell, with the gate text re-stated in OS-23.
 - **Sizes** (working days, building plus an ordinary review): S is 1 day; M is 2 to 4 days; L is 5 to 7 days. A ticket marked **Opus** touches a trust boundary and gets an Opus security review, which adds 1 to 3 days (two to four rounds). Every ticket goes through the usual loop: build, independent review, fixes, PR, merge. The estimates in §4 are sums of these sizes along the critical path.
 
+## 0. Wave A start list (hand-out on the owner's go)
+
+These four start together on day 1 once the owner approves the build. None of them waits on another. OS-2's first deliverable is written so it does not need OS-1's scaffold yet. "Builder" names a role, not a person; master-master assigns the session.
+
+| # | Ticket | Builder | Model | Review | First deliverable (the first PR) |
+|---|---|---|---|---|---|
+| 1 | OS-1 scaffold | shell builder | Sonnet | independent Sonnet review | `apps/desktop` (main, preload, renderer) and the four renderer packages as empty, typed shells. Exact pins for Electron, React, React DOM, esbuild, Monaco and xterm.js, with the notice file generated from the lockfile (Chromium's licence file and the Apache-2.0 TypeScript inside Monaco included). `npm run gate` green, plus one smoke test that opens an empty window under Xvfb and exits |
+| 2 | OS-2 window and session hardening | main and security builder | Opus | Opus security review | The pure, Electron-injected modules with `node:test` tests: the `axis-app` scheme handler (traversal-safe bundle root, MIME map), the window registry, the CSP and Trusted Types header, the navigation, window-open and permission policy (only `clipboard-sanitized-write` allowed), the EL-5 `openExternal` decision, the G-28 flag refusal and the preload source pin. It is wired into OS-1's `main/` in a second PR once the scaffold lands |
+| 3 | DC-0 commit without the real index | review and git-ops builder | Opus | Opus security review | Slice 1: `prepareCommit` and `@axis/git-ops` `commit.ts` build the commit through a private `GIT_INDEX_FILE`, and the put-back on refusal goes. Tests in real temporary repositories prove the real `.git/index` is byte-identical after a commit and after a refusal, with a mutant that writes the real index. Slice 2 is the post-commit refresh with its full test and mutant list (ADR 0011 Decision 3) |
+| 4 | DC-3a terminals contract | pty and daemon builder | Opus | Opus security review | `axis.terminals/1` in `@axis/protocol` (`open`, `list`, `close`, `attach`) with policy rows under the coverage check, and the daemon handler over the pty process's existing `grant`, with a fake pty in tests. It proves a terminal is granted only to the named `conn` (PTY-7) and that `open` refuses a workspace the worktree manager did not register (DMN-2) |
+
+Right after these: OS-5 (shell builder, Sonnet) and OS-6 (shell builder, Sonnet; L) start once OS-1 merges, and OS-3 (main and security builder, Opus) starts once OS-2 merges.
+
 ## 1. Layout in the repository
 
 ```text
@@ -89,6 +102,10 @@ The renderer packages import only `@axis/protocol`, each other and their pinned 
 | OS-26 | Mac run and evidence: all of the above on macOS, the Electron-only checks `main-answers.md` §5 lists as unverifiable on Linux, the first-use Keychain prompt, dialog sheets and focus, and the Cmd key mapping | M | OS-19, OS-21 |
 | OS-23 | Docs: `ROADMAP.md` gate rewrite (ADR 0011 "Roadmap gate changes"), `PRODUCT.md`, `UX.md`, `ARCHITECTURE.md`, `LICENSING.md`, the threat model revision (new surfaces in ADR 0011 Decision 5 item 8) | M | ADR accepted; before the 1a gate review |
 | OS-28 | Rebrand safety: the stable ids of ADR 0011 Decision 2 (app scheme, app name, `userData`, data roots, the `safeStorage` keychain entry, the anchor's location and tag, vault file names) live in one internal-id module that the brand module cannot import. An acceptance test changes only the display brand, then checks that the audit anchor and a vault entry still decrypt and that the renderer origin is unchanged | S | OS-3, OS-6 |
+| OS-29 | Tasks Start screen (PV-T2 on the own shell): task list and detail, worker picker, prompt preview, confirm through the tier-4 card and main's dialog, retry on `stale_version`, the composer result followed by run events, and the CLI result as text to copy (§6.1) | M | OS-8, OS-11, OS-12, DC-8; DC-9 for live refresh (polling before it) |
+| OS-30 | **Opus.** Plugin approval card (§6.2): the strict reader for `pending` with the optional `requester` and for `axis.approvals/1.detail`, and the card showing the full escaped prompt, project, workspace, mode, provider and model before Approve. It is a precondition of PV-K1e-b | M | OS-11 |
+| DC-8 | `axis.tasks/1.start` links the started run to the task and sets `in_progress` in the same transaction as its `task.start` row | S | PV-T1 (merged) |
+| DC-9 | A `tasks` topic on `axis.events/1`: a per-project invalidation hint with no task text | S | E1 (merged) |
 | OS-22 | Retire Code OSS: delete the overlay, patches, removals, replacements, the pin, the Code OSS scripts, the extension matrix and the overlay-tests CI job | S to M | G0 passed |
 
 Composer prerequisites that already exist or are in flight and stay valid: PV-N0 (main secret broker; slice a merged, the rest open), C6 (vault wiring), the Anthropic adapter. The Anthropic part of OS-12 waits on them; the mock part does not.
@@ -115,6 +132,7 @@ Wave D   DC-1b <- DC-1a                            DC-4  <- DC-2
 Wave E   OS-19 <- OS-2, OS-3, OS-18                OS-21 <- OS-3
          OS-24 <- OS-8, OS-14, OS-15               OS-25 <- OS-8
          OS-26 <- OS-19, OS-21                     OS-22 <- G0
+         OS-29 <- OS-8, OS-11, OS-12, DC-8 (DC-9)  OS-30 <- OS-11 (precedes PV-K1e-b)
 ```
 
 OS-15 sits behind the whole demo 1 chain through OS-13. Demo 2's other long chain is DC-1 then OS-14 then OS-17.
@@ -158,7 +176,35 @@ These are ranges, not commitments. The first draft said 7 to 10 days for demo 1,
 
 The interim Code OSS shell stays buildable as a fallback demo until G0. Nothing is deleted before OS-22.
 
-## 6. Open items
+## 6. What two later screens need from the daemon
+
+### 6.1 Tasks Start (PV-T2; from the PV-T1 slice 3 note, `docs/design/tasks-slice3.md`, in review)
+
+**Already served:**
+- `axis.tasks/1.list`, `get` and `revisions`. Titles and bodies are untrusted text, shown as text only, with `untrusted`, `hop` and each revision's author.
+- The worker picker from `axis.agents/1.list` for the project: the kind (composer or CLI) and the name, with archived workers hidden.
+- `startPreview { taskId, worker }`: the whole prompt, its digest, the worker's kind, and the task's source, `untrusted` and `hop`, shown before anything starts.
+- `start { taskId, worker, seq, promptDigest }` with an idempotency key. The first call answers `E_APPROVAL_REQUIRED` with a tier-4 challenge. The shell shows the card from `axis.approvals/1.pending` and `detail`, the user resolves it, and main draws the native dialog. The shell then retries with `approval` and the same key. On `stale_version` it previews again and asks again; other refusals are the contract's closed reasons.
+- The result. A composer worker returns `{ runId, workspaceId }`, followed with `axis.runs/1` events. A CLI worker returns `{ text }` for the user to copy (RR-95); the shell offers a copy button and opens the worker's terminal through the existing worker start.
+
+**Daemon gaps (tickets):**
+- DC-8: a Start neither links its run to the task nor sets `in_progress`.
+- DC-9: `axis.events/1` has no tasks topic, so the shell would poll `list`. The proposed topic is a per-project invalidation hint with no text.
+
+### 6.2 The plugin approval card (PV-K1e-a2's renderer half, `docs/design/plugin-run-start.md` §2)
+
+**What the own shell renders for a plugin challenge:**
+- In `axis.approvals/1.pending`, a challenge a plugin caused carries the optional closed `requester { kind: "plugin", pluginId }`. A window holds at most 4 such challenges (`MAX_PLUGIN_CHALLENGES_PER_WINDOW`), and the reader is strict and accepts the field only in that shape.
+- `axis.approvals/1.detail { challengeId }` (tier 0, user rows only, never a plugin view or a web client) returns `runs.start` detail: the requester, the **full escaped prompt** (up to 64 Ki UTF-16 units; a longer one is refused at issue, never cut), the project and workspace display names, the mode, the provider and the model. The card shows all of it as text before Approve is offered. It offers no Approve when `detail` fails, the challenge is gone or its binding broke.
+- **Tier:** a plugin run start is **tier 3**, resolved in the renderer by the user principal. There is no native dialog (plugins are refused tier 4), and no copy may call it native. Its protection is the taint, the full prompt on the card and an approval for each side effect of the run.
+
+**Ordering:** OS-30 must merge before PV-K1e-b, the first producer of plugin challenges (`plugin-run-start.md` §2). The Code OSS renderer half (a2-2) is on hold and is replaced by OS-30. The later plugin tickets (PV-K2 onward) assume the card exists.
+
+### 6.3 Demo 1 scope
+
+**Tasks Start is out of Demo 1.** Demo 1 proves the core loop: add and trust, workspace, terminal, composer, approval, commit and push. Tasks are Phase 2a work (OS-25), and Start adds DC-8 to the path. Nothing in Demo 1 blocks it: OS-29 reuses OS-11's card and main's tier-4 dialog unchanged. **The plugin approval card is out of Demo 1 too**: no plugin challenge is produced until PV-K1e-b.
+
+## 7. Open items
 
 1. Whether `axis.cliAgents` edits should need main's native confirmation (proposed in OS-4).
 2. The pinned versions in OS-1, chosen to be at least two weeks old and checked against advisories on the day.
