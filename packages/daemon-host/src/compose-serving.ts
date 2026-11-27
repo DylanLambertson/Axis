@@ -35,6 +35,7 @@ import { registerGitHandlers } from "./handlers/git.js";
 import { registerAgentsHandlers } from "./handlers/agents.js";
 import { providerForConnection } from "./agents/start.js";
 import { registerMessagesHandlers } from "./handlers/messages.js";
+import { hostEnableCheck } from "./messages/enable-check.js";
 import { registerPagesHandlers } from "./handlers/pages.js";
 import { createPagesContentHooks } from "./pages/confirm.js";
 import type { PagesService } from "./pages/service.js";
@@ -119,7 +120,8 @@ export function registerServing(registrar: HandlerRegistrar, services: HostServi
     journal, mutex: worktrees.mutex, needsAttention: worktrees.needsAttention };
   registerComposerRunsHandlers(registrar, composerRuns);
   if (built.messaging === undefined) throw new AxisError("E_INTERNAL", "The host composition is incomplete", { reason: "not_built" });
-  registerMessagesHandlers(registrar, built.messaging);
+  // PV-M7 slice 1: enabling a CLI worker's messaging checks its launch entry (from main, as a CLI start does) and workspace.
+  registerMessagesHandlers(registrar, { ...built.messaging, checkEnable: hostEnableCheck({ journal, settingsGet: (k, o) => control.settingsGet(k, o), platform: config.platform }) });
   if (built.pages === undefined) throw new AxisError("E_INTERNAL", "The host composition is incomplete", { reason: "not_built" });
   // axis.pages/1 (PV-Q1 slice 2): the user's own connection only; main's dialog for markReviewed and delete names the page.
   registerPagesHandlers(registrar, built.pages, createPagesContentHooks({ journal, onPreview: built.approvals?.onPreview ?? (() => undefined) }));

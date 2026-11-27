@@ -194,7 +194,13 @@ export const messagesUpdateSettingsRequestSchema = z.discriminatedUnion("setting
   z.strictObject({ setting: z.literal("cliMessaging"), agentId: agentIdSchema, value: z.boolean() }),
   z.strictObject({ setting: z.literal("muted"), agentId: agentIdSchema, value: z.boolean() }),
 ]);
-export const messagesUpdateSettingsResponseSchema = z.strictObject({ settings: messagingSettingsSchema, changed: z.boolean() });
+/**
+ * Enabling a CLI worker's messaging (PV-M7 slice 1) may carry structured warnings: a CLI project-configuration file found in
+ * the worker's workspace that can make the CLI act without asking (endpoint design section 6). Codes, never prose: the
+ * dialog's words are the shell's.
+ */
+export const messagesEnableWarningSchema = z.strictObject({ code: z.literal("repo_config"), path: z.string().min(1).max(64).regex(/^[a-z0-9._/-]+$/), cli: z.string().min(1).max(16).regex(/^[a-z0-9-]+$/) });
+export const messagesUpdateSettingsResponseSchema = z.strictObject({ settings: messagingSettingsSchema, changed: z.boolean(), warnings: z.array(messagesEnableWarningSchema).max(8).optional() });
 
 const spec = <Req extends z.ZodType, Res extends z.ZodType>(
   request: Req,
