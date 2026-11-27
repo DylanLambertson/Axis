@@ -158,6 +158,7 @@ It is a first-party module (`axis.social`) with its own nav item, routes and pro
 - **Phase 1c:** the side-panel editor uses the editor kit, sharing the window's buffer with the code module. The O-8 fallback "IDE split half if the embed exceeds ADR 0002 criterion 2" is removed. "Opening a folder in IDE view does not register it" is removed (there is no folder open). "Shell-layer footprint against criterion 2" becomes C2′.
 - **Phase 2b:** inline edit and diff happen in the code module. The browser skeleton follows the web host (W1), not reh-web. **Phase 6:** the extension matrix is removed.
 - "Recommended first 10 tickets" is replaced by `own-shell-plan.md`.
+- **To be re-stated when this ADR is Accepted** (they stay in force as written until then): the Phase 1 heading and intro ("with the full IDE view") and the Phase 1a **IDE view** bullet, which make a full IDE, the debugger and the extension host mandatory (ADR 0002 criterion 1). This ADR makes the IDE an optional module with no extensions or debugger at first, so those lines become C1′ above.
 
 ## Consequences
 
