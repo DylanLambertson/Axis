@@ -1,5 +1,7 @@
 # Implementation Roadmap and Gates
 
+> **Direction change (2026-11-26):** ADR 0011 (`docs/adr/0011-own-shell-ide-as-optional-feature.md`, Proposed) replaces the Code OSS-based shell with our own shell, in which the IDE is one optional feature module. It supersedes ADR 0002. The gate lines below that name Code OSS, IDE view, Restricted Mode, extensions, Open VSX, reh-web or ADR 0002 criteria 1 and 2 are re-stated in ADR 0011 ("Roadmap gate changes") and will be rewritten here once it is accepted. The ticket plan is `docs/design/own-shell-plan.md`.
+
 Sequenced agent-first per ADR 0004 and ADR 0006: the Agent view shell is built in Phases 0–1, alongside the IDE view on the same custom shell, and Axis becomes an agent home in Phase 1c. The first usable release target is the Phase 1 slice: 1a, then 1b, then 1c. Phase 1c is part of the target because ADR 0006 makes the agent, not the workspace, the unit the product manages and the project home its landing surface: a release without 1c would ship the workspace dashboard that ADR 0006 replaces (decided 2026-11-21 with O-7, `docs/design/owner-decisions-2026-11-21.md`).
 
 The phase structure follows owner decision O-7: Phase 1c is inserted after 1b, Phase 2 is split into 2a and 2b, and Phase 4 into 4a and 4b. Gates 0, 1a and 1b are unchanged. The ticket breakdown for 1c, 2a and 4a is `docs/design/product-vision-v2-tickets.md`.
