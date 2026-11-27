@@ -5,8 +5,9 @@
   decisions of 2026-11-26 and 2026-11-27 (owner delegation, reversible).
 - **Scope:** who may write `plugin_enablement` and `plugin_grants` (journal v16, PV-K1b), through which calls, what each write is
   bound to, and what a revoke or a disable ends.
-- **Not in scope:** install, update, signatures and extraction are the rest of PV-K2 and follow ADR 0008 decisions 7 and 8. They
-  create the plugin's row and propose grants; they grant only through the calls below (section 1, condition 4).
+- **Not in scope:** install, update, signatures and extraction are the rest of PV-K2 and follow ADR 0008 decisions 7 and 8
+  (designed in `plugin-install.md`). They create the plugin's row and propose grants; they grant only through the calls below
+  (section 1, condition 4).
 - **Sources:** ADR 0008 decisions 4, 6 and 8 and the amendment "how the main-built dialog is reached"; `plugin-grants.md`;
   `plugin-run-start.md` section 3.1; `threat-model-phase4a.md` OI-3 and gate 4a/L24 (partly superseded, section 4).
 
