@@ -25,6 +25,7 @@
 import { lookup } from "node:dns";
 import { Agent, request } from "node:https";
 import { resolvedRefusal } from "./address.js";
+import { copyBytes, isBytes } from "./bytes.js";
 import { EgressError, socketError } from "./egress-errors.js";
 import { BodyCollector, checkContentEncoding, checkRequestBody, EGRESS_LIMITS, IntegrationGate, parseRetryAfter, requestHeaders } from "./egress-limits.js";
 import { declaredOrigins, egressTarget, type EgressTarget } from "./host.js";
@@ -137,12 +138,13 @@ function snapshot(req: EgressRequest): Snapshot {
   const originList: unknown[] | null = Array.isArray(origins) ? Array.from(origins) : null;
   if (originList === null || originList.some((o) => typeof o !== "string") || typeof url !== "string") throw new EgressError("request_refused");
   if (headers !== undefined && (typeof headers !== "object" || headers === null || ![Object.prototype, null].includes(Object.getPrototypeOf(headers)))) throw new EgressError("header_refused");
-  if (body !== undefined && !(body instanceof Uint8Array)) throw new EgressError("request_refused");
+  if (body !== undefined && !isBytes(body)) throw new EgressError("request_refused");
   if (body !== undefined && (method === "GET" || method === "HEAD")) throw new EgressError("request_refused");
   if (signal !== undefined && !(signal instanceof AbortSignal)) throw new EgressError("request_refused");
   const target = egressTarget(url, declaredOrigins(originList as string[]));
   if (typeof target === "string") throw new EgressError("target_refused");
-  const copy = body === undefined ? undefined : Buffer.from(Uint8Array.prototype.slice.call(body));
+  const bytes = body === undefined ? undefined : copyBytes(body); // no caller code runs: review 3 nit 1
+  const copy = bytes === undefined ? undefined : Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   checkRequestBody(copy);
   const sent = requestHeaders(headers ?? {});
   if (copy !== undefined) sent["content-length"] = String(copy.byteLength);

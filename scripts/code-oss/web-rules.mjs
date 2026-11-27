@@ -64,7 +64,7 @@ export function endpointPinRefusals(rel, source) {
 /** The daemon's egress client: outbound only, `node:https` (and `node:dns` lookup, egress-rules.mjs), pinned below. */
 export const EGRESS_CLIENT_FILE = "daemon-host/net/egress-client.ts";
 /** SHA-256 of the egress client's text (as sourceSha256 computes it). Changing the client means changing this pin in the same change. */
-export const EGRESS_CLIENT_SHA256 = "5b61ccf71c29e418781edb28e229b9965f31a45b51641ce05cb48bab886b6b8b";
+export const EGRESS_CLIENT_SHA256 = "160233a6a0a798b35952b296231726a4a3e323218bc5f5d7ef7bb51a93bc8007";
 /** The one form of node:dns the egress client may use. */
 export const EGRESS_DNS_IMPORT = 'import { lookup } from "node:dns";';
 /** The only files that may import the egress client: the composition root (none does yet; PV-N1f wires it). */

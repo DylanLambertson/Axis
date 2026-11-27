@@ -134,6 +134,12 @@ test("the request is read once: getters, a Proxy and a body changed after the ca
   const origins = new Proxy([r.origin], { get: (o, k) => (k === "0" && originReads++ > 0 ? `https://${CANARY}.example` : Reflect.get(o, k)) });
   await c.send(r.req({ origins }));
   assert.equal(r.hits.at(-1)?.servername, HOST);
+  // A body whose byteLength and species lie: Content-Length and the bytes sent come from the real copy (review 3 nit 2).
+  class Lying extends Uint8Array {}
+  Object.defineProperty(Lying, Symbol.species, { get: () => { throw new Error(CANARY); } });
+  Object.defineProperty(Lying.prototype, "byteLength", { get: () => 73 });
+  await c.send(r.req({ method: "POST", body: new Lying([0x61, 0x62, 0x63, 0x64]) }));
+  assert.deepEqual([r.hits.at(-1)?.headers["content-length"], r.hits.at(-1)?.body], ["4", "abcd"]);
   // A non-plain headers object (a Map) is refused, not read as "no headers".
   assert.equal((await failure(c.send(r.req({ headers: new Map([["x-a", "1"]]) as never })))).code, "header_refused");
   // A Proxy of a byte array is not bytes: refused, closed.
