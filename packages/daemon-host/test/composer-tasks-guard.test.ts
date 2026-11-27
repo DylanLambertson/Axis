@@ -61,6 +61,16 @@ test("an untainted run, update_task over the user's revision: asks, at tier netw
   assert.equal(d2.results[1]?.[0], `wrote task ${tk.taskId}, revision 2`);
   assert.deepEqual(last(p, tk.taskId), [2, "agent"]);
   assert.deepEqual(decisions(p), [["network", "deny"], ["network", "approved"]], "broker.decision records the raised tier");
+  assert.deepEqual(p.rows("task.update").map((x) => [x["callerKind"], x["authorKind"], x["runId"]]), [["agent", "agent", approved]], "the worker's update, audited with its run");
+});
+
+test("a caller-supplied author is not an argument: update_task with an extra author key is invalid_args, with no card and no write", async (t) => {
+  const p = await tasksRig(t);
+  const tk = workerTask(p);
+  const d = drive(p.r, p.run("w1"), [[call(UPDATE_TASK, { taskId: tk.taskId, baseSeq: 1, title: "Fix it", body: "worker text\nmore", author: { kind: "agent", agentId: "w1" } })], []]);
+  assert.equal(await denyAll(p.r, d.end), 0);
+  assert.equal(refusal(d.results[1]?.[0]), "invalid_args");
+  assert.deepEqual(last(p, tk.taskId), [1, "agent"]);
 });
 
 test("an untainted run, update_task over a worker's revision: writes without asking (kills RAISE ON ANY AUTHOR)", async (t) => {

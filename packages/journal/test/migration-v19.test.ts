@@ -74,11 +74,12 @@ test("a task with no user revision is pruned to 50 as before (the NULL case)", (
   db.close();
 });
 
-test("the kept trigger refuses any other deletion; deleting the task still removes every revision", () => {
+test("the kept trigger refuses any other deletion, a revision is never updated; deleting the task still removes every revision", () => {
   const { db, journal } = setup();
   journal.tasks.create({ taskId: "t1", projectId: "p1", title: "Fix it", body: "first", author: USER });
   revise(journal, 60, W);
   journal.tasks.create({ taskId: "t2", projectId: "p1", title: "Other", body: "x", author: W });
+  refused(() => db.prepare("UPDATE task_revisions SET author_kind = 'user', author_id = NULL, hop = 0 WHERE task_id = 't1' AND seq = 61").run(), "a revision never changes: its author cannot be rewritten");
   for (const s of [1, 13, 40, 61]) refused(() => db.prepare("DELETE FROM task_revisions WHERE task_id = 't1' AND seq = ?").run(s), `seq ${s} at the cap`);
   refused(() => db.prepare("DELETE FROM task_revisions WHERE task_id = 't2'").run(), "a single revision under the cap");
   assert.equal(seqs(db).length, CAP);
