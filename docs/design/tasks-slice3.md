@@ -95,8 +95,8 @@ For the own-shell plan. Most of it is served already. The gaps are marked.
 5. **The result:**
    - A composer worker returns `{ runId, workspaceId }`. Follow the run with `axis.runs/1` events (served).
    - A CLI worker returns `{ text }` for the user to copy (RR-95). The shell offers a copy button and opens the worker's terminal through the existing agent start.
-6. **Status: GAP.**
-   - A Start does not link the run to the task or move it to `in_progress`. Proposed for the daemon: `start` adds a `run` link and sets `in_progress` in the same transaction as its `task.start` row.
-   - Then the task view shows its run with no extra call.
+6. **Status: built** (`tasks-store.md` §6, "The run on the task").
+   - A composer Start adds a `run` link and sets `in_progress` in the same transaction as its `task.start` row.
+   - The task view shows its run with no extra call.
    - A worker cannot trigger it. It happens only inside `axis.tasks/1.start`, the user's own tier-4 action that main's dialog confirms. The worker tools have no link or status call, and runs reach no `axis.tasks/1` row.
 7. **Freshness: GAP.** `axis.events/1` has no tasks topic, so the shell would have to poll `list`. Proposed: a `tasks` topic (an invalidation hint per project carrying no text: the shell then calls `list`, as for the other topics).

@@ -1,6 +1,6 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import { createHash } from "node:crypto";
-import type { AuditEventInput } from "@axis/audit";
+import { AxisError, type AuditEventInput } from "@axis/audit";
 import type { HandlerContext } from "@axis/daemon";
 import type { Journal, TaskAuthor, TaskRecord } from "@axis/journal";
 import type { TasksRequest, TasksResponse } from "@axis/protocol";
@@ -19,6 +19,11 @@ import { TasksRefusal } from "./service.js";
  * run's tools are built; a receipt that cannot be recorded ends the run START_FAILED with nothing sent.
  *
  * A CLI worker gets no run: `start` answers the prompt as the text to copy into it (the confirmation is still required).
+ *
+ * A composer Start that started a run (not a replay) links the run to the task and sets the task `in_progress`, in the same
+ * transaction as its `task.start` row (`tasks-slice3.md` §6.6). Only this user action does it: the worker tools have no
+ * link or status call. The run is already running by then, so nothing here refuses the Start: a task at its 32 links gets
+ * no link (`linked: false` on the row), and a task deleted meanwhile gets only the row.
  */
 export interface TaskStartDeps {
   readonly journal: Pick<Journal, "tasks" | "agents" | "getWorkspace">;
@@ -80,13 +85,13 @@ export function createTaskStart(deps: TaskStartDeps) {
     const w = workerOf(journal, req.worker, s.task.projectId);
     return { taskId: s.task.taskId, seq: s.seq, worker: w.id, workerKind: w.launch.kind, prompt: s.prompt, promptDigest: s.digest, source: s.task.source, untrusted: s.task.untrusted, hop: s.task.hop };
   };
-  const audit = (s: ReturnType<typeof startState>, worker: string, workerKind: string, runId?: string): void => {
+  const audit = (s: ReturnType<typeof startState>, worker: string, workerKind: string, extra: Record<string, unknown> = {}): void => {
     deps.audit.append({
       actor: "user",
       action: "task.start",
       target: `task:${s.task.taskId}`,
       outcome: "success",
-      payload: { taskId: s.task.taskId, projectId: s.task.projectId, seq: s.seq, callerKind: "user", workerId: worker, workerKind, untrusted: s.task.untrusted, hop: s.task.hop, ...(runId === undefined ? {} : { runId }) },
+      payload: { taskId: s.task.taskId, projectId: s.task.projectId, seq: s.seq, callerKind: "user", workerId: worker, workerKind, untrusted: s.task.untrusted, hop: s.task.hop, ...extra },
     });
   };
   const start = async (req: TasksRequest<"start">, context: HandlerContext): Promise<TasksResponse<"start">> => {
@@ -112,7 +117,21 @@ export function createTaskStart(deps: TaskStartDeps) {
     } catch (e) {
       return fromAgent(e);
     }
-    if (!out.replayed) audit(s, w.id, "composer", out.runId);
+    if (!out.replayed) {
+      const runId = out.runId;
+      journal.tasks.transaction(() => {
+        if (journal.tasks.get(req.taskId) === undefined) return audit(s, w.id, "composer", { runId, linked: false });
+        let linked = true;
+        try {
+          journal.tasks.link(req.taskId, { kind: "run", target: runId });
+        } catch (e) {
+          if (!(e instanceof AxisError && (e.detail as { reason?: unknown }).reason === "limit_reached")) throw e;
+          linked = false;
+        }
+        const status = journal.tasks.setStatus(req.taskId, "in_progress").status;
+        audit(s, w.id, "composer", { runId, linked, status });
+      });
+    }
     return { kind: "composer", runId: out.runId, workspaceId: out.workspaceId, replayed: out.replayed };
   };
   return { preview, start };
