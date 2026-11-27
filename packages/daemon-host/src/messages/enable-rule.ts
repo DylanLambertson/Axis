@@ -146,7 +146,7 @@ function codexConfigRule(kv: string): string | undefined {
 /** Programs that run another program (review 3 N12): a known CLI's name whose real path is one of these is a wrapper. */
 const WRAPPERS: ReadonlySet<string> = new Set(["env", "sudo", "doas", "su", "runuser", "nice", "nohup", "timeout", "time", "stdbuf", "xargs", "setsid", "chrt", "ionice", "flock", "npx", "npm", "pnpm", "yarn", "bunx", "uvx", "pipx"]);
 /**
- * Environment assignments in a wrapper's arguments (`env A=b`, `docker -e A=b`, `--env=A=b`), INVERTED (review 4 SF11: a
+ * Environment assignments in a wrapper's arguments (`env A=b`), INVERTED (review 4 SF11: a
  * planted `$HOME/.codex/config.toml` behind `env HOME=/x` runs the CLI with approvals and the sandbox off). Only these names
  * are allowed; a configuration home (`HOME`, `XDG_*`, `CODEX_*`, `CLAUDE_*`) is `config_home`, any other `env_assignment`.
  */
@@ -253,6 +253,16 @@ export function decideCliMessaging(facts: EnableFacts, config: readonly CliProje
   // The union of the rows of every known CLI the name or the real path names (review 2 SF9); none known: every CLI's rows.
   // A known name whose real path is a wrapper or an interpreter is a wrapper (review 3 N12: `/r/codex -> /usr/bin/env`).
   const realIsWrapper = facts.executableReal !== undefined && (WRAPPERS.has(cliOf(facts.executableReal)) || interpreterOf(facts.executableReal) !== undefined);
+  // A known name is trusted only when its real path is that CLI itself (review 5 N24): its base name, or a directory on the way
+  // named after it (Claude's `.../claude/versions/2.1.332`, Codex's `.../codex/bin/codex.js`). A link named after a CLI whose
+  // real path is anything else (`taskset`, an unknown binary) could run anything: it is refused, not trusted by name.
+  const nameOnly = cliOf(executable);
+  if (KNOWN_CLIS.has(nameOnly) && facts.executableReal !== undefined && !realIsWrapper) {
+    const real = facts.executableReal;
+    const realName = cliOf(real);
+    const dirs = real.split(/[\\/]/).slice(0, -1).map((d) => d.toLowerCase());
+    if (!KNOWN_CLIS.has(realName) && !dirs.includes(nameOnly)) return { allowed: false, rule: "wrapper_unparsed" };
+  }
   const knownNames = realIsWrapper ? [] : [...new Set(exes.map(cliOf).filter((n) => KNOWN_CLIS.has(n)))];
   const clis: ReadonlySet<string> = knownNames.length === 0 ? KNOWN_CLIS : new Set(knownNames);
   for (const exe of exes) {
@@ -285,7 +295,7 @@ export function decideCliMessaging(facts: EnableFacts, config: readonly CliProje
     for (let i = 0; i < args.length; i++) {
       if (scan.values.has(i)) continue;
       const tok = args[i] as string;
-      const m = /^([A-Za-z_][A-Za-z0-9_]*)=/.exec(tok.startsWith("--env=") ? tok.slice(6) : tok);
+      const m = /^([A-Za-z_][A-Za-z0-9_]*)=/.exec(tok);
       if (m === null || ENV_SAFE(m[1] as string)) continue;
       return { allowed: false, rule: CONFIG_HOME.test(m[1] as string) ? "config_home" : "env_assignment" };
     }
