@@ -89,8 +89,8 @@ test("WT-3: a CLI's project configuration is protected: Claude's settings, local
   for (const p of [[".claude", "settings.json"], [".claude", "settings.local.json"], [".claude", "hooks", "pre.sh"], [".codex", "config.toml"], [".codex", "hooks", "x"], [".CLAUDE", "Settings.JSON"], [".mcp.json"], [".claude", "skills", "s", "SKILL.md"], [".claude", subagents, "x.md"], [".claude", "plugins", "p"], [".claude", "commands", "x.md"], [".claude", "workflows", "w.js"], [".claude-plugin", "plugin.json"], [".claude", "launch.json"], [".claude", "routines", "r"], [".claude", "scheduled_tasks.json"], [".claude", "output-styles", "x.md"], [".claude", "loop.md"], [".lsp.json"]]) {
     assert.ok(hit(p) !== undefined, p.join("/"));
   }
-  assert.equal(hit([".claude", "rules", "x.md"]), undefined, "instruction files are not on the list (one decision for the whole class)");
-  assert.equal(hit(["CLAUDE.local.md"]), undefined);
+  assert.equal(hit([".claude", "rules", "x.md"]), undefined, "instruction files are not on the list (OD-1, decided: highlighted in review, no approval gate)");
+  assert.equal(hit(["CLAUDE.local.md"]), undefined, "OD-1, decided: an instruction file");
   assert.equal(hit([".codex", "agents", "x.md"]), undefined);
   assert.equal(hit(["sub", ".claude", "settings.json"]), undefined, "root-anchored: a nested copy is not the project's");
 });
