@@ -119,7 +119,8 @@ export function registerServing(registrar: HandlerRegistrar, services: HostServi
   const composerRuns: ComposerRunsHandlerDeps = {
     service: { cancel: (id) => composer.cancel(id), get: (id) => composer.get(id), list: (o) => composer.list(o), events: (id, a, l) => composer.events(id, a, l), start: ticketedStart((i, s) => composer.start(i, s), (id) => journal.getWorkspace(id)?.projectId, () => ports.clock.monotonic()) },
     gate,
-    journal, mutex: worktrees.mutex, needsAttention: worktrees.needsAttention };
+    journal, mutex: worktrees.mutex, needsAttention: worktrees.needsAttention,
+    pluginStarts: journal }; // PV-K1e-b: a plugin's start reads its scope and grant from the journal
   registerComposerRunsHandlers(registrar, composerRuns);
   if (built.messaging === undefined) throw new AxisError("E_INTERNAL", "The host composition is incomplete", { reason: "not_built" });
   registerMessagesHandlers(registrar, built.messaging);

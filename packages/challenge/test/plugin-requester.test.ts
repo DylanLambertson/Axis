@@ -28,3 +28,33 @@ test("the plugin actor rule is the audit log's: a malformed plugin id is refused
   }
   for (const ok of ["plugin:acme", "plugin:acme.board", "plugin:a-b.c-d.e.f", `plugin:${"a".repeat(64)}`]) assert.doesNotThrow(() => issue(ok), ok);
 });
+
+test("a withdrawn plugin challenge does not hold the host window's quota, but still holds its plugin's", () => {
+  const manager = new ChallengeManager({ audit: { append() {} }, now: () => 1_700_000_000_000, monotonic: () => 1, maxOutstandingPerWindow: 2, maxOutstandingPerActor: 1 });
+  const at = (actor: string, conn: string) =>
+    manager.issue({ contract: "axis.runs", version: 1, method: "start", args, requestDigest: requestDigest({ contract: "axis.runs", version: 1, method: "start", payload: args }), target: "workspace:ws-1", contentDigest: "e".repeat(64), actor, connectionId: conn.padEnd(22, "_"), windowId: "w1", tier: 3 });
+  for (const [actor, conn] of [["plugin:acme.board", "Pa"], ["plugin:other.tool", "Pb"]] as const) {
+    const c = at(actor, conn);
+    manager.withdraw(c.challengeId, { actor, connectionId: conn.padEnd(22, "_") });
+  }
+  assert.doesNotThrow(() => at("user", "Ua"), "the user's own approval still fits the window");
+  assert.throws(() => at("plugin:acme.board", "Pa"), (e: unknown) => (e as { code?: string }).code === "E_BACKPRESSURE", "the plugin's own tombstone still counts for it");
+});
+
+test("a withdrawn plugin challenge still counts for its plugin across windows", () => {
+  const manager = new ChallengeManager({ audit: { append() {} }, now: () => 1_700_000_000_000, monotonic: () => 1, maxOutstandingPerActor: 1, maxOutstandingPerActorOverall: 1 });
+  const at = (windowId: string) =>
+    manager.issue({ contract: "axis.runs", version: 1, method: "start", args, requestDigest: requestDigest({ contract: "axis.runs", version: 1, method: "start", payload: args }), target: "workspace:ws-1", contentDigest: "e".repeat(64), actor: "plugin:acme.board", connectionId: CONN, windowId, tier: 3 });
+  const c = at("w1");
+  manager.withdraw(c.challengeId, { actor: "plugin:acme.board", connectionId: CONN });
+  assert.throws(() => at("w2"), (e: unknown) => (e as { code?: string }).code === "E_BACKPRESSURE");
+});
+
+test("only plugin tombstones are exempt: a user's withdrawn challenge still holds the window, a plugin's does not", () => {
+  const manager = new ChallengeManager({ audit: { append() {} }, now: () => 1_700_000_000_000, monotonic: () => 1, maxOutstandingPerWindow: 1, maxOutstandingPerActor: 4 });
+  const at = (actor: string, conn: string) =>
+    manager.issue({ contract: "axis.runs", version: 1, method: "start", args, requestDigest: requestDigest({ contract: "axis.runs", version: 1, method: "start", payload: args }), target: "workspace:ws-1", contentDigest: "e".repeat(64), actor, connectionId: conn.padEnd(22, "_"), windowId: "w1", tier: 3 });
+  const u = at("user", "Ua");
+  manager.withdraw(u.challengeId, { actor: "user", connectionId: "Ua".padEnd(22, "_") });
+  assert.throws(() => at("plugin:acme.board", "Pa"), (e: unknown) => (e as { code?: string }).code === "E_BACKPRESSURE", "the user's tombstone fills the window");
+});
