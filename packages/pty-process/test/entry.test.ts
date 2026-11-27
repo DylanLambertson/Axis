@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { adaptMessagePort, createPtyProcessPort, runPtyEntry, type DataReply, type MessagePortLike, type PtyEntryDeps, type PtyEntryHandle } from "../src/index.js";
+import { DEBUG_SIGNAL_LINE, adaptMessagePort, createPtyProcessPort, runPtyEntry, type DataReply, type MessagePortLike, type PtyEntryDeps, type PtyEntryHandle } from "../src/index.js";
 import { pipeSpawn, settle, until } from "../testing/helpers.js";
 import { electronShaped, nodePair, nodeShaped, RecordingPort } from "../testing/ports.js";
 import { SPEC } from "../testing/rig.js";
@@ -9,7 +9,7 @@ import { SPEC } from "../testing/rig.js";
 type ParentListener = (event: { data: unknown; ports?: readonly MessagePortLike[] }) => void;
 
 /** TEST ONLY. The utility process's `parentPort`, `process` and a log, driven by hand. */
-function harness(over: Partial<PtyEntryDeps> = {}): { entry: PtyEntryHandle; send: (data: unknown, ports?: readonly MessagePortLike[]) => void; exits: number[]; lines: string[]; listeners: () => number; emit: (e: "SIGTERM" | "exit") => void; children: number[] } {
+function harness(over: Partial<PtyEntryDeps> = {}): { entry: PtyEntryHandle; send: (data: unknown, ports?: readonly MessagePortLike[]) => void; exits: number[]; lines: string[]; listeners: () => number; usr1: () => number; emit: (e: "SIGTERM" | "SIGUSR1" | "exit") => void; children: number[] } {
   let listener: ParentListener | undefined;
   const procListeners = new Map<string, Set<() => void>>();
   const exits: number[] = [];
@@ -33,7 +33,9 @@ function harness(over: Partial<PtyEntryDeps> = {}): { entry: PtyEntryHandle; sen
     send: (data, ports = []) => listener?.({ data, ports }),
     exits,
     lines,
-    listeners: () => (listener === undefined ? 0 : 1) + [...procListeners.values()].reduce((n, s) => n + s.size, 0),
+    // Every listener but the SIGUSR1 one, which is permanent by design (audit C M1) and counted by `usr1`.
+    listeners: () => (listener === undefined ? 0 : 1) + [...procListeners].filter(([e]) => e !== "SIGUSR1").reduce((n, [, s]) => n + s.size, 0),
+    usr1: () => procListeners.get("SIGUSR1")?.size ?? 0,
     emit: (e) => procListeners.get(e)?.forEach((l) => l()),
     children,
   };
@@ -174,6 +176,7 @@ test("dispose kills every terminal, closes every served port and removes every l
   try {
     await until(() => !alive(pgid));
     assert.equal(h.listeners(), 0);
+    assert.equal(h.usr1(), 1, "dispose keeps the SIGUSR1 listener: with none, the signal's default applies again");
   } finally {
     host.dispose();
     data.close();
@@ -249,6 +252,8 @@ test("the entry refuses to start without a parent port, with debugger flags, exe
     [{ execArgv: ["--inspect=0"] }, "debug_flag_refused"],
     [{ execArgv: ["--remote-debugging-port=1"] }, "debug_flag_refused"],
     [{ execArgv: ["--require", "x.js"] }, "exec_args_refused"],
+    [{ execArgv: ["--disable-sigusr1", "--disable-sigusr1"] }, "exec_args_refused"],
+    [{ execArgv: ["--disable-sigusr1", "--require", "x.js"] }, "exec_args_refused"],
     [{ env: { NODE_OPTIONS: "--require x" } }, "node_options_refused"],
   ];
   for (const [over, reason] of cases) {
@@ -257,6 +262,11 @@ test("the entry refuses to start without a parent port, with debugger flags, exe
     assert.deepEqual(h.lines, [`axis.pty refused to start: ${reason}`]);
     assert.equal(h.entry.service, undefined);
     assert.equal(h.listeners(), 0);
+    assert.equal(h.usr1(), 1, `${reason}: the SIGUSR1 listener is installed before any refusal`);
+    h.emit("SIGUSR1");
+    h.emit("SIGUSR1");
+    assert.deepEqual(h.lines.slice(1), [DEBUG_SIGNAL_LINE], "one closed line, however often the signal comes");
   }
   assert.deepEqual(harness({ env: { NODE_OPTIONS: "" } }).exits, []);
+  assert.deepEqual(harness({ execArgv: ["--disable-sigusr1"] }).exits, [], "the flag that keeps the inspector closed is accepted alone (audit C M1)");
 });
