@@ -20,6 +20,8 @@ const REASON_TEXT: Readonly<Record<string, string>> = {
   shutting_down: "The agent service is stopping.",
   plugin_starts_unavailable: "Runs started by a plugin are not available.",
   taint_unrecorded: "The run could not be marked as started from untrusted input.",
+  out_of_scope: "That workspace is not in this plugin's project.",
+  grant_changed: "The plugin's permission to start runs changed; ask again.",
 };
 
 const CODE_TEXT = {
