@@ -264,16 +264,16 @@ test("review N1/N2/N3: an approval waiting goes before a project dialog; shutdow
   assert.equal((await w.actions.act(5, { nonce: "n", action: "untrust" }))?.outcome, "untrusted", "mutant: the map is not pruned");
 });
 
-test("status: no dialog, changes nothing, three closed outcomes from the window's folder only; never an id, name or path", async () => {
-  const cases: Array<[Record<string, unknown>, string]> = [
-    [inspected(), "status_not_registered"],
-    [inspected({ registered: { projectId: "p-secret", trusted: false } }), "status_read_only"],
-    [inspected({ registered: { projectId: "p-secret", trusted: true } }), "status_trusted"],
+test("status: no dialog, changes nothing, three closed outcomes from the window's folder only; this window's project id only, never a name or path", async () => {
+  const cases: Array<[Record<string, unknown>, Record<string, unknown>]> = [
+    [inspected(), { nonce: "s1", outcome: "status_not_registered" }],
+    [inspected({ registered: { projectId: "p-7", trusted: false } }), { nonce: "s1", outcome: "status_read_only", projectId: "p-7" }],
+    [inspected({ registered: { projectId: "p-7", trusted: true } }), { nonce: "s1", outcome: "status_trusted", projectId: "p-7" }],
   ];
   for (const [answer, want] of cases) {
     const r = rig({ answers: (m) => (m.type === "projects.inspect" ? answer : undefined) });
     const reply = await r.actions.act(1, { nonce: "s1", action: "status" });
-    assert.deepEqual(reply, { nonce: "s1", outcome: want }, "exactly two keys: nothing about the project leaks");
+    assert.deepEqual(reply, want, "the registered window's project id and nothing else (PV-D1-0)");
     assert.deepEqual(r.sent.map((m) => [m.type, m.path]), [["projects.inspect", FOLDER]], "only an inspect of the window's folder");
     assert.equal(r.shown.length, 0, "no dialog");
   }
@@ -299,4 +299,23 @@ test("status has its own bucket: polling never uses up the dialog actions, one i
   assert.equal((await first)?.outcome, "status_not_registered");
   r.tick(60_001);
   assert.equal(await act(r, "status"), "status_not_registered", "the bucket refills; a cancelled add set no status cooldown");
+});
+
+test("PV-D1-0: no answer ever carries a key beyond nonce, outcome and (status of a registered folder only) projectId", async () => {
+  const registered = (m: Sent) => (m.type === "projects.inspect" ? inspected({ registered: { projectId: "p-7", trusted: false } }) : undefined);
+  const replies = [
+    await rig({ answers: registered, press: [0] }).actions.act(1, { nonce: "a", action: "trust" }),
+    await rig({ answers: registered }).actions.act(1, { nonce: "b", action: "untrust" }),
+    await rig({ press: [1] }).actions.act(1, { nonce: "c", action: "add" }),
+    await rig({ answers: registered }).actions.act(1, { nonce: "d", action: "add" }),
+    await rig({ folder: undefined }).actions.act(1, { nonce: "e", action: "status" }),
+    await rig({ send: false }).actions.act(1, { nonce: "f", action: "status" }),
+    await rig({ answers: registered }).actions.act(1, { nonce: "g", action: "status" }),
+  ];
+  for (const r of replies) {
+    assert.ok(r !== undefined);
+    const keys = Object.keys(r).sort();
+    const isRegisteredStatus = r.outcome === "status_trusted" || r.outcome === "status_read_only";
+    assert.deepEqual(keys, isRegisteredStatus ? ["nonce", "outcome", "projectId"] : ["nonce", "outcome"], JSON.stringify(r));
+  }
 });
