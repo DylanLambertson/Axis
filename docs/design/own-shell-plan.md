@@ -98,16 +98,17 @@ The renderer packages import only `@axis/protocol`, each other and their pinned 
 | OS-19 | **Security review.** Security evidence on the own shell: Trusted Types smoke under the production CSP; ADR 0003 criteria 1 to 3 against our window (plugin view, second window, navigated and non-app frames refused); no listener; G-28; EL-5; renderer has no `node:*`, no fs and no network (bundle check plus a runtime probe) | M | OS-2, OS-3, OS-18 |
 | OS-21 | Packaging per OS (signing on macOS later), and the packaged NET-GATE half re-done against this build (replaces `check-net-packaged.mjs`'s Code OSS assumption) | M | OS-3 |
 | OS-24 | 1c UI on the own shell: All agents lanes (5, 20, 50), side panel with Agents and Code tabs (editor kit), New agent, groups, pull request section (`axis.forge/1`), usage (`axis.usage/1`) | L | OS-8, OS-14, OS-15 |
-| OS-25 | Messaging, tasks and pages surfaces on the core shell (2a; contracts on main) | L | OS-8 |
+| OS-25 | Messaging, tasks and pages surfaces on the core shell (2a; contracts on main). The task list and detail are OS-29's, not this ticket's | L | OS-8 |
 | OS-26 | Mac run and evidence: all of the above on macOS, the Electron-only checks `main-answers.md` §5 lists as unverifiable on Linux, the first-use Keychain prompt, dialog sheets and focus, and the Cmd key mapping | M | OS-19, OS-21 |
 | OS-23 | Docs: `ROADMAP.md` gate rewrite (ADR 0011 "Roadmap gate changes"), `PRODUCT.md`, `UX.md`, `ARCHITECTURE.md`, `LICENSING.md`, the threat model revision (new surfaces in ADR 0011 Decision 5 item 8) | M | ADR accepted; before the 1a gate review |
 | OS-28 | Rebrand safety: the stable ids of ADR 0011 Decision 2 (app scheme, app name, `userData`, data roots, the `safeStorage` keychain entry, the anchor's location and tag, vault file names) live in one internal-id module that the brand module cannot import. An acceptance test changes only the display brand, then checks that the audit anchor and a vault entry still decrypt and that the renderer origin is unchanged | S | OS-3, OS-6 |
-| OS-29 | Tasks Start screen (PV-T2 on the own shell): task list and detail, worker picker, prompt preview, confirm through the shell's own task card built from the kept preview (never `approvals.detail`) and main's tier-4 dialog opened at issue, retry with the same key after the dialog, retry on `stale_version`, the composer result followed by run events, and the CLI result as text to copy (§6.1) | M | OS-8, OS-11, OS-12, DC-8; DC-9 for live refresh (polling before it) |
+| OS-29 | Tasks Start screen (PV-T2 on the own shell): task list and detail, worker picker, prompt preview, confirm through the shell's own task card built from the kept preview (never `approvals.detail`) and main's tier-4 dialog opened at issue, retry with the same key after the dialog, retry on `stale_version`, the composer result followed by run events, and the CLI result as text to copy (§6.1). OS-29 owns the task list and detail. It also shows, as §6.1 decides: a task that stays `in_progress` after its run ends, with the linked run's state from `axis.runs/1`; in words, a Start whose run is not in the task's `links` (the task held its 32 links); a worker's `update_task` over the user's revision, and a tainted run's creates, as ordinary OS-11 run cards (no task card); fixed words for `limit_reached` | M | OS-8, OS-11, OS-12 (DC-8 and DC-9 built) |
 | OS-30 | **Security review.** Plugin approval card (§6.2): the strict reader for `pending` with the optional `requester` and for `axis.approvals/1.detail`, and the card showing the full escaped prompt, project, workspace, mode, provider and model before Approve. It is a hard precondition of PV-K2's activation (K2-enable) | M | OS-11; it gates PV-K2, not PV-K1e-b |
 | OS-31 | CLI messaging enable flow (2a; `messages-contract.md` section 14, `axis-messages-shim.md` sections 6 and 7). Per worker, the shell's own dialog: the first `updateSettings cliMessaging true` either refuses with a closed reason, or answers `changed: false` with the repository-configuration warnings. The dialog then lists each file and repeats the call with `acknowledged` (the second confirmation of M-3, a **renderer tier-2** action, never called native). Each closed reason gets fixed words (`bypass_entry`, `unknown_flag`, `config_unparsed`, `wrapper_unparsed`, `env_assignment`, `config_home`, `real_path_unresolved`, `too_many_repo_files`, `empty_argv`), never daemon text. Also the one global switch, two methods (`axis-messages-shim.md` section 7): `enableCliEndpoint` (tier 4, main's native dialog, its content bound to turning messaging on) and `disableCliEndpoint` (tier 1, no dialog, revokes every live endpoint at once). And the setup step the shell shows: the CLI's own add-server command, at user scope, naming `axis-messages`. When the enable is refused as `bypass_entry`, the words also cover a launch that could not be checked | M | OS-25, PV-M7 slice 2 |
 | OS-32 | Unverified sender display (endpoint gate line 10): the thread view and the audit view show a message whose sender is `verified: false` (every CLI endpoint message) as unverified, in text, beside the sender's name; never the same look as a verified sender | S | OS-25 |
-| DC-8 | `axis.tasks/1.start` links the started run to the task and sets `in_progress` in the same transaction as its `task.start` row | S | PV-T1 (merged) |
-| DC-9 | A `tasks` topic on `axis.events/1`: a per-project invalidation hint with no task text | S | E1 (merged) |
+| DC-8 | **Built** (#675). `axis.tasks/1.start` links the started run to the task and sets `in_progress` in the same transaction as its `task.start` row | S | PV-T1 (merged) |
+| DC-9 | **Built** (#676, follow-up #682). A `tasks` topic on `axis.events/1`: a per-project invalidation hint with no task text | S | E1 (merged) |
+| DC-10 | An optional `taskId` on the preview of a worker's pending task-tool card (`update_task`, `create_task`), so the shell can show which task a pending card is for. Not needed for v0, which reads the card's content | S | PV-T1 (merged) |
 | OS-22 | Retire Code OSS: delete the overlay, patches, removals, replacements, the pin, the Code OSS scripts, the extension matrix and the overlay-tests CI job | S to M | G0 passed |
 
 Composer prerequisites that already exist or are in flight and stay valid: PV-N0 (main secret broker; slice a merged, the rest open), C6 (vault wiring), the Anthropic adapter. The Anthropic part of OS-12 waits on them; the mock part does not.
@@ -134,7 +135,7 @@ Wave D   DC-1b <- DC-1a                            DC-4  <- DC-2
 Wave E   OS-19 <- OS-2, OS-3, OS-18                OS-21 <- OS-3
          OS-24 <- OS-8, OS-14, OS-15               OS-25 <- OS-8
          OS-26 <- OS-19, OS-21                     OS-22 <- G0
-         OS-29 <- OS-8, OS-11, OS-12, DC-8 (DC-9)  OS-30 <- OS-11
+         OS-29 <- OS-8, OS-11, OS-12 (DC-8, DC-9 built)   OS-30 <- OS-11
          K2-enable <- OS-30 (hard; plus §6.2's five other conditions)   PV-K1e-b: not gated (waiver)
 ```
 
@@ -181,7 +182,7 @@ The interim Code OSS shell stays buildable as a fallback demo until G0. Nothing 
 
 ## 6. What two later screens need from the daemon
 
-### 6.1 Tasks Start (PV-T2; from the PV-T1 slice 3 note, `docs/design/tasks-slice3.md` §6, revised and in review)
+### 6.1 Tasks Start (PV-T2; from the PV-T1 slice 3 note, `docs/design/tasks-slice3.md` §6, merged)
 
 **Already served:**
 - `axis.tasks/1.list`, `get` and `revisions`. Titles and bodies are untrusted text, shown as text only, with `untrusted`, `hop` and each revision's author.
@@ -193,9 +194,16 @@ The interim Code OSS shell stays buildable as a fallback demo until G0. Nothing 
 - The shell retries `start` with `approval` and the same idempotency key. A retry before main's dialog has confirmed is refused `E_CONFLICT` and spends nothing, so the shell retries after the dialog closes. **No daemon event** says that the dialog confirmed. A confirmed challenge must be used within its short window; after that it expires and Start begins again from the first call. On `stale_version` the shell previews again and asks again. Other refusals are the contract's closed reasons.
 - The result. A composer worker returns `{ runId, workspaceId }`, followed with `axis.runs/1` events. A CLI worker returns `{ text }` for the user to copy (RR-95); the shell offers a copy button and opens the worker's terminal through the existing worker start.
 
-**Daemon gaps (tickets):**
-- DC-8: a Start neither links its run to the task nor sets `in_progress`.
-- DC-9: `axis.events/1` has no tasks topic, so the shell would poll `list`. The proposed topic is a per-project invalidation hint with no text.
+**Daemon tickets:**
+- DC-8, **built** (#675): a composer Start links its run to the task and sets `in_progress`, in the same transaction as its `task.start` row. A task already holding its 32 links gets no link.
+- DC-9, **built** (#676, follow-up #682): the `tasks` topic of `axis.events/1`, a per-project invalidation hint `{ topic, projectId }` with no text. The shell then calls `list`.
+- DC-10, open, not needed for v0: an optional `taskId` on the preview of a worker's pending task-tool card. Until then the shell knows which task a pending card is for only from the card's content.
+
+**What the shell shows (decided):**
+- A task stays `in_progress` after its run ends or fails: no rule moves it. The shell shows the linked run's state from `axis.runs/1`.
+- A Start whose run is not in the task's `links` (the task held its 32 links) is said in words; there is no replace-oldest.
+- A worker's `update_task` over a revision the user wrote asks at tier network, and every task write of a tainted run asks. Both arrive as ordinary OS-11 run cards showing the change whole; no task-specific card.
+- `limit_reached` gets fixed words. For a worker it appears in the run's events (past 25 creates in one run, or inside the share kept for the user: the last 100 of a project's 1,000 tasks and a tenth of its text, `tasks-store.md` §4.1). For the user's own create it means the project's 1,000 tasks.
 
 ### 6.2 The plugin approval card (PV-K1e-a2's renderer half, `docs/design/plugin-run-start.md` §2)
 
@@ -216,7 +224,7 @@ The interim Code OSS shell stays buildable as a fallback demo until G0. Nothing 
 
 ### 6.3 Demo 1 scope
 
-**Tasks Start is out of Demo 1.** Demo 1 proves the core loop: add and trust, workspace, terminal, composer, approval, commit and push. Tasks are Phase 2a work (OS-25), and Start adds DC-8 to the path. Nothing in Demo 1 blocks it: OS-29 supplies the task-specific card (built from the kept preview, §6.1) and reuses OS-11's approval mechanism and main's tier-4 dialog unchanged. **The plugin approval card is out of Demo 1 too**: no plugin can hold `runs.start` until PV-K2, so no plugin challenge reaches a window before then.
+**Tasks Start is out of Demo 1.** Demo 1 proves the core loop: add and trust, workspace, terminal, composer, approval, commit and push. Tasks are Phase 2a work (OS-29 for the list, detail and Start), and Start's daemon side (DC-8, DC-9) is built. Nothing in Demo 1 blocks it: OS-29 supplies the task-specific card (built from the kept preview, §6.1) and reuses OS-11's approval mechanism and main's tier-4 dialog unchanged. **The plugin approval card is out of Demo 1 too**: no plugin can hold `runs.start` until PV-K2, so no plugin challenge reaches a window before then.
 
 ## 7. Open items
 
