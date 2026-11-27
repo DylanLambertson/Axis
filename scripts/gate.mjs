@@ -6,13 +6,13 @@
 // skipped and the verdict says so), AXIS_REQUIRE_OVERLAY_TESTS=1 (a missing tree then FAILS the gate).
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   countLines, exitCode, findLongFiles, formatReport, formatTable, gitleaksInstallSteps,
-  overlayNotRun, parseGitleaksPin, parseLog, parseSidecarHash, scanCommits, versionMatchesPin
+  overlayNotRun, parseGitleaksPin, parseLog, parseSidecarHash, scanCommits, versionMatchesPin, wrongNodeLine
 } from "./gate/lib.mjs";
 import { failureDigest, splitSuites } from "./gate/failures.mjs";
 
@@ -38,6 +38,20 @@ const root = top.out.trim();
 const git = (...args) => sh("git", args, { cwd: root });
 const tail = (text, n = 12) => text.trimEnd().split("\n").slice(-n).join("\n");
 const range = `${base}..HEAD`;
+
+// A wrong Node makes the node-version step, the typecheck and the pinning test fail for a reason that is not in them, so say it first.
+if (!skip.has("node-version")) {
+  let pinned;
+  try { pinned = JSON.parse(readFileSync(join(root, "code-oss", "upstream.json"), "utf8")).node; } catch { /* the node-version step reports it */ }
+  const dist = typeof pinned === "string" ? `node-v${pinned}-${process.platform === "darwin" ? "darwin" : "linux"}-${process.arch === "arm64" ? "arm64" : "x64"}` : "";
+  const toolsDir = process.env.AXIS_CODE_OSS_TOOLS_DIR ?? join(root, ".tools");
+  const hints = [process.env.NODE24_BIN, dist === "" ? undefined : join(toolsDir, dist, "bin")]
+    .filter((d) => typeof d === "string" && d !== "")
+    .map((d) => (existsSync(d) && statSync(d).isFile() ? dirname(d) : d)) // NODE24_BIN may name the binary itself (scripts/code-oss/lib.sh accepts both)
+    .filter((d) => existsSync(join(d, "node")));
+  const line = wrongNodeLine({ running: process.version, pinned, execPath: process.execPath, hints });
+  if (line !== undefined) console.log(line);
+}
 
 const head = git("rev-parse", "HEAD").out.trim();
 const branchName = git("rev-parse", "--abbrev-ref", "HEAD").out.trim();

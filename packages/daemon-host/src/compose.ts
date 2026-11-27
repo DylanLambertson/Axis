@@ -42,6 +42,7 @@ import { installHostLifecycle, type LifecycleHandle, type LifecycleOptions } fro
 import type { Logger } from "./log/logger.js";
 import { checkCoverage } from "./policy/coverage.js";
 import { createRunTaint } from "./composer/taint.js";
+import { pluginRunStartChallenges } from "./gate/plugin-run-start.js";
 import type { PtyExecPort, PtyForgePort, PtyPort, PtyPushPort } from "./ports/pty.js";
 import type { ChannelMux } from "./transport/mux.js";
 
@@ -201,6 +202,8 @@ export function composeDaemonHost(options: ComposeOptions): ComposedHost {
           clock: ports.clock,
           ...(logger === undefined ? {} : { logger }),
           preflight: anchorPreflight(parts.anchors),
+          // PV-K1e-b: a plugin's run start is challenged in its host window, bound to its grant, and counted (journal v17).
+          plugins: pluginRunStartChallenges(parts.journal, parts.journal.pluginIssues, () => ports.clock.now()),
         });
         cleanups.push(() => approvals.dispose());
         const worktrees = createWorktreesBinding({
