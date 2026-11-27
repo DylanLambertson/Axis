@@ -160,7 +160,8 @@ project and the permission's wording. So the line follows the task Start pattern
 3. **PV-K1e-T4 is deferred** to the moment PV-K2 is about to be enabled, as condition 5 of section 1. The leaning for then: keep
    tier 3 while every side effect asks and the run is tainted, and revisit with real plugin usage.
 4. **The grant token's guarantee stops at the serving store** (2026-11-27). Code that holds a writable database handle is in the
-   trusted base, and the construction rule keeps such handles in one file (section 8.4). A per-database authority, which would
+   trusted base. The construction rule limits where the database, the journal and the store are constructed, naming the allowed
+   site for each (section 8.4); it does not confine who holds a handle afterwards. A per-database authority, which would
    refuse a second store over the same handle, is not built; it stays open as option (a).
 
 ## 8. Implementation plan
@@ -213,8 +214,10 @@ indirect flows).
 - **What it does not cover:** code that holds a writable database handle already has full authority. It can write
   `plugin_grants` rows with raw SQL, since the triggers check only their shape. It can also open a second `Journal` over the same
   handle, whose store has its own untaken mint.
-- **The answer to that is containment, not the token.** Only one file may open the database, the journal or the store (the
-  construction rule below). Code that gets a handle anyway is in the trusted base, and its review is the control.
+- **The answer to that is containment, not the token.** The construction rule below limits where the database, the journal and
+  the store are constructed, naming the allowed site for each. It does not confine who holds a handle afterwards: the host
+  composition, which is trusted, passes the handle on. Code that gets a handle is in the trusted base, and its review is the
+  control.
 
 *Runtime locks:*
 
