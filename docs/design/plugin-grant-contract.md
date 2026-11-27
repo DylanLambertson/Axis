@@ -172,9 +172,9 @@ tests call `journal.plugins.grant` and `setEnabled`.
 |---|---|---|---|
 | **K2-g1** | `axis.plugins/1` in the protocol with `list`, `revoke` and `disable` handlers; the policy rows (user only; outside `WEB_ALLOWED`; `axis.plugins/` added to `PLUGIN_DENY_CONTRACTS`); `approvals.endPlugin(pluginId, projectId)`. | PV-K1e-b (merged) | M |
 | **K2-g2** | `grant` and `enable` at tier 4: the content hook (the versioned tuple digest, the project mutex at the spend), the native line builder of section 3.1, and `already_granted`. Registered but switched off: the handler refuses with `E_UNAVAILABLE` unless the host option `pluginGrants` is on, and it is off in production. | K2-g1 | M-L |
-| **K2-g3** | **Condition 4, by construction.** `journal.plugins.grant` and `setEnabled(…, true)` take a write token that only K2-g2's approval action mints (a module-private brand, like PV-K1e-b's `ApprovedPluginStart`). No other code can raise a grant. A source pin lists every caller of the two writers. | K2-g2 | S |
+| **K2-g3** | **Condition 4, by construction.** The journal mints grant tokens and hands its minting function out once (`takeGrantMint`), to the approved action at wiring time; `grant` and `setEnabled(…, true)` refuse any write without a token of that instance (section 8.4). | K2-g2 | S |
 | **K2-g4** | **Condition 6.** Window lifetimes (epochs) in the daemon and main's window-gone notice; the plugin's binding pins the host window's epoch at issue; the start checks it at entry, under the mutex and in the service's synchronous creation step (section 8.4). | PV-K1e-b | M |
-| **K2-enable** | Turns `pluginGrants` on in the production composition. Merges only when conditions 1, 2, 3 and 5 hold, and K2-g3 and K2-g4 are on `main`. | all above; the card (condition 1's owner); PV-K3 | S (code), plus the evidence |
+| **K2-enable** | Turns `pluginGrants` on in the production composition. Merges only when conditions 1, 2, 3 and 5 hold, and K2-g3 and K2-g4 are on `main`. | all above; OS-30; PV-K3 | S (code), plus the evidence |
 
 Install, update, signatures and extraction (ADR 0008 decisions 7 and 8) are the other PV-K2 tickets. They propose grants and
 call `grant` once per permission (decision 1). They never write the store directly, because K2-g3's token makes that impossible.
@@ -183,7 +183,7 @@ call `grant` once per permission (decision 1). They never write the store direct
 
 | # | Condition | Evidence that closes it | Where |
 |---|---|---|---|
-| 1 | The card | Own-shell UI tests. The card shows the plugin requester, reads `axis.approvals/1.detail` safely, and shows the whole escaped prompt and the project, workspace, mode, provider and model; it resolves through `axis.approvals/1.resolve`. A screenshot review is attached to the PR. | **No ticket owns this yet.** OS-11 (the generic approvals card) does not cover it. Before K2-enable, either OS-11's acceptance gains this plugin extension, or a new own-shell ticket is created for it, with its owner recorded in the PV-K2 row. Until then the condition is unowned and K2-enable cannot merge. |
+| 1 | The card | OS-30's own-shell UI tests: the strict reader for `pending` with `requester` and for `axis.approvals/1.detail`, and the card showing the requester, the whole escaped prompt and the project, workspace, mode, provider and model before Approve, resolving through `axis.approvals/1.resolve`. A screenshot review is attached to the PR. | OS-30 (`own-shell-plan.md`), a security review |
 | 2 | Every listing reader | Either the Code OSS shell is removed from the build, or a reader test feeds a listing with a `requester` and a `detail` read to every supported reader. | ADR 0011 plan, or an overlay PR |
 | 3 | A real-host test | A test on the composed host with a signed plugin attestation. It sends a request to the host window's pending list, reads the detail, resolves, spends, and checks the run is created as `plugin:<id>` and tainted. It also covers out of scope, ungranted, a generation change, and a closed host window. | K2-enable, after PV-K3 (section 8.5) |
 | 4 | Every grant path | K2-g3's write token, plus a test that a grant written without it is refused, and the caller pin. | K2-g3 |
@@ -206,21 +206,41 @@ indirect flows).
 
 *Runtime locks:*
 
-1. **The token.**
-   - `journal.plugins.grant` and `setEnabled(…, true)` take a `PluginGrantWrite` token. The store checks its brand, a
-     module-private `WeakSet`, and spends it once, so a forged or reused token is refused.
-   - The minting function is not exported by any module. It lives in `daemon-host/src/plugins/grant-action.ts` and is called
-     only inside the approved action's closure.
-   - The journal side exports only a verifier, from the subpath `@axis/journal/plugin-grant-writer`. The main entry
-     `@axis/journal` exports neither the verifier nor the token class.
-2. **No escape of the mint.** `grant-action.ts` exports exactly one name, the action factory the `axis.plugins/1` handler uses. A
-   wrapper that forwards a minted token is a new export there, which the export rule below refuses.
+1. **Who can make a token: the journal alone, and it hands the minting power out once.**
+   - The token, its brand (a `WeakSet` private to the store instance), the minting function and the check all live inside
+     `PluginGrantRecords` in the journal. Nothing in the daemon host holds the brand, and the journal imports nothing from the host,
+     so the package boundary (`imports.test.mjs`) stands.
+   - `journal.plugins.takeGrantMint()` returns the instance's minting function **once**, and a second call throws. The host
+     composition calls it at wiring time, before the daemon serves any request. It passes the result straight to
+     `createGrantAction(…, mint)`, which keeps it in the approved action's closure and nowhere else.
+   - If any other code took the mint first, the composition's own call throws and the host does not start. The theft is a visible
+     startup failure, never a silent second writer.
+   - **No enrolment.** The minting function takes no argument: it creates a fresh frozen token object, adds it to the brand and
+     returns it. Nothing can enrol an object it brings, and the store never exports its check, so no verifier exists that a caller
+     could use or misuse.
+   - **The write.** `grant` and `setEnabled(…, true)` take a token. The store accepts only a token in this instance's brand, and
+     removes it from the brand before writing, so it is spent once. A forged object, a token of another journal instance, or a
+     spent token is refused.
+   - `revoke` and `setEnabled(…, false)` need no token: a decrease applies at once.
+2. **No escape of the mint.** `grant-action.ts` exports exactly one name, the action factory. A wrapper that forwards the mint or
+   a token is a new export, which the export rule below refuses.
+
+*Tests of the runtime locks:*
+- the mint is taken once, and a second `takeGrantMint()` throws;
+- a token from journal A is refused by journal B;
+- a forged look-alike object is refused, and so is a spent token;
+- a grant without a token is refused;
+- on the composed host, after startup `takeGrantMint()` throws, which proves nothing can obtain the mint later.
+
+*Mutants:* a check that accepts any object; the token not spent; a second take allowed; the composition not taking the mint at
+startup.
 
 *Static rules*, in `test/packages/plugin-grant-writer-rule.mjs`. They are wired into the existing source walk of
 `test/packages/imports.test.mjs`, so they run in the gate's tests step on every package's source, not only as helper unit tests.
 
-- **Imports, resolved.** Every import and re-export is resolved to a file, whether it is a package specifier, a relative path or
-  a barrel. Only the store may resolve to the verifier's source file, and only `grant-action.ts` may import it by any path.
+- **Imports and the mint, resolved.** Every import and re-export is resolved to a file, whether it is a package specifier, a
+  relative path or a barrel. Only `grant-action.ts` may import it, and only the host composition file may call `takeGrantMint`,
+  as the direct argument of `createGrantAction`.
 - **References, type-aware.** The TypeScript checker flags every reference to `grant` or `setEnabled` on a value of type
   `PluginGrantRecords`:
   - property access, and element access with a literal key;
@@ -230,16 +250,16 @@ indirect flows).
   Element access with a non-literal key on that type is refused outright. Passing a `PluginGrantRecords` value to a function is
   flagged at the call site unless the callee is in the allowed files.
 - **Exports.** `grant-action.ts` exports exactly one name.
-- **Allowed files:** `grant-action.ts`, the `axis.plugins/1` handlers (revoke and disable only), the store itself, and one named
-  test helper.
+- **Allowed files:** `grant-action.ts`, the host composition (for `takeGrantMint` only), the `axis.plugins/1` handlers (revoke
+  and disable only), the store itself, and one named test helper.
 - **The rule's own tests** plant every bypass form that a static rule can see, and each must fail through the real source-walk
   entry:
   - an alias, destructuring, bracket access, a helper that receives the plugins object;
-  - a wrapper export, a relative import of the verifier's source, a re-export, and a barrel.
+  - a wrapper export, a second caller of `takeGrantMint`, a re-export, and a barrel.
 
 **The boundary.** Code that launders the store through `any`, or through a computed name built at run time, is outside what a
 static rule proves. The runtime locks still hold there: no token, no grant. The minting function never leaves its closure. A new
-writer would have to change `grant-action.ts`, which this rule pins and review sees.
+writer would have to change `grant-action.ts` or the composition, which this rule pins and review sees.
 
 **K2-g4: a closed connection or host window stops the start.**
 
