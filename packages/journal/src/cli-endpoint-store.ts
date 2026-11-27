@@ -32,9 +32,12 @@ export class CliEndpointSwitchRecords {
     if (typeof enabled !== "boolean") throw new AxisError("E_INVALID_ARGUMENT", "The CLI endpoint switch was refused", { reason: "not_boolean" });
     return withTransaction(this.#db, () => {
       if (this.enabled() === enabled) return { changed: false };
-      this.#db
-        .prepare("INSERT INTO messaging_cli_endpoint (id, enabled, changed_by, changed_at) VALUES (1, ?, 'user', ?) ON CONFLICT (id) DO UPDATE SET enabled = excluded.enabled, changed_at = excluded.changed_at")
-        .run(enabled ? 1 : 0, this.#ts());
+      // The row is inserted once (the table's trigger refuses a second insert by any verb) and updated after.
+      const present = this.#db.prepare("SELECT 1 FROM messaging_cli_endpoint WHERE id = 1").get() !== undefined;
+      const sql = present
+        ? "UPDATE messaging_cli_endpoint SET enabled = ?, changed_at = ? WHERE id = 1"
+        : "INSERT INTO messaging_cli_endpoint (id, enabled, changed_by, changed_at) VALUES (1, ?, 'user', ?)";
+      this.#db.prepare(sql).run(enabled ? 1 : 0, this.#ts());
       this.#audit.append({ actor: "user", action: CLI_ENDPOINT_RECORD_ACTION, target: "messaging:cli_endpoint", outcome: "success", payload: { field: "cli_endpoint", enabled } });
       return { changed: true };
     });

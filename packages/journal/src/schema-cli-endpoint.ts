@@ -11,6 +11,9 @@ import { SQL_RULES } from "./schema-pages.js";
  * - The user is the only writer (`changed_by`), on insert and on every update; the store appends one audit event in the
  *   same transaction as each change.
  * - Never deleted: turning off writes 0, so the last change and its time stay readable.
+ * - Inserted once: a second insert by ANY verb is refused, `INSERT OR REPLACE` and `REPLACE` included. Their conflict resolution
+ *   deletes the row without firing the delete trigger (recursive triggers are off), but a BEFORE INSERT trigger runs before it.
+ *   The store inserts the first row and updates it after.
  */
 
 const { time } = SQL_RULES;
@@ -24,6 +27,9 @@ export const CLI_ENDPOINT_SWITCH_MIGRATION: Migration = {
       changed_by TEXT NOT NULL CHECK (changed_by = 'user'),
       changed_at TEXT NOT NULL CHECK (${time("changed_at")})
     ) STRICT;
+    CREATE TRIGGER messaging_cli_endpoint_once BEFORE INSERT ON messaging_cli_endpoint
+      WHEN EXISTS (SELECT 1 FROM messaging_cli_endpoint)
+      BEGIN SELECT RAISE(ABORT, 'the CLI endpoint switch is inserted once: update it'); END;
     CREATE TRIGGER messaging_cli_endpoint_kept BEFORE DELETE ON messaging_cli_endpoint
       BEGIN SELECT RAISE(ABORT, 'the CLI endpoint switch is turned off, never deleted'); END;
   `,

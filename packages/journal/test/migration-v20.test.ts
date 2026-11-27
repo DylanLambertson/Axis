@@ -50,7 +50,12 @@ test("the table: one row only (id 1), a closed flag, the user the only writer, a
   assert.throws(() => put(db, 1, 1, "agent:w1"), Error, "a worker is not a writer");
   assert.throws(() => put(db, 1, 1, "user", "yesterday"), Error, "a time");
   put(db, 1, 1);
-  assert.throws(() => put(db, 1, 0), Error, "a second row is refused (the one row is changed, not added)");
+  for (const verb of ["INSERT", "INSERT OR REPLACE", "REPLACE", "INSERT OR IGNORE", "INSERT OR ABORT"]) {
+    assert.throws(() => put(db, 1, 0, "user", T, verb), Error, `${verb}: inserted once, the one row is changed, not replaced`);
+  }
+  assert.throws(() => db.prepare("INSERT INTO messaging_cli_endpoint VALUES (1, 0, 'user', ?) ON CONFLICT DO NOTHING").run(T), Error, "ON CONFLICT DO NOTHING too");
+  assert.throws(() => db.prepare("INSERT INTO messaging_cli_endpoint VALUES (1, 0, 'user', ?) ON CONFLICT (id) DO UPDATE SET enabled = 0").run(T), Error, "and an upsert");
+  assert.equal(one(db, "SELECT enabled FROM messaging_cli_endpoint"), 1, "the row is as it was");
   assert.throws(() => db.prepare("UPDATE messaging_cli_endpoint SET changed_by = 'plugin:acme'").run(), Error, "an update keeps the writer the user");
   assert.throws(() => db.prepare("UPDATE messaging_cli_endpoint SET id = 2").run(), Error, "an update keeps id 1");
   db.prepare("UPDATE messaging_cli_endpoint SET enabled = 0, changed_at = ?").run("2026-11-28T00:00:00.000Z");
