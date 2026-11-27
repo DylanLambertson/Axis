@@ -7,15 +7,16 @@
 ## 1. PV-K1e-a: the service (built)
 
 - `ComposerStartInput.initiator` is `{ kind: "user" }` or `{ kind: "plugin", pluginId, generation }`. The handler builds it from the
-  attested identity only; the wire schema of `axis.runs/1.start` has no such field, so a request cannot name one (tested). Absent
-  means the user, and a user start is unchanged.
+  attested identity only; the wire schema of `axis.runs/1.start` has no such field, so a request cannot name one (tested). It is
+  required, so a caller that leaves it out does not compile; a user start is unchanged.
 - A plugin start is recorded with `createdBy` `plugin:<id>` (the journal's actor rule is now the audit log's `ACTOR_PATTERN`); no
   transition of the run is the user's.
 - **Taint first.** The run is tainted with source `plugin_output` (IAC-T source 6) inside the journal transaction that creates it,
   before its activity opens and before any model call. The mark and its `message.taint` audit row go to the journal's own
   database: if either fails, nothing is created and the start is refused (`taint_unrecorded`). Without the host's
   `taintAtStart`, a plugin start is refused (`plugin_starts_unavailable`). Source 6 stays PV-K4's for every other plugin output.
-- **Inert.** The `axis.runs/1` handler still refuses every actor but the user (`E_NOT_FOUND`), so nothing reaches this from the wire.
+- **Inert in K1e-a.** The handler refused every actor but the user. PV-K1e-b opens `start` to a granted plugin (section 3); no
+  plugin can hold `runs.start` until PV-K2 (section 3.1).
 
 ## 2. PV-K1e-a2: the approval card (a2-1a and a2-1b built; a2-2 on hold)
 
@@ -52,8 +53,9 @@ Slices, released in this order (each inert until the next):
   where it lives. The design assumed Code OSS in two places only: the strict listing reader to update is the Code OSS overlay's
   (`axisDaemonReplies.ts` `readPendingChallenges`), and the "renderer" that resolves a tier-3 card is the Code OSS workbench. The
   daemon, protocol and journal parts do not depend on the shell.
-- **PV-K1e-b must not merge before a2-2** (or its own-shell replacement): it is the first producer of plugin challenges, and
-  today's strict listing reader would refuse a listing carrying `requester`.
+- **PV-K1e-b merges before a2-2, by waiver** (owner delegation, 2026-11-26). It is the first producer of plugin challenges, and
+  today's strict listing reader would refuse a listing carrying `requester`, but no plugin can hold `runs.start` until PV-K2, and
+  the Code OSS shell is being replaced. The card moves to PV-K2's preconditions (section 3.1).
 
 ### 2.1 The counter's residual (RR-94) and what an operator does
 
@@ -71,8 +73,30 @@ Slices, released in this order (each inert until the next):
 
 ## 3. PV-K1e-b: the handler (built: `gate/plugin-run-start.ts`, `handlers/composer-runs.ts` `startPluginComposerRun`)
 
-PV-K1e-b opens `axis.runs/1.start` to a plugin connection, and nothing else of `axis.runs/1`. It is daemon work only: it does not
-need the renderer, but it must not merge before the card exists (a2-2 or its own-shell replacement, section 2).
+PV-K1e-b opens `axis.runs/1.start` to a plugin connection, and nothing else of `axis.runs/1`. It is daemon work only and needs no
+renderer. It merges without the card by waiver; what the waiver moves to PV-K2 is in section 3.1.
+
+### 3.1 The merge waiver and the PV-K2 preconditions
+
+**The waiver** (owner delegation, 2026-11-26, reversible): PV-K1e-b merges before any shell shows the card, because it is inert in
+production. No plugin can hold `runs.start` until PV-K2's grant contract exists, and the Code OSS shell is being replaced (ADR 0011).
+
+**PV-K2 must not be enabled or merged until all of these hold** (review K1e-b):
+
+1. **The Code OSS listing.** Before any plugin challenge can reach a Code OSS window, that shell is retired or its pending-approvals
+   reader (`axisDaemonReplies.ts` `readPendingChallenges`) accepts the optional `requester`. One plugin challenge makes the strict
+   reader refuse that window's whole listing.
+2. **The card.** The own shell's approval card reads `axis.approvals/1.pending` and `axis.approvals/1.detail`, and shows the full
+   escaped prompt, the project, workspace, mode, provider and model (`docs/design/plugin-grant-contract.md` section 1).
+3. **The composition.** A test through the real host composition covers the two lines that wire this slice (`compose.ts`
+   `plugins:`, `compose-serving.ts` `pluginStarts:`). It needs a plugin connection through main's signed attestation, so it
+   follows PV-K3.
+4. **Where `runs.start` comes from.** A test or a source check that `runs.start` can be granted only through PV-K2's main-owned
+   tier-4 flow.
+5. **The tier.** The owner's open question PV-K1e-T4 (tier 4 for plugin run starts) is decided.
+
+The two tests the review asked for are in: a second connection of the same plugin cannot free the first one's slot, and a user's
+withdrawn challenge still holds its window's quota.
 
 **First commit: the a2-1b review follow-ups (mandatory before anything produces plugin challenges).**
 
