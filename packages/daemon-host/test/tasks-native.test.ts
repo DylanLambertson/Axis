@@ -29,7 +29,7 @@ async function setup(t: TestContext) {
   const start = createTaskStart({
     journal,
     audit: { append: () => undefined },
-    agentStart: { journal, startCli: async () => assert.fail("no CLI"), startComposer: async (req) => (starts.push(req), req.recheck?.(), { run: { runId: "run-1" }, replayed: false }), providerFor: () => "mock" },
+    agentStart: { journal, startCli: async () => assert.fail("no CLI"), startComposer: async (req) => (starts.push(req), req.recheck?.(), { run: { runId: journal.composer.createRun({ workspaceId: req.workspaceId, createdBy: "user" }, { mode: "agent", providerId: "mock", modelId: "mock-model" }).value.id }, replayed: false }), providerFor: () => "mock" },
   });
   r.daemon.register(C, 1, createTasksHandlers(service, start), { content: createTasksContentHooks({ journal, onPreview: (target, digest, text) => void notes.set(`${target}|${digest}`, text) }) });
   const taskId = service.create({ kind: "user" }, { projectId: "p", title: "Fix it", body: "x" }).task.taskId;
@@ -58,7 +58,7 @@ async function dismiss(r: Rig, ch: Awaited<ReturnType<typeof challenge>>): Promi
 }
 
 test("Start needs main's dialog, which names the task, the trust of its text and the worker, never its title or body", async (t) => {
-  const { r, user, start, starts, taskId } = await setup(t);
+  const { r, user, service, start, starts, taskId } = await setup(t);
   const p = start.preview({ taskId, worker: "w1" });
   const payload = { taskId, worker: "w1", seq: p.seq, promptDigest: p.promptDigest };
   const k1 = newKey();
@@ -74,7 +74,9 @@ test("Start needs main's dialog, which names the task, the trust of its text and
   const two = await challenge(r, user, "start", payload, k2);
   await confirm(r, user, two);
   const done = await user.call(C, "start", { ...payload, approval: { challengeId: two.c.challengeId } }, k2);
-  assert.deepEqual(done.result, { kind: "composer", runId: "run-1", workspaceId: starts[0]?.workspaceId, replayed: false });
+  const runId = (done.result as { runId?: string } | undefined)?.runId;
+  assert.deepEqual(done.result, { kind: "composer", runId, workspaceId: starts[0]?.workspaceId, replayed: false });
+  assert.deepEqual(service.get({ taskId }).task.links, [{ kind: "run", target: runId }], "the confirmed Start linked its run");
   assert.equal(starts.length, 1);
   assert.equal(starts[0]?.prompt, p.prompt);
 });

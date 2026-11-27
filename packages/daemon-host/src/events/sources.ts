@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import type { EventHub } from "@axis/daemon";
 import { RUN_STATE_VALUES } from "@axis/protocol";
 import type { JournalReader } from "../host.js";
+import { TASK_AUDIT } from "../tasks/service.js";
 
 /** Default pump period. The UI polled every 1 to 2 s before E1; a hint now arrives within one period. */
 export const EVENT_PUMP_MS = 250;
@@ -14,6 +15,11 @@ export interface EventSourcesDeps {
   readonly journal: Pick<JournalReader, "transitionsSince" | "lastTransitionId">;
   /** The audit chain head sequence (0 for an empty chain). */
   readonly auditHead: () => number;
+  /**
+   * Audit rows after a sequence, oldest first, at most `limit` (`AuditLog.list`). The `tasks` topic reads the project id of
+   * each successful `task.*` row from it. Absent: no `tasks` hints.
+   */
+  readonly auditSince?: (afterSeq: number, limit: number) => ReadonlyArray<{ readonly seq: number; readonly action: string; readonly outcome: string; readonly payload: unknown }>;
   readonly anchorStalled: () => boolean;
   /** The open challenges of one window (`ApprovalsPort.pending`, which also drops expired ones). */
   readonly pending: (windowId: string) => ReadonlyArray<{ readonly challengeId: string }>;
@@ -31,11 +37,19 @@ export interface EventSources {
 }
 
 const RUN_STATES: ReadonlySet<string> = new Set(RUN_STATE_VALUES);
+const TASK_ACTIONS: ReadonlySet<string> = new Set(Object.values(TASK_AUDIT));
+/** The project of a successful task write's audit row, or undefined. */
+function taskProject(row: { readonly action: string; readonly outcome: string; readonly payload: unknown }): string | undefined {
+  if (!TASK_ACTIONS.has(row.action) || row.outcome !== "success" || typeof row.payload !== "object" || row.payload === null) return undefined;
+  const id = (row.payload as { projectId?: unknown }).projectId;
+  return typeof id === "string" ? id : undefined;
+}
 
 /**
  * The host's event emitters (docs/design/events.md section 4). One unreferenced timer reads, per tick: the committed
  * journal transitions after a cursor (workspace and run state, whoever wrote them), the anchor stall flag, the audit
- * head, and the open-challenge set of each window that has an `approvals` subscription. While nobody is subscribed the
+ * head, the projects whose tasks changed (from the audit rows after a second cursor), and the open-challenge set of each
+ * window that has an `approvals` subscription. While nobody is subscribed the
  * cursors only move forward, so history is never replayed as events. Every event is an id or a closed value; a hint
  * that turns out spurious costs the client one read, so a doubtful case publishes rather than stays quiet.
  */
@@ -52,6 +66,8 @@ export function createEventSources(deps: EventSourcesDeps): EventSources {
   /** Undefined until the newest row id could be read: a cursor of 0 would replay the whole history as events. */
   let cursor: number | undefined = read<number | undefined>(() => journal.lastTransitionId(), undefined);
   let head = read(() => deps.auditHead(), 0);
+  /** The last audit row the tasks source read; undefined until the head could be read (0 would replay history). */
+  let taskCursor: number | undefined = read<number | undefined>(() => deps.auditHead(), undefined);
   let stalled = read(() => deps.anchorStalled() === true, false);
   /** Per window: a hash of its open challenge ids (never the ids themselves). */
   const seen = new Map<string, string>();
@@ -89,6 +105,22 @@ export function createEventSources(deps: EventSourcesDeps): EventSources {
     head = now;
   };
 
+  /** One hint per project whose tasks changed, in first-change order. The cursor is the last row read, never the head. */
+  const tasks = (quiet: boolean): void => {
+    if (deps.auditSince === undefined) return;
+    if (quiet || taskCursor === undefined) {
+      taskCursor = Math.max(taskCursor ?? 0, deps.auditHead());
+      return;
+    }
+    const projects = new Set<string>();
+    for (const row of deps.auditSince(taskCursor, EVENT_ROWS_PER_TICK)) {
+      taskCursor = row.seq;
+      const id = taskProject(row);
+      if (id !== undefined) projects.add(id);
+    }
+    for (const projectId of projects) hub.publish({ topic: "tasks", projectId });
+  };
+
   const approvals = (): void => {
     const windows = hub.windowsFor("approvals");
     for (const w of [...seen.keys()]) if (!windows.has(w)) seen.delete(w);
@@ -106,6 +138,7 @@ export function createEventSources(deps: EventSourcesDeps): EventSources {
     guard(() => transitions(quiet));
     guard(() => anchor(quiet));
     guard(() => audit(quiet));
+    guard(() => tasks(quiet));
     guard(approvals);
   };
 

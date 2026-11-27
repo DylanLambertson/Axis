@@ -140,7 +140,7 @@ project and the permission's wording. So the line follows the task Start pattern
 - `already_granted`;
 - a no-op disable and the revoke of a missing grant leave the generation unchanged;
 - revoke and disable end only that plugin's open challenges at once, and never a user challenge;
-- a run started before the revoke keeps running;
+- a run started before the revoke keeps running (in K2-g2, which can start a plugin run; K2-g1 cannot make one);
 - disable then enable keeps the grants and the hourly count (v17).
 
 **Mutants:**
@@ -174,7 +174,7 @@ tests call `journal.plugins.grant` and `setEnabled`.
 
 | Slice | What | Depends on | Size |
 |---|---|---|---|
-| **K2-g1** | `axis.plugins/1` in the protocol with `list`, `revoke` and `disable` handlers; the policy rows (user only; outside `WEB_ALLOWED`; `axis.plugins/` added to `PLUGIN_DENY_CONTRACTS`); `approvals.endPlugin(pluginId, projectId)`. | PV-K1e-b (merged) | M |
+| **K2-g1** | `axis.plugins/1` in the protocol with `list`, `revoke` and `disable` handlers; the policy rows (user only; outside `WEB_ALLOWED`; `axis.plugins/` added to `PLUGIN_DENY_CONTRACTS`); `approvals.endPlugin(pluginId, projectId)`. **Built.** A revoke of a permission not granted answers `E_NOT_FOUND` (`not_granted`) and changes nothing; a disable of a plugin already off answers its unchanged state. | PV-K1e-b (merged) | M |
 | **K2-g2** | `grant` and `enable` at tier 4: the content hook (the versioned tuple digest, the project mutex at the spend), the native line builder of section 3.1, and `already_granted`. Registered but switched off: the handler refuses with `E_UNAVAILABLE` unless the host option `pluginGrants` is on, and it is off in production. | K2-g1 | M-L |
 | **K2-g3** | **Condition 4, by construction.** The journal mints grant tokens and hands its minting function out once (`takeGrantMint`), to the approved action at wiring time; `grant` and `setEnabled(…, true)` refuse any write without a token of that instance (section 8.4). | K2-g2 | S |
 | **K2-g4** | **Condition 6.** Window lifetimes (epochs) in the daemon and main's window-gone notice; the plugin's binding pins the host window's epoch at issue; the start checks it at entry, under the mutex and in the service's synchronous creation step (section 8.4). | PV-K1e-b | M |

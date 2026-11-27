@@ -46,6 +46,7 @@ export interface PluginChallengeDeps {
 
 interface Tracked {
   readonly actor: string;
+  readonly projectId: string;
   readonly connectionId: string;
   readonly hostWindowId: string;
   readonly target: string;
@@ -122,7 +123,7 @@ export class PluginChallenges {
       throw new ApprovalError("E_BACKPRESSURE");
     }
     if (!counted.ok) throw new ApprovalError("E_BACKPRESSURE");
-    const entry = { actor: input.actor, connectionId: input.connectionId, hostWindowId: host, target: content.target, requester: { kind: "plugin" as const, pluginId }, detail: detail.data, valid, approved: binding.approved };
+    const entry = { actor: input.actor, projectId, connectionId: input.connectionId, hostWindowId: host, target: content.target, requester: { kind: "plugin" as const, pluginId }, detail: detail.data, valid, approved: binding.approved };
     return {
       windowId: host,
       track: (challengeId) => void this.#live.set(challengeId, { ...entry, deadline: this.#monotonic() + this.#lifetimeMs }),
@@ -171,6 +172,18 @@ export class PluginChallenges {
     this.#sweep();
     const t = this.#live.get(challengeId);
     return t === undefined ? undefined : { actor: t.actor, connectionId: t.connectionId, approved: t.approved };
+  }
+
+  /**
+   * The open challenges of one plugin in one project (`axis.plugins/1` revoke and disable, PV-K2 K2-g1), for the gate to end as
+   * their requester. Never a challenge of another plugin or project, and never a user's: only plugin challenges are tracked here.
+   */
+  ofPlugin(pluginId: string, projectId: string): Array<{ readonly challengeId: string; readonly actor: string; readonly connectionId: string }> {
+    this.#sweep();
+    const actor = `plugin:${pluginId}`;
+    const out: Array<{ readonly challengeId: string; readonly actor: string; readonly connectionId: string }> = [];
+    for (const [challengeId, t] of this.#live) if (t.actor === actor && t.projectId === projectId) out.push({ challengeId, actor: t.actor, connectionId: t.connectionId });
+    return out;
   }
 
   forget(challengeId: string): void {
