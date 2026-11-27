@@ -212,10 +212,11 @@ fixtures on every platform, not only on Windows.
 | `plugins.discard` | `requestId, stagingId` | none |
 
 - A **staging record** (in memory, single use, 60 s) binds the target project, mode, plugin id, the new package's full identity,
-  the summary, and the **baseline**: the installation's revision at inspection (or "none" for a first install).
+  the summary, and the **baseline**: the installation's revision, state and identity at inspection (or "none" for a first
+  install).
 - `commit` takes the project mutex, then checks the record is present, unexpired, unused, of this supervisor generation, that
-  `summaryDigest` (the SHA-256 of the canonical summary) matches, and that **the installation's revision still equals the
-  baseline**. A stale baseline is `changed_since_inspect`. So two inspections of one installation cannot both commit, and a
+  `summaryDigest` (the SHA-256 of the canonical summary) matches, and that **the installation still equals the baseline**, and §5.4 step 3 compares it once more, in the transaction's own synchronous step, after every await. A stale
+  baseline is `changed_since_inspect`. So two inspections of one installation cannot both commit, and a
   commit can never move a version the user did not see.
 - Codes are closed: `not_a_file`, `too_large`, `bad_archive`, `bad_entry`, `bad_manifest`, `p2_refused`, `permission_refused`,
   `bad_signature`, `curated_mismatch`, `key_changed`, `not_listed`, `list_expired`, `list_refused`, `other_plugin`,
@@ -297,7 +298,12 @@ transaction has committed or failed. Collection never removes a pinned directory
 
    Every decision is taken under the package lock, so no other publication, quarantine or deletion can interleave between the
    check and the rename, and a second install of the same identity waits, then finds the directory and verifies it.
-3. **Commit** (still under both locks; synchronous `withTransaction`, no await inside):
+3. **Commit** (still under both locks; synchronous `withTransaction`, no await inside). **First, in the same synchronous step,
+   the final baseline check** (review 4): the installation's revision, state and identity are read again and must still equal
+   the staging record's baseline, after every await of steps 1 and 2. A decrease takes no lock (§5.4, bounded waits), so an
+   uninstall can commit while this attempt waits for the package lock or the file system; the attempt then refuses
+   `changed_since_inspect` with nothing written, and the uninstall stands. The early check of §5.1 only saves needless work.
+   Then:
    - the package row if new (an existing row must have equal fields, else `identity_conflict`);
    - the installation row (created, pointed at the new identity, or reinstalled), its revision and highest version;
    - the requests, and the grant revocations of §5.3;

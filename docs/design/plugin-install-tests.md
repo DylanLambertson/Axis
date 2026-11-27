@@ -51,6 +51,10 @@ Every refusal suite includes a valid control input that passes, so a component t
   - review 3: a slow package lock (a held collection batch) does not delay a revoke or a disable past its budget, and a commit
     waiting past 5 s answers `busy` and revalidates on retry;
   - review 3: the complete persisted event sequence of an automatic integrity failure (§6.3), with no user-attributed row;
+  - review 4: an update passes the early baseline check at revision 7 and waits for the package lock (or a publication read,
+    rename or fsync) while an uninstall commits (revision 8, requests and grants cleared): the update refuses
+    `changed_since_inspect`, leaving the installation uninstalled at revision 8 with nothing restored; a control with no
+    concurrent change commits at revision 8; mutant: the final comparison removed;
   - after a restart, a valid package loads, and extra, missing, oversized and swapped files are refused from the stored listing;
   - an existing identity directory with corrupted content is quarantined, not reused;
   - `verifyInstalled`:
