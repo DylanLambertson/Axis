@@ -294,7 +294,8 @@ export function createApprovals(deps: ApprovalsDeps): Approvals {
           const action = `${input.contract}/${input.contractVersion}.${input.method}`;
           const line = describe(input, content);
           // Fail closed before the proof is taken: the catch below withdraws the challenge, which nobody has seen.
-          if (line === undefined && LINE_REQUIRED.has(action)) throw new Error("no native line");
+          // An empty, blank or zero-width-only note counts as missing too (review of the audit-A fix, N2).
+          if (LINE_REQUIRED.has(action) && (line === undefined || line.replace(/[\p{Z}\p{Cc}\p{Cf}\s]/gu, "") === "")) throw new Error("no native line");
           const proof = manager.takeNativeProof(challenge.challengeId);
           if (proof === null) throw new Error("no native proof");
           await bridge.start({

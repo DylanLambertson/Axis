@@ -3,7 +3,7 @@ import { DaemonError, type Handler, type HandlerContext } from "@axis/daemon";
 import type { PluginPermission, PluginState } from "@axis/journal";
 import { PLUGINS_CONTRACT, PLUGINS_VERSION, pluginsMethods, type PluginsMethod, type PluginsRequest } from "@axis/protocol";
 import type { GrantAction } from "../plugins/grant-action.js";
-import { createGrantContentHooks, grantDigest, spentGrantDigest } from "../plugins/grant-content.js";
+import { createGrantContentHooks, grantDigest, PluginDecreases, spentGrantDigest } from "../plugins/grant-content.js";
 import type { ProjectMutex } from "../worktrees/project-mutex.js";
 import type { HandlerRegistrar } from "./anchor-guard.js";
 
@@ -13,14 +13,15 @@ import type { HandlerRegistrar } from "./anchor-guard.js";
  * - **The user's alone.** The policy rows are user rows; a web client is outside `WEB_ALLOWED`, and a plugin is refused by the
  *   deny list (`axis.plugins/`). The handlers refuse every caller but the user's desktop connection too, with `E_NOT_FOUND`.
  * - **Decreases only.** `revoke` removes one permission and `disable` turns the plugin off; each bumps the generation (the v16
- *   triggers; a disable of a plugin already off changes nothing). Each is one synchronous write, applied at once: it does NOT wait
- *   for the project mutex, which a plugin's start may hold across slow waits (audit A, L1). Then it ends that plugin's open
- *   challenges in the project (`endPlugin`), never another's. An increase approved before it is refused at its write (below), and a
- *   start is refused at its next grant check.
+ *   triggers; a disable of a plugin already off changes nothing in the store). Each is one synchronous write, applied at once: it
+ *   does NOT wait for the project mutex, which a plugin's start may hold across slow waits (audit A, L1). Every one also bumps the
+ *   plugin's decrease epoch (`PluginDecreases`), no-ops and `not_granted` included, which the grant and enable digests bind. Then it
+ *   ends that plugin's open challenges in the project (`endPlugin`), never another's. An increase approved before it is refused at
+ *   its spend or its write (below), and a start is refused at its next grant check.
  * - **Increases at tier 4, switched off** (K2-g2). `grant` and `enable` run only inside a spent approval, after main's native
  *   confirmation, under the project mutex their content hook holds (`plugins/grant-content.ts`). Right before writing, each
- *   recomputes the digest from the live state and refuses `plugin_changed` unless it equals the one its approval was spent on, so
- *   a decrease that landed meanwhile always wins. Both refuse with `E_UNAVAILABLE`
+ *   recomputes the digest from the live state and the live decrease epoch and refuses `plugin_changed` unless it equals the one
+ *   its approval was spent on, so a decrease answered meanwhile always wins, a no-op one included. Both refuse with `E_UNAVAILABLE`
  *   (`plugin_grants_off`) unless `grantsEnabled` (the host's `pluginGrants` option, off in production until K2-enable).
  * - **The accepted availability risk** (section 2): any code in a renderer of the user's window can revoke or disable, and so
  *   withdraw the plugin's open approvals; getting them back takes a tier-4 grant or enable (K2-g2), which no renderer can do alone.
@@ -48,19 +49,22 @@ export interface PluginsHandlerDeps {
   readonly grantsEnabled?: boolean;
   /** Records a grant's or an enable's dialog line for (target, content digest): the approvals wiring's `onPreview`. */
   readonly onPreview?: (target: string, contentDigest: string, text: string) => void;
+  /** The decrease epochs, shared with the content hooks (`registerPluginsHandlers` makes one); absent, the handlers make their own. */
+  readonly decreases?: PluginDecreases;
 }
 
 const NOT_FOUND = "That project or plugin was not found.";
 
 /**
  * An increase writes only the state its approval was spent on: the digest recomputed from the live state, synchronously right
- * before the write, must equal the spent one. A revoke or a disable since then (each bumps the generation) refuses it.
+ * before the write, must equal the spent one. Any revoke or disable answered since then (each bumps the decrease epoch, a no-op
+ * one too) refuses it.
  */
-function unchangedSinceApproval(method: "grant" | "enable", pluginId: string, projectId: string, permission: string | null, now: PluginState): void {
+function unchangedSinceApproval(method: "grant" | "enable", pluginId: string, projectId: string, permission: string | null, now: PluginState, decreases: PluginDecreases): void {
   const bound = spentGrantDigest();
   let live: string | undefined;
   try {
-    live = grantDigest(method, pluginId, projectId, permission, now);
+    live = grantDigest(method, pluginId, projectId, permission, now, decreases.read(pluginId, projectId));
   } catch {
     live = undefined;
   }
@@ -74,6 +78,7 @@ function fail(code: "E_NOT_FOUND" | "E_CANCELLED" | "E_INTERNAL" | "E_CONFLICT" 
 const view = (pluginId: string, s: PluginState) => ({ pluginId, enabled: s.enabled, generation: s.generation, permissions: [...s.permissions].sort() });
 
 export function createPluginsHandlers(deps: PluginsHandlerDeps): Readonly<Record<PluginsMethod, Handler>> {
+  const decreases = deps.decreases ?? new PluginDecreases();
   const guarded =
     <M extends PluginsMethod>(method: M, call: (req: PluginsRequest<M>, context: HandlerContext) => unknown): Handler =>
     async (context: HandlerContext, payload: never): Promise<unknown> => {
@@ -107,6 +112,7 @@ export function createPluginsHandlers(deps: PluginsHandlerDeps): Readonly<Record
       // One synchronous write, never behind the project mutex (audit A, L1): a decrease applies at once.
       project(req.projectId);
       if (deps.journal.plugins.state(req.pluginId, req.projectId) === undefined) fail("E_NOT_FOUND", NOT_FOUND);
+      decreases.bump(req.pluginId, req.projectId); // before the write and whatever it finds: a no-op revoke counts too
       if (!deps.journal.plugins.revoke(req.pluginId, req.projectId, req.permission as PluginPermission)) fail("E_NOT_FOUND", "That permission is not granted.", "not_granted");
       end(req.pluginId, req.projectId);
       return { plugin: view(req.pluginId, deps.journal.plugins.state(req.pluginId, req.projectId) as PluginState) };
@@ -122,7 +128,7 @@ export function createPluginsHandlers(deps: PluginsHandlerDeps): Readonly<Record
           const now = deps.journal.plugins.state(req.pluginId, req.projectId);
           if (now === undefined) fail("E_NOT_FOUND", NOT_FOUND);
           if ((now as PluginState).permissions.includes(req.permission as PluginPermission)) fail("E_CONFLICT", "That permission is already granted.", "already_granted");
-          unchangedSinceApproval("grant", req.pluginId, req.projectId, req.permission, now as PluginState);
+          unchangedSinceApproval("grant", req.pluginId, req.projectId, req.permission, now as PluginState, decreases);
           (deps.grantAction as GrantAction).grant(req.pluginId, req.projectId, req.permission as PluginPermission);
           return { plugin: view(req.pluginId, deps.journal.plugins.state(req.pluginId, req.projectId) as PluginState) };
         },
@@ -139,7 +145,7 @@ export function createPluginsHandlers(deps: PluginsHandlerDeps): Readonly<Record
           const now = deps.journal.plugins.state(req.pluginId, req.projectId);
           if (now === undefined) fail("E_NOT_FOUND", NOT_FOUND);
           if ((now as PluginState).enabled) fail("E_CONFLICT", "That plugin is already on.", "already_enabled");
-          unchangedSinceApproval("enable", req.pluginId, req.projectId, null, now as PluginState);
+          unchangedSinceApproval("enable", req.pluginId, req.projectId, null, now as PluginState, decreases);
           (deps.grantAction as GrantAction).enable(req.pluginId, req.projectId);
           return { plugin: view(req.pluginId, deps.journal.plugins.state(req.pluginId, req.projectId) as PluginState) };
         },
@@ -150,6 +156,7 @@ export function createPluginsHandlers(deps: PluginsHandlerDeps): Readonly<Record
       // One synchronous write, never behind the project mutex (audit A, L1).
       project(req.projectId);
       if (deps.journal.plugins.state(req.pluginId, req.projectId) === undefined) fail("E_NOT_FOUND", NOT_FOUND);
+      decreases.bump(req.pluginId, req.projectId); // a disable of a plugin already off counts too
       deps.journal.plugins.setEnabled(req.pluginId, req.projectId, false);
       end(req.pluginId, req.projectId);
       return { plugin: view(req.pluginId, deps.journal.plugins.state(req.pluginId, req.projectId) as PluginState) };
@@ -159,6 +166,9 @@ export function createPluginsHandlers(deps: PluginsHandlerDeps): Readonly<Record
 
 /** Register `axis.plugins/1` through the host's registrar, with the content hooks of `grant` and `enable` (K2-g2). */
 export function registerPluginsHandlers(registrar: HandlerRegistrar, deps: PluginsHandlerDeps): void {
-  const content = createGrantContentHooks({ journal: deps.journal, mutex: deps.mutex, onPreview: deps.onPreview ?? (() => undefined), grantsEnabled: deps.grantsEnabled === true });
-  registrar.register(PLUGINS_CONTRACT, PLUGINS_VERSION, createPluginsHandlers(deps), { content });
+  // One decrease count for the handlers and the content hooks: the digest the hook computes and the one the handler recomputes read
+  // the same epochs.
+  const decreases = deps.decreases ?? new PluginDecreases();
+  const content = createGrantContentHooks({ journal: deps.journal, mutex: deps.mutex, onPreview: deps.onPreview ?? (() => undefined), grantsEnabled: deps.grantsEnabled === true, decreases });
+  registrar.register(PLUGINS_CONTRACT, PLUGINS_VERSION, createPluginsHandlers({ ...deps, decreases }), { content });
 }

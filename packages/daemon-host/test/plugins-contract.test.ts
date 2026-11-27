@@ -260,14 +260,14 @@ test("every decrease is audited as the user's, with ids and the permission only"
  * Audit A, F5: the methods a plugin cannot reach today but whose plugin reach is already decided as "later" (ADR 0008 decision 6:
  * `tasks.read` and `tasks.write` gain these when their sets are filled). Everything else served is in a set or denied.
  */
-const PLUGIN_LATER: ReadonlySet<string> = new Set(["axis.tasks/1.list", "axis.tasks/1.get", "axis.tasks/1.revisions", "axis.tasks/1.create", "axis.tasks/1.update", "axis.tasks/1.setStatus", "axis.tasks/1.link", "axis.tasks/1.unlink"]);
+const PLUGIN_LATER: ReadonlySet<string> = new Set(["axis.tasks/1.list", "axis.tasks/1.get", "axis.tasks/1.create", "axis.tasks/1.update"]);
 
 test("audit A F5: every served method is in a plugin set, on the deny list, or decided for later; the newer user-only contracts are denied", () => {
   const inSet = new Set(Object.values(PLUGIN_METHOD_SETS).flat());
   const undecided = Object.keys(RULES).filter((k) => !inSet.has(k) && !pluginDenied(k) && !PLUGIN_LATER.has(k));
   assert.deepEqual(undecided, [], "a new served method must be given a plugin reach (a set, the deny list, or the later list)");
   for (const k of PLUGIN_LATER) assert.ok(k in RULES && !pluginDenied(k) && !inSet.has(k), `${k} is served, undecided and unreachable today`);
-  for (const k of ["axis.integrations/1.read", "axis.integrations/1.list", "axis.usage/1.summary", "axis.attention/1.summary", "axis.tasks/1.start", "axis.tasks/1.startPreview", "axis.tasks/1.assign", "axis.tasks/1.delete"]) {
+  for (const k of ["axis.integrations/1.read", "axis.integrations/1.list", "axis.usage/1.summary", "axis.attention/1.summary", "axis.tasks/1.start", "axis.tasks/1.startPreview", "axis.tasks/1.assign", "axis.tasks/1.delete", "axis.tasks/1.revisions", "axis.tasks/1.setStatus", "axis.tasks/1.link", "axis.tasks/1.unlink"]) {
     assert.ok(pluginDenied(k), `${k} is on the deny list`);
     assert.ok(pluginCoverageProblems(RULES, { "tasks.write": [k] }).length > 0, `a set naming ${k} fails the coverage check`);
   }

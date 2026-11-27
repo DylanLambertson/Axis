@@ -9,9 +9,10 @@ const DETAIL_MAX = 80;
 /**
  * The one line the native dialog shows (APR-2): which action, then what it is applied to. The action is the policy
  * table's key for the method (`axis.worktrees/1.remove`), so the dialog says what is being confirmed whatever the
- * renderer showed. The detail is a short display text a content hook produced from a name the USER chose (a workspace or
- * project display name) when it gave one, else the challenge's own target summary. It must never carry text an agent
- * or a repository wrote (a plan or finding summary could say "read only, safe to confirm"), and it is never built
+ * renderer showed. The detail is a short display text a content hook produced from a display name (a workspace's, which the
+ * user chose, or a project's, which is the repository folder's name) when it gave one, else the challenge's own target summary.
+ * A name comes after the action, which it can never displace. The detail must never carry free text an agent or a repository
+ * wrote (a plan or finding summary could say "read only, safe to confirm"), and it is never built
  * from the raw payload. A detail with an unsafe character is replaced by the target summary; runs of spaces collapse to
  * one; it is cut at 80 code units (`detailMax`; a caller whose detail is built only from values the daemon derived may
  * give it the rest of the line), and the whole line at 192, with the action always kept whole.

@@ -31,27 +31,48 @@ export interface GrantContentDeps {
   /** Records the dialog line for (target, content digest): the approvals wiring's `onPreview`. */
   readonly onPreview: (target: string, contentDigest: string, text: string) => void;
   readonly grantsEnabled: boolean;
+  /** The decrease epochs the plugin handlers bump (one instance shared with them; `registerPluginsHandlers` makes it). */
+  readonly decreases: PluginDecreases;
+}
+
+/**
+ * A count per plugin and project of every revoke and disable answered since the daemon started, no-ops included (review of the
+ * audit-A fix, S1). A no-op decrease (a disable of a plugin that is off, which is exactly when an enable is pending, or a revoke
+ * of a permission not granted) changes nothing in the store, so the state alone cannot show it; the count does. It is bound into
+ * the grant and enable digests, so any decrease after an increase's issue, or between its spend and its write, refuses it. In
+ * memory only: approvals do not survive a restart either.
+ */
+export class PluginDecreases {
+  readonly #counts = new Map<string, number>();
+  bump(pluginId: string, projectId: string): void {
+    const k = `${projectId}\u0000${pluginId}`;
+    this.#counts.set(k, (this.#counts.get(k) ?? 0) + 1);
+  }
+  read(pluginId: string, projectId: string): number {
+    return this.#counts.get(`${projectId}\u0000${pluginId}`) ?? 0;
+  }
 }
 
 export type GrantMethod = "grant" | "enable";
 
 /**
  * The digest the approval in progress was spent on (audit A, L1). The daemon runs the spend and then the handler inside the hook's
- * `withLock`, so the handler reads it here and compares it with the live state right before it writes: a revoke or a disable,
- * which no longer waits for the project mutex, then always wins over an increase approved before it.
+ * `withLock`, so the handler reads it here and compares it with one recomputed from the live state and the live decrease epoch
+ * right before it writes: a revoke or a disable, which no longer waits for the project mutex, then always wins over an increase
+ * approved before it, a no-op one included.
  */
 const spent = new AsyncLocalStorage<string>();
 export function spentGrantDigest(): string | undefined {
   return spent.getStore();
 }
-const TAG = "axis.plugin-grant/1";
+const TAG = "axis.plugin-grant/2";
 
 const refuse = (code: "E_UNAVAILABLE" | "E_NOT_FOUND" | "E_CONFLICT" | "E_INVALID_ARGUMENT", reason?: string): never => {
   throw new DaemonError(code, code === "E_NOT_FOUND" ? "Not found" : "Refused", reason === undefined ? undefined : { reason });
 };
 
-/** The content digest of a grant or an enable over the plugin's whole state. Throws on any member of the wrong type. */
-export function grantDigest(method: GrantMethod, pluginId: string, projectId: string, permission: string | null, state: PluginState): string {
+/** The content digest of a grant or an enable over the plugin's whole state and its decrease epoch. Throws on a wrongly typed member. */
+export function grantDigest(method: GrantMethod, pluginId: string, projectId: string, permission: string | null, state: PluginState, decreases: number): string {
   const perms = [...state.permissions];
   const ok =
     (method === "grant" || method === "enable") &&
@@ -61,9 +82,11 @@ export function grantDigest(method: GrantMethod, pluginId: string, projectId: st
     Number.isSafeInteger(state.generation) &&
     state.generation >= 1 &&
     typeof state.enabled === "boolean" &&
+    Number.isSafeInteger(decreases) &&
+    decreases >= 0 &&
     perms.every((p) => typeof p === "string");
   if (!ok) throw new TypeError("grant digest: a member of the wrong type");
-  const tuple = [TAG, method, pluginId, projectId, permission, state.generation, state.enabled, perms.sort()];
+  const tuple = [TAG, method, pluginId, projectId, permission, state.generation, state.enabled, perms.sort(), decreases];
   return createHash("sha256").update(JSON.stringify(tuple), "utf8").digest("hex");
 }
 
@@ -90,7 +113,7 @@ export function createGrantContentHooks(deps: GrantContentDeps): { readonly gran
               const state = deps.journal.plugins.state(pluginId, projectId);
               const shown = deps.journal.getProject(projectId);
               if (state === undefined || shown === undefined) return refuse("E_NOT_FOUND");
-              const digest = grantDigest(method, pluginId, projectId, permission, state);
+              const digest = grantDigest(method, pluginId, projectId, permission, state, deps.decreases.read(pluginId, projectId));
               // The dialog line, the danger marker included, is built from the state read under the mutex (review K2-g2 N3).
               let line: string;
               try {

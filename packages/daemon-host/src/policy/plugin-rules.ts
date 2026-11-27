@@ -64,6 +64,12 @@ export const PLUGIN_DENY_METHODS: ReadonlySet<string> = new Set([
   "axis.tasks/1.startPreview",
   "axis.tasks/1.assign",
   "axis.tasks/1.delete",
+  // Not decided for plugins yet (ADR 0008 decides only list and get for tasks.read and draft create and update for tasks.write):
+  // denied until a decision names them (review of the audit-A fix, N3).
+  "axis.tasks/1.revisions",
+  "axis.tasks/1.setStatus",
+  "axis.tasks/1.link",
+  "axis.tasks/1.unlink",
   // The CLI endpoint switch (PV-M7 slice 2): the user's alone. The disable too, so a plugin cannot switch the user's endpoints off.
   "axis.messages/1.enableCliEndpoint",
   "axis.messages/1.disableCliEndpoint",

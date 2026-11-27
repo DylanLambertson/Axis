@@ -89,8 +89,11 @@ A new contract, `axis.plugins/1`. Every method is user-only:
   plugin's start may hold for up to its 30 s budget across the provider's model list and the worktree's preparation. So a decrease
   applies at once, and the start is refused at its next grant check (under the mutex, and in the service's synchronous step).
   An increase approved before the decrease cannot then overwrite it: right before writing, the handler recomputes the digest from
-  the live state and refuses `plugin_changed` unless it equals the digest its approval was spent on. A disable of a plugin that
-  is already off changes nothing, so it cannot race a pending enable (an enable is pending only while the plugin is off).
+  the live state and refuses `plugin_changed` unless it equals the digest its approval was spent on. A no-op decrease (a disable
+  of a plugin that is already off, which is exactly when an enable is pending, or a revoke of a permission not granted) changes
+  nothing in the store, so the digest also binds a **decrease epoch**: an in-memory count per plugin and project that every
+  revoke and disable bumps, no-ops included. Any decrease after an increase's issue, or between its spend and its write, refuses
+  it (the review of the audit-A fix, S1).
 - **The write** is the built `journal.plugins.grant` or `setEnabled`. A permission already granted gives `E_CONFLICT` with reason
   `already_granted`, and nothing is written. The generation moves only on a real revoke, or an enabled-to-disabled change (the v16
   trigger; a no-op `disable` or a `revoke` of a missing grant leaves it unchanged, tested).
