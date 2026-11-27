@@ -291,7 +291,7 @@ Two planes, never mixed:
 | `settings.get` | out | `{ key }` for `axis.cliAgents` or `axis.git.runHooks` | main, from the user, application or machine scope value only (CFG-1; a workspace or folder value is never returned): `settings.result { key, value }` in, validated by the host with the `@axis/pty-policy` schema, 2 s timeout is a refusal |
 | `projects.register` | in | `{ path, trusted }` (§7.4) | host replies `{ projectId }` out |
 | `shutdown` | in | none | host starts graceful shutdown (§8) |
-| `window.gone` | in | `{ windowId }`, a code window `w<n>` only: main saw it destroyed or its renderer die (`plugin-grant-contract.md` §8.4) | n/a; ends that window's lifetime epoch |
+| `window.gone` | in | `{ windowId }`, a code window `w<n>` only: main saw it destroyed, its renderer die, or its main frame start a navigation (`plugin-grant-contract.md` §8.4) | n/a; ends that window's lifetime epoch |
 | `fatal`, `log` | out | summary only (§9) | n/a |
 | `trust.result`, `settings.result` | in | the answers to `trust.check` and `settings.get` above; each carries the request id it answers and is ignored if none is pending | n/a |
 | `projects.result` | out | `{ projectId }` or a typed refusal, answering `projects.register` | n/a |

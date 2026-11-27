@@ -18,6 +18,9 @@ import { Client } from "./approvals-rig.js";
 import { fakeClock } from "./helpers.js";
 import { grantForTests, enableForTests } from "./plugin-grants-for-tests.js";
 
+/** The host window's lifetime is not under test here (K2-g4b has its own tests): always the same live epoch. */
+const OPEN_HOST = { current: () => "host-epoch-1", alive: () => true };
+
 const SHA = "b".repeat(40);
 
 const verifier: IdentityVerifier = {
@@ -50,7 +53,7 @@ async function setup(t: TestContext, over: { endPlugin?: (pluginId: string, proj
     grantForTests(journal.plugins, plugin, project, "pages.read");
   }
   const control: NativeControl = { nativeConfirm: () => new Promise(() => undefined) };
-  const approvals = createApprovals({ audit: { append() {} }, control, clock, plugins: pluginRunStartChallenges(journal, journal.pluginIssues, () => clock.now()) });
+  const approvals = createApprovals({ audit: { append() {} }, control, clock, plugins: pluginRunStartChallenges(journal, journal.pluginIssues, () => clock.now(), OPEN_HOST) });
   const daemon = new Daemon({ identity: verifier, audit: { append() {} }, registry: protocolRegistry, idempotency: new MemoryIdempotencyStore(), policy: new RuleTablePolicy(new InMemoryTrustRegistry(), RULES, journal.plugins), approvals: approvals.gate });
   daemon.register("axis.approvals", 1, createApprovalsHandlers({ approvals: approvals.port }));
   registerPluginsHandlers({ register: (c, v, h) => daemon.register(c, v, h) }, { journal, mutex: new ProjectMutex(), endPlugin: over.endPlugin ?? ((p, j) => approvals.endPlugin(p, j)) });

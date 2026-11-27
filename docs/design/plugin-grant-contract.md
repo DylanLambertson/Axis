@@ -1,7 +1,8 @@
 # The plugin grant contract (ticket PV-K2, grant part)
 
-- **Status:** design only, not built. Date 2026-11-26; revised 2026-11-27 after review 1 and the decisions of
-  2026-11-26 (owner delegation, reversible).
+- **Status:** being built, grant calls off. K2-g1, K2-g2, K2-g3, K2-g4a, K2-g4b and the short-id widening are built
+  (section 8.1); K2-enable waits on the conditions of section 1. Date 2026-11-26; revised 2026-11-27 after review 1 and the
+  decisions of 2026-11-26 and 2026-11-27 (owner delegation, reversible).
 - **Scope:** who may write `plugin_enablement` and `plugin_grants` (journal v16, PV-K1b), through which calls, what each write is
   bound to, and what a revoke or a disable ends.
 - **Not in scope:** install, update, signatures and extraction are the rest of PV-K2 and follow ADR 0008 decisions 7 and 8. They
@@ -26,12 +27,18 @@ This list is the gate; the PV-K2 ticket row points here.
    native flow of section 3: install, update, and any other writer of `plugin_grants`.
 5. **The tier.** PV-K1e-T4 (whether a plugin's run start is itself tier 4) is decided. If it is, the plugin tier ceiling
    (`PLUGIN_MAX_TIER`, 3) and `PluginChallenges.prepare`'s refusal at tier 4 and above are redesigned and tested first.
+   **Met by decision (2026-11-27, owner delegation, reversible):** a plugin's run start stays tier 3, resolved in the renderer.
+   The tier-4 native confirmation is the grant of `runs.start` itself, and each start still needs the card, the taint, the
+   grant check and the host window's epoch. Revisited only if the owner says so (section 7, decision 3).
 6. **The connection is still there.** A plugin's run start checks that the plugin's connection, and so its host window, is still
    open after the spend and right before the run is recorded. Today a start whose host window closes after the spend still goes
    ahead (review 2 of PV-K1e-b; a user's own start behaves the same). A test closes the host window at each step after the spend
    and asserts that nothing is created. **Precondition of this condition** (2026-11-27, owner delegation): the own shell's main
-   sends the daemon `window.gone` when a window is destroyed or its renderer dies (own-shell plan OS-3). Until then a window's
-   lifetime ends at its last connection's close, and only a renderer death that no connection reports is missed.
+   sends the daemon `window.gone` when a window is destroyed, when its renderer dies, and when its main frame starts a navigation
+   (a reload included; own-shell plan OS-3). Until then a window's lifetime ends at its last connection's close, so a renderer
+   death that no connection reports, or a reload whose new connection arrives before the old one's close, is missed
+   (section 8.4). **Status:** the daemon part is built (K2-g4a, K2-g4b); the condition is met once OS-3 sends `window.gone` on
+   destroy, renderer death and main-frame navigation start.
 
 ## 2. The calls
 
@@ -94,14 +101,16 @@ project and the permission's wording. So the line follows the task Start pattern
   1. **The mandatory wording**, never dropped. When the grant makes a dangerous combination, a fixed marker of at most 16 units
      ("SENDS DATA OUT: "). Then the permission's fixed short wording, at most 28 units (for `runs.start`: "may ask to start AI
      runs").
-  2. **The plugin**, in a stable id form of at most 19 units: the id when it fits, else its first 12 characters, "…" and the first
-     6 hex digits of the SHA-256 of the whole id. The card shows the whole id and the same short form, so the user can match them.
+  2. **The plugin**, in a stable id form of at most 22 units: the id when it fits, else its first 6 characters, "…" and the first
+     15 hex digits of the SHA-256 of the whole id. The card shows the whole id and the same short form, so the user can match them.
   3. **The project's display name**, which the user chose, in whatever units remain (at least 8).
 - **The project name comes last**, and the user chose it: at most it can add look-alike wording at the END of the line, after
   the wording and the plugin, which it can never displace or cut (review K2-g2 N4).
-- **The short id must be widened before K2-enable** (review K2-g2 N2). Six hex digits are 24 bits, and an id whose first 12
-  characters and short hash collide with another's can be found in seconds. Before the grant calls are switched on, the short
-  form carries more of the hash, or the dialog shows the whole id; the card shows the whole id either way.
+- **The short id is widened** (review K2-g2 N2; built). The earlier form, 12 characters and 6 hex digits (24 bits), let another
+  id with the same short form be found in a few thousand tries; the tests keep two such pairs. The whole id cannot always fit:
+  the worst case (the danger marker, the longest wording, the separators and the project's 8 units) leaves the plugin 22 units,
+  so an id of up to 22 is shown whole and a longer one carries 15 hex digits (60 bits), which no search finds in practice. The
+  card shows the whole id either way.
 - **Overflow** cannot drop the mandatory wording. If the fixed parts ever left no room for the project, the grant is refused at
   issue with a closed reason, never shown cut.
 - **The digest binds the full identities**: the whole plugin id and the project id, never the short forms.
@@ -164,8 +173,9 @@ project and the permission's wording. So the line follows the task Start pattern
 
 1. **At install,** each grant is its own tier-4 confirmation; there is no batch.
 2. **A disable does not cancel live runs.** The plugin's open challenges are withdrawn at once (section 4).
-3. **PV-K1e-T4 is deferred** to the moment PV-K2 is about to be enabled, as condition 5 of section 1. The leaning for then: keep
-   tier 3 while every side effect asks and the run is tainted, and revisit with real plugin usage.
+3. **PV-K1e-T4 is decided** (2026-11-27, owner delegation, reversible): a plugin's run start stays tier 3, resolved in the
+   renderer, while every side effect asks and the run is tainted. The native confirmation sits on the grant of `runs.start`.
+   Condition 5 of section 1 is met by this decision; it is revisited only if the owner says so.
 4. **The grant token's guarantee stops at the serving store** (2026-11-27). Code that holds a writable database handle is in the
    trusted base. The construction rule limits where the database, the journal and the store are constructed, naming the allowed
    site for each (section 8.4); it does not confine who holds a handle afterwards. A per-database authority, which would
@@ -185,8 +195,8 @@ tests call `journal.plugins.grant` and `setEnabled`.
 | **K2-g2** | `grant` and `enable` at tier 4: the content hook (the versioned tuple digest, the project mutex at the spend), the native line builder of section 3.1, and `already_granted`. Registered but switched off: the handler refuses with `E_UNAVAILABLE` unless the host option `pluginGrants` is on, and it is off in production. **Built, off.** An enable of a plugin already on is refused at issue (`already_enabled`), as a grant that exists is (`already_granted`); neither shows a dialog. It provides none of the six conditions' evidence (section 8.2): K2-enable stays blocked. | K2-g1 | M-L |
 | **K2-g3** | **Condition 4, by construction.** The journal mints grant tokens and hands its minting function out once (`takeGrantMint`), to the approved action at wiring time; `grant` and `setEnabled(…, true)` refuse any write without a token of that instance (section 8.4). **Built.** The writer and construction rules live in `test/packages/plugin-grant-writer-rule.mjs` and run in the gate's import walk; the second-open residual is RR-96. | K2-g2 | S |
 | **K2-g4a** | **Condition 6, the daemon part.** The lifecycle hook in `@axis/daemon` (`DaemonOptions.lifecycle`: `accepted`, `closed`, once per attested session); the strict `window.gone { windowId }` control message and its shell-independent sender in `daemon-host/src/main`; `WindowLifetimes` (epoch, counts, the ring of ended epochs, `alive`) with the epoch-rule tests. Not wired into the Code OSS seam (section 8.4). **Built.** `DaemonOptions.lifecycle` calls `accepted` before any message the session queued during the handshake is handled, so a close those messages cause always comes after it; a throwing hook is reported (`lifecycle`) and ignored. `plugins/window-lifetimes.ts` keeps a set of connection ids per live epoch, so a duplicate accept or close counts once and a late close of a connection from an ended epoch changes nothing; an epoch that cannot be drawn fresh leaves the window with none (fail closed). The supervisor posts `window.gone` only while the host runs and only a `w<n>` id the inbound schema accepts; `main/window-lifecycle.ts` is the sender the own shell calls. The composition does not create `WindowLifetimes` yet: K2-g4b wires it with the binding that reads it. | PV-K1e-b | M |
-| **K2-g4b** | **Condition 6, the binding and the checks.** `PluginChallenges` pins the host window's epoch at issue; `valid()` requires it alive; `ApprovedPluginStart` carries it; the three start checks (handler entry, the mutex, the service's synchronous step) test it and the plugin connection's signal; the tests at each await after the spend: plugin close, last host close, close then reopen, `window.gone`. | K2-g4a | M |
-| **K2-enable** | Turns `pluginGrants` on in the production composition. Merges only when conditions 1, 2, 3 and 5 hold, and K2-g3, K2-g4a and K2-g4b are on `main`. Also before it merges: the dialog's short plugin id is widened, or the whole id is shown (section 3.1, review K2-g2 N2). | all above; OS-30; PV-K3 | S (code), plus the evidence |
+| **K2-g4b** | **Condition 6, the binding and the checks.** `PluginChallenges` pins the host window's epoch at issue; `valid()` requires it alive; `ApprovedPluginStart` carries it; the three start checks (handler entry, the mutex, the service's synchronous step) test it and the plugin connection's signal; the tests at each await after the spend: plugin close, last host close, close then reopen, `window.gone`. **Built.** A host window with no live epoch refuses the challenge at issue (nothing issued or counted); every later check calls `alive()` with the pinned epoch, so an ended or unknown epoch is closed, and a throw is too. The pending listing ends a plugin challenge whose binding no longer holds, so a reopened window never lists a card from the lifetime before. The handler refuses `host_window_closed` (`E_CANCELLED` for the plugin connection) at entry, before waiting for the mutex, and again under it; it hands the same check to the service as `hostAlive`, required for a plugin start and checked right after `grantHolds`. The composition creates `WindowLifetimes`, passes it to the daemon as `lifecycle` and to the binding and the handler, and ends a lifetime on `window.gone`. Pausing at the policy row (where a closed plugin connection is stopped by the daemon itself), the mutex wait and the trust gate is tested with each of the four events; the model list and `engine.prepare` come before the service's synchronous check and are covered there. | K2-g4a | M |
+| **K2-enable** | Turns `pluginGrants` on in the production composition. Merges only when all six conditions hold: 1 (OS-30's card), 2 (Code OSS retired or every reader tolerant), 3 (the real-host test, after PV-K3), 4 (K2-g3, plus a check that install and update grant only through the grant action), 5 (met by decision 3) and 6 (K2-g4a and K2-g4b, plus OS-3 sending `window.gone` on destroy, renderer death and main-frame navigation start). The short plugin id is already widened (section 3.1). | all above; OS-30; PV-K3 | S (code), plus the evidence |
 
 Install, update, signatures and extraction (ADR 0008 decisions 7 and 8) are the other PV-K2 tickets. They propose grants and
 call `grant` once per permission (decision 1). They never write the store directly, because K2-g3's token makes that impossible.
@@ -199,8 +209,8 @@ call `grant` once per permission (decision 1). They never write the store direct
 | 2 | Every listing reader | Either the Code OSS shell is removed from the build, or a reader test feeds a listing with a `requester` and a `detail` read to every supported reader. | ADR 0011 plan, or an overlay PR |
 | 3 | A real-host test | A test on the composed host with a signed plugin attestation. It sends a request to the host window's pending list, reads the detail, resolves, spends, and checks the run is created as `plugin:<id>` and tainted. It also covers out of scope, ungranted, a generation change, and a closed host window. | K2-enable, after PV-K3 (section 8.5) |
 | 4 | Every grant path | K2-g3's write token, plus a test that a grant written without it is refused, and the caller pin. | K2-g3 |
-| 5 | The tier | The owner's recorded decision on PV-K1e-T4. If tier 4 is chosen, a slice before K2-enable raises `PLUGIN_MAX_TIER` and teaches `PluginChallenges.prepare` the native path, with tests. | decision row, maybe a slice |
-| 6 | The connection | K2-g4b's test closes the host window at each step after the spend and asserts that nothing is created. | K2-g4a, K2-g4b |
+| 5 | The tier | Met by decision (section 7, decision 3, 2026-11-27): tier 3 stays, the native confirmation is the grant. | the decision |
+| 6 | The connection | K2-g4b's test closes the host window at each step after the spend and asserts that nothing is created; OS-3's test that main sends `window.gone` on destroy, renderer death and main-frame navigation start. | K2-g4a, K2-g4b (built); OS-3 |
 
 ### 8.3 What each slice's PR must show
 
@@ -325,11 +335,25 @@ test flips and the row closes.
     answered as ended, not as unknown.
   - **Unreported death.** Main owns the window lifecycle. A shell-independent sender in `daemon-host/src/main` sends the daemon a
     strict `window.gone { windowId }` control message, which ends that window's epoch even if a connection's close was never
-    reported. Main calls it when a window is destroyed or its renderer dies.
+    reported. Main calls it when a window is destroyed, when its renderer dies, and when its main frame starts a navigation
+    (a reload or any other navigation, not a same-document one).
     - The Code OSS seam does **not** call it: the owner stopped new Code-OSS-only work (2026-11-27). The own shell's main
       (OS-3) wires it, and that wiring is a precondition of condition 6.
-    - Until then the epoch ends at the window's last connection close, and only a renderer death that no connection reports is
-      missed.
+    - Until then the epoch ends at the window's last connection close, and only a renderer death that no connection reports, or a
+      reload whose new connection arrives before the old one's close, is missed.
+  - **A reload** (review K2-g4a: the reload overlap). The window id stays the same, and the new document may connect before the
+    old document's connections report their close, so counting connections alone would carry the epoch across the reload. The
+    daemon does **not** end the epoch when a new connection arrives while another is open:
+    - it cannot tell a reload from a second connection of the same document, and a window legitimately holds several, so the
+      epoch would churn and end approvals for nothing;
+    - instead main, which sees the navigation, ends the lifetime. It sends `window.gone` at the start of the main frame's
+      navigation, before the new document can ask for a connection. That message and the new document's `connect` travel the same
+      ordered control channel, so the host ends the old epoch before it sees the new connection;
+    - the old connections' closes that arrive later change nothing: `WindowLifetimes` keeps each epoch's own connection ids.
+    - This matters because a plugin view is a separate view main owns and can outlive a host reload, so its own connection's close
+      does not cover one. Until OS-3 wires the sender, a reload with that overlap continues the epoch. What still bounds it: the
+      approval needs the user's resolve in that window, the grant generation is checked, the plugin connection's own signal, and
+      the challenge's lifetime.
 - **Pinned at issue.** The plugin's challenge binding records the host window's epoch when the challenge is issued.
   - `valid()` fails when that epoch has ended, so resolve, detail and the spend refuse a challenge whose window closed even once,
     including a close followed by a reconnect.

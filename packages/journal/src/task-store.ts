@@ -3,6 +3,13 @@ import { AxisError, withTransaction, type DatabaseSync } from "@axis/audit";
 import { TASK_LIMITS, projectTaskBytesSql } from "./schema-tasks.js";
 
 /**
+ * The share of a project kept for the user (`docs/design/tasks-store.md` §4.1, RR-93 decision C1): any author but the user is
+ * refused `limit_reached` past `tasksPerProject - tasks` tasks, or past `projectBytes - bytes` bytes of task text. The user's
+ * own writes reach the full limits.
+ */
+export const TASK_USER_RESERVE = Object.freeze({ tasks: 100, bytes: Math.floor(TASK_LIMITS.projectBytes / 10) });
+
+/**
  * Tasks, their revisions and links (schema version 15, ticket PV-T1 slice 1, `docs/design/tasks-store.md`). A data layer:
  * the daemon's tasks service (slice 2) decides who may call what and writes the audit; Start, which shows the full prompt
  * and taints the run (IAC-T source 5), is slice 2's. The store derives the task's trust itself and the table checks it.
@@ -108,8 +115,9 @@ export class TaskRecords {
     return withTransaction(this.#db, () => {
       if (this.#db.prepare("SELECT 1 FROM tasks WHERE id = ?").get(input.taskId) !== undefined) refuse("E_CONFLICT", "exists", "A task with that id exists");
       const n = Number((this.#db.prepare("SELECT count(*) AS n FROM tasks WHERE project_id = ?").get(input.projectId) as Row)["n"]);
-      if (n >= TASK_LIMITS.tasksPerProject) refuse("E_CONFLICT", "limit_reached", "The project holds its maximum of tasks");
-      this.#checkBytes(input.projectId, bytesOf(input.title) + bytesOf(input.body));
+      const user = input.author.kind === "user";
+      if (n >= TASK_LIMITS.tasksPerProject - (user ? 0 : TASK_USER_RESERVE.tasks)) refuse("E_CONFLICT", "limit_reached", "The project holds its maximum of tasks");
+      this.#checkBytes(input.projectId, bytesOf(input.title) + bytesOf(input.body), user);
       const at = this.#ts();
       this.#db
         .prepare("INSERT INTO tasks (id, project_id, source, status, untrusted, hop, last_seq, created_at, updated_at) VALUES (?, ?, ?, 'open', ?, 0, 0, ?, ?)")
@@ -126,7 +134,7 @@ export class TaskRecords {
     return withTransaction(this.#db, () => {
       const t = this.#task(input.taskId);
       if (t.lastSeq !== input.baseSeq) refuse("E_CONFLICT", "stale_version", "The task changed since that revision");
-      this.#checkBytes(t.projectId, bytesOf(input.title) + bytesOf(input.body));
+      this.#checkBytes(t.projectId, bytesOf(input.title) + bytesOf(input.body), input.author.kind === "user");
       this.#insert(input.taskId, t.lastSeq + 1, input.title, input.body, input.author, this.#ts());
       return this.get(input.taskId) as TaskRecord;
     });
@@ -234,9 +242,10 @@ export class TaskRecords {
     return r === undefined ? NOT_FOUND() : { projectId: String(r["project_id"]), lastSeq: Number(r["last_seq"]) };
   }
 
-  #checkBytes(projectId: string, adding: number): void {
+  /** The project's task text with `adding` more stays within the limit: the full one for the user, less the reserve for others. */
+  #checkBytes(projectId: string, adding: number, user: boolean): void {
     const used = Number((this.#db.prepare(`SELECT ${projectTaskBytesSql("?1")} AS n`).get(projectId) as Row)["n"]);
-    if (used + adding > TASK_LIMITS.projectBytes) refuse("E_CONFLICT", "limit_reached", "The project holds its maximum of task text");
+    if (used + adding > TASK_LIMITS.projectBytes - (user ? 0 : TASK_USER_RESERVE.bytes)) refuse("E_CONFLICT", "limit_reached", "The project holds its maximum of task text");
   }
 
   #insert(taskId: string, seq: number, title: string, body: string, author: TaskAuthor, at: string): void {

@@ -173,3 +173,14 @@ test("ended epochs are remembered in a bounded ring: the oldest falls back to un
   assert.equal(w.alive("w1", ended[0] as string), false);
   assert.equal(w.status("w1", "never-issued"), "unknown");
 });
+
+test("the ring size must be a positive integer (review K2-g4a N1)", () => {
+  for (const bad of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, "2"]) {
+    assert.throws(() => createWindowLifetimes({ randomBytes: counter().bytes, endedRing: bad as never }), /endedRing/, String(bad));
+  }
+  const one = createWindowLifetimes({ randomBytes: counter().bytes, endedRing: 1 });
+  one.accepted(desktop("a"));
+  const e = one.current("w1") as string;
+  one.closed(desktop("a"));
+  assert.equal(one.status("w1", e), "ended");
+});
