@@ -1,0 +1,71 @@
+# Request composition (PV-N1e)
+
+- **Status:** built.
+- **Date:** 2026-11-22.
+- **Inputs:** ADR 0009 decision 3 (INT-6) and decision 1 (`axis.net/1`), `docs/design/integrations-contract.md`, `docs/design/egress-client.md`.
+- **Code:** `packages/daemon-host/src/net/compose-request.ts`, `packages/daemon-host/src/net/url-pattern.ts`, and the shared path table in `packages/protocol/src/integrations-wire.ts` (`NET_PATH_REFUSALS`, `netPathRefusal`). Tests are in `packages/daemon-host/test/net/` (`compose-request`, `url-pattern`, `compose-property`, `net-compose`).
+
+## 1. What it does
+
+It turns a connector operation's template and typed arguments, or a plugin's `axis.net/1` path, into the one URL the egress client sends. It then checks the parsed URL against what was composed, before any credential is attached. It is pure code: no socket, no import of the egress client, no credential in composition. PV-N1f owns the order of match, then attach, then send, and the two audit rows.
+
+## 2. Composition (ADR 0009 decision 3)
+
+- **Templates:** an operation fixes its method (GET, HEAD or POST, the egress client's set) and its path template of literal and `{arg}` segments. It also fixes its declared query keys and, for a POST, the typed body fields. There is no free-form query, header or body. A bad template composes nothing (`template_invalid`).
+- **Placeholder types:**
+  - `int`: a safe integer, with an optional range;
+  - `enum`: a closed set of unreserved tokens;
+  - `id`: ASCII, letters, digits and `-._~`, or the template's own anchored pattern;
+  - `text`: Unicode allowed.
+- **Refused before encoding:**
+  - an empty value;
+  - a control character (C0, DEL, C1, U+2028 and U+2029, the bidi controls);
+  - `/`, `?`, `#`, `\` and `;`;
+  - ANY `%` (review 1 SF3): a split escape such as `%2%65` is no escape to a strict decoder but `%2e` to a lenient one, so a value holds no percent sign at all. Then the encoded value decodes to the same text however many times, strict or lenient, it is decoded (the property test checks three decodes);
+  - `.` or `..` as a path segment, and in a `text` path segment the dot and slash look-alikes a normalising server could read as `.` or `/` (fullwidth, ideographic, small and leader forms; review 1 nit b). A query value may keep them;
+  - a lone surrogate;
+  - more than 256 UTF-8 bytes;
+  - non-ASCII text unless the type is `text`.
+  - `;` is refused because, encoded, it is `%3B`, which the contract refuses anywhere.
+- **Unicode:** never normalised. A `text` value is UTF-8 percent-encoded once.
+- **The one encoder** (`encodeValue`): every byte outside the unreserved set becomes `%XX` in upper case, the sub-delimiters `!'()*` included.
+- **The integration** is recorded on every composed request (`integration_refused` for a malformed id), so a credential attaches only to a request of its own integration (§4).
+- **Arguments:** exactly the template's own properties of the arguments object. Inherited ones are ignored; an unknown one is `argument_unknown` and a missing required one is `argument_missing`.
+- **The re-check:** the composed path and query are judged by the contract's own refusal table, `netPathRefusal`. It is imported from `@axis/protocol`, never copied, and the protocol test checks that the schema and the table agree on the whole spelling table. The table refuses any `%25` in the path part (review 1 SF4: `/a/%25%32%65%25%32%65/b` is `/a/%2e%2e/b` after one decode).
+- **`axis.net/1`:**
+  - `read` is GET or HEAD; `send` is a POST with an optional JSON object body (`netBodySchema`).
+  - The plugin's path is judged by the same table, and a control character is refused too.
+  - The origin must pass `originSchema` (`origin_refused`).
+- **Errors:** `CompositionError` carries a closed reason only. No argument, origin or path appears in it.
+
+## 3. The final check (`matchTarget`)
+
+It reads only the PARSED `target.url` that `egressTarget` returned for the composed URL, and it compares ENCODED forms exactly:
+
+- the origin;
+- no userinfo, and no fragment (not even an empty `#`);
+- for an operation:
+  - every segment equal to the composed one and in the one spelling (upper-case hex);
+  - the query pairs exactly the composed ones, in order, each key once and each with one `=`;
+- for `axis.net/1`: the path and the query exactly the composed text;
+- finally the whole `href` equal to the composed URL. Compose, then parse, must be the identity, or the request is refused (`identity`).
+
+Tabs and newlines the parser strips are not seen, because the parsed URL is what is sent. A quote in an `axis.net/1` query, which the parser would encode, is refused rather than sent differently.
+
+## 4. The snapshot and the credential
+
+- **The snapshot (review 1 SF1):** a match reads each field of the composed request once and records the integration, the origin, the href, the method and a COPY of the body as frozen values in a module-private record. Nothing later reads the caller's target or composed objects again, so changing them after the match (`target.url.href = "https://evil.example/"`) changes nothing that is sent.
+- **The body copy** is taken by the typed-array slots (`src/net/bytes.ts`), so no caller code runs; a composed request whose body is not a real `Uint8Array` is refused (`target`).
+- **The brand:** `matchTarget` returns a `MatchedTarget`, a frozen brand for that record (type level and run time). It is single-use, and a composed request can be matched once (`already_matched`, review 1 nit a). A malformed target or composed request is a closed refusal (`target`, nit d).
+- **The credential (review 1 SF2):** `Credential` is created with its header value and its binding, one integration and one origin. The value is held in a module-private map, and `String`, `JSON.stringify` and `util.inspect` all show `[credential]`.
+- **Attaching:** `authorize(matched, credential)` refuses anything but an unspent MatchedTarget (`not_matched`: a look-alike, a copy, an object inheriting from it, or a spent one). It also refuses a credential bound to another integration or origin (`credential_mismatch`), and a refused attach does not spend the match.
+- **The result:** an `AuthorizedRequest` built from the snapshot only: method, URL, origin, integration and a copy of the body. The header value is NOT a property (review 1 nit c): a spread, `structuredClone`, `v8.serialize` or `inspect` of the request shows none of it. The egress client reads it through `authorizationOf(request)`, the one reader, which refuses a copy (`not_authorized`).
+- **LIMIT:** the value is in daemon memory, so a debugger or a heap dump sees it. Nothing here defends against code running in the daemon itself.
+- **The client side:** the egress client taking an `AuthorizedRequest` (and refusing a credential header on any other request) is a small follow-up once this and PV-N1d slice B are both on main, or part of PV-N1f.
+
+## 5. Evidence
+
+- Refusal tables cover every rule and type.
+- A fixed-seed property test (seeds logged, 4,800 cases) shows that a value is either refused by an independent statement of the rule, or composes, parses and matches as the identity, with one decode giving it back.
+- Hand-built requests prove each matcher check on its own.
+- 78 mutants are killed (2 documented equivalents in the byte copy), covering every refusal, the encoder, every matcher check, the snapshot, the brand, single use, single match, the binding (each half) and the reader.
