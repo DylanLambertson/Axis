@@ -285,3 +285,17 @@ test("review a2-1b N1: a request whose actor is not the identity's is refused be
   await refuses(r.approvals.gate.issue({ ...r.plugin(), actor: "plugin:other.tool" } as ApprovalInput, r.content), "E_POLICY_DENIED");
   assert.deepEqual(r.records, []);
 });
+
+test("review K1e-b: a second connection of the same plugin cannot free the first one's slot by a failed spend", async () => {
+  const r = rig();
+  const first = (await r.approvals.gate.issue(r.plugin(), r.content)) as Challenge;
+  assert.equal(r.approvals.port.resolve({ actor: "user", windowId: "w1" }, { challengeId: first.challengeId, decision: "approve", digest: first.digest }).state, "approved");
+  // The same plugin on another connection (a second view) tries the spend: the manager refuses it as not the requester.
+  const other = r.plugin("acme.board", "w1", "Pacme_board_second".padEnd(22, "_"));
+  await assert.rejects(Promise.resolve(r.approvals.gate.execute(other, { challengeId: first.challengeId }, r.content, () => Promise.reject(new Error("must not run")))));
+  // The first connection's slot is still held, and its approval still spends.
+  await refuses(r.approvals.gate.issue(r.plugin(), r.content), "E_BACKPRESSURE");
+  let ran = 0;
+  await r.approvals.gate.execute(r.plugin(), { challengeId: first.challengeId }, r.content, async () => void ran++);
+  assert.equal(ran, 1);
+});
