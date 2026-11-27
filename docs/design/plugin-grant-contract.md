@@ -95,6 +95,11 @@ project and the permission's wording. So the line follows the task Start pattern
   2. **The plugin**, in a stable id form of at most 19 units: the id when it fits, else its first 12 characters, "…" and the first
      6 hex digits of the SHA-256 of the whole id. The card shows the whole id and the same short form, so the user can match them.
   3. **The project's display name**, which the user chose, in whatever units remain (at least 8).
+- **The project name comes last**, and the user chose it: at most it can add look-alike wording at the END of the line, after
+  the wording and the plugin, which it can never displace or cut (review K2-g2 N4).
+- **The short id must be widened before K2-enable** (review K2-g2 N2). Six hex digits are 24 bits, and an id whose first 12
+  characters and short hash collide with another's can be found in seconds. Before the grant calls are switched on, the short
+  form carries more of the hash, or the dialog shows the whole id; the card shows the whole id either way.
 - **Overflow** cannot drop the mandatory wording. If the fixed parts ever left no room for the project, the grant is refused at
   issue with a closed reason, never shown cut.
 - **The digest binds the full identities**: the whole plugin id and the project id, never the short forms.
@@ -175,10 +180,10 @@ tests call `journal.plugins.grant` and `setEnabled`.
 | Slice | What | Depends on | Size |
 |---|---|---|---|
 | **K2-g1** | `axis.plugins/1` in the protocol with `list`, `revoke` and `disable` handlers; the policy rows (user only; outside `WEB_ALLOWED`; `axis.plugins/` added to `PLUGIN_DENY_CONTRACTS`); `approvals.endPlugin(pluginId, projectId)`. **Built.** A revoke of a permission not granted answers `E_NOT_FOUND` (`not_granted`) and changes nothing; a disable of a plugin already off answers its unchanged state. | PV-K1e-b (merged) | M |
-| **K2-g2** | `grant` and `enable` at tier 4: the content hook (the versioned tuple digest, the project mutex at the spend), the native line builder of section 3.1, and `already_granted`. Registered but switched off: the handler refuses with `E_UNAVAILABLE` unless the host option `pluginGrants` is on, and it is off in production. | K2-g1 | M-L |
+| **K2-g2** | `grant` and `enable` at tier 4: the content hook (the versioned tuple digest, the project mutex at the spend), the native line builder of section 3.1, and `already_granted`. Registered but switched off: the handler refuses with `E_UNAVAILABLE` unless the host option `pluginGrants` is on, and it is off in production. **Built, off.** An enable of a plugin already on is refused at issue (`already_enabled`), as a grant that exists is (`already_granted`); neither shows a dialog. It provides none of the six conditions' evidence (section 8.2): K2-enable stays blocked. | K2-g1 | M-L |
 | **K2-g3** | **Condition 4, by construction.** The journal mints grant tokens and hands its minting function out once (`takeGrantMint`), to the approved action at wiring time; `grant` and `setEnabled(…, true)` refuse any write without a token of that instance (section 8.4). | K2-g2 | S |
 | **K2-g4** | **Condition 6.** Window lifetimes (epochs) in the daemon and main's window-gone notice; the plugin's binding pins the host window's epoch at issue; the start checks it at entry, under the mutex and in the service's synchronous creation step (section 8.4). | PV-K1e-b | M |
-| **K2-enable** | Turns `pluginGrants` on in the production composition. Merges only when conditions 1, 2, 3 and 5 hold, and K2-g3 and K2-g4 are on `main`. | all above; OS-30; PV-K3 | S (code), plus the evidence |
+| **K2-enable** | Turns `pluginGrants` on in the production composition. Merges only when conditions 1, 2, 3 and 5 hold, and K2-g3 and K2-g4 are on `main`. Also before it merges: the dialog's short plugin id is widened, or the whole id is shown (section 3.1, review K2-g2 N2). | all above; OS-30; PV-K3 | S (code), plus the evidence |
 
 Install, update, signatures and extraction (ADR 0008 decisions 7 and 8) are the other PV-K2 tickets. They propose grants and
 call `grant` once per permission (decision 1). They never write the store directly, because K2-g3's token makes that impossible.

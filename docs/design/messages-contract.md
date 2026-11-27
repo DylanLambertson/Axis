@@ -238,4 +238,4 @@ PV-M1 put the policy refusals under `E_POLICY_DENIED`. A handler cannot raise th
   - **Content and path races.** A project file whose content changes between enable and mint is not detected. A file that appears between the mint's `lstat` and the CLI reading it is not either.
   - **Real-path race.** The real path is taken only for an absolute `argv[0]`, by the daemon at mint, while the executable is resolved later at exec: a link swapped in between is a race. A bare name gets no real path.
   - **Closed, for comparison.** A later overriding flag never re-allows, because any listed occurrence refuses (stricter than the CLI). Between the mint check and the spawn, the spec is the same object, so the argv cannot change.
-  - **Not here.** The open question of messaging while BLOCKED stays for slice 2.
+  - **Decided (2026-11-27): no messaging while BLOCKED or REVIEWING.** Such a run's endpoint is revoked at its next message and stays revoked for that run, even if it returns to RUNNING (fail closed).

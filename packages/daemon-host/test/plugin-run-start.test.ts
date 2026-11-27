@@ -16,6 +16,7 @@ import { composerFailure } from "../src/composer/errors.js";
 import { isTrustCall } from "../src/gate/project-trust.js";
 import { pluginRunStartChallenges } from "../src/gate/plugin-run-start.js";
 import { createComposerRunsHandlers, registerComposerRunsHandlers } from "../src/handlers/composer-runs.js";
+import { registerPluginsHandlers } from "../src/handlers/plugins.js";
 import type { ComposerStartInput } from "../src/ports/composer.js";
 import { ProjectMutex } from "../src/worktrees/project-mutex.js";
 import { Client } from "./approvals-rig.js";
@@ -56,15 +57,18 @@ async function setup(t: TestContext, over: { admit?: () => Promise<void>; onAudi
   const approvals = createApprovals({ audit: { append() {} }, control, clock, plugins: pluginRunStartChallenges(journal, journal.pluginIssues, () => clock.now()) });
   const daemon = new Daemon({ identity: verifier, audit: { append: (e) => over.onAudit?.(e as unknown as Row) }, registry: protocolRegistry, idempotency: new MemoryIdempotencyStore(), policy: new RuleTablePolicy(new InMemoryTrustRegistry(), RULES, journal.plugins), approvals: approvals.gate });
   daemon.register("axis.approvals", 1, createApprovalsHandlers({ approvals: approvals.port }));
+  // The user's plugin decreases (PV-K2 K2-g1), so a revoke can follow a plugin's run start.
+  registerPluginsHandlers({ register: (c, v, h, o) => (o === undefined ? daemon.register(c, v, h) : daemon.register(c, v, h, o)) }, { journal, mutex: new ProjectMutex(), endPlugin: (p, j) => approvals.endPlugin(p, j) });
   const starts: ComposerStartInput[] = [];
   const admitted: unknown[] = [];
   const run = (input: ComposerStartInput): ComposerRun => ({ runId: randomUUID(), workspaceId: input.workspaceId, mode: input.mode, providerId: input.providerId, modelId: input.modelId, state: "QUEUED", reason: null, createdAt: "2026-11-26T00:00:00.000Z", startedAt: null, endedAt: null, live: true, awaitingApproval: false, usage: null });
   const none = (): never => assert.fail("not used");
+  const cancels: string[] = [];
   registerComposerRunsHandlers(
     { register: (c, v, h, o) => (o === undefined ? daemon.register(c, v, h) : daemon.register(c, v, h, o)) },
     {
       service: {
-        cancel: none, get: none, list: none, events: none,
+        cancel: (id: string) => (cancels.push(id), none()), get: none, list: none, events: none,
         start: async (input) => {
           if (input.grantHolds !== undefined && input.grantHolds() !== true) throw composerFailure("E_CONFLICT", "grant_changed");
           starts.push(input);
@@ -93,7 +97,7 @@ async function setup(t: TestContext, over: { admit?: () => Promise<void>; onAudi
     db.close();
   });
   const body = (workspaceId = ws1, over: Row = {}) => ({ workspaceId, mode: "edit", prompt: "Summarise the open tasks", providerId: "mock", modelId: "mock-model", ...over });
-  return { clock, journal, db, approvals, starts, admitted, connect, body, ws1, ws2, ws1b };
+  return { clock, journal, db, approvals, starts, admitted, connect, body, ws1, ws2, ws1b, cancels };
 }
 const reason = (m: { error?: { details?: Record<string, unknown> } }): unknown => m.error?.details?.["reason"];
 
@@ -389,4 +393,22 @@ test("layer: an approval for one workspace never starts a run in another workspa
   const asPlugin = verifier.verify(PLUGIN_ATT) as Identity;
   await assert.rejects(Promise.resolve(h.handlers.start(h.ctx(asPlugin, h.mint()), s.body(s.ws1b) as never)), (e: unknown) => (e as { code?: string }).code === "E_NOT_FOUND");
   assert.equal(h.seen.length, 0);
+});
+
+test("a run a plugin started keeps running after the user revokes runs.start and disables the plugin (plugin-grant-contract.md section 4)", async (t) => {
+  const s = await setup(t);
+  const plugin = await s.connect(PLUGIN_ATT);
+  const user = await s.connect("user#Uone#w1");
+  const key = randomUUID();
+  const challengeId = ((await plugin.call("axis.runs", "start", s.body(), key)).error?.details?.["challenge"] as Row)["challengeId"] as string;
+  const listed = (await user.call("axis.approvals", "pending", {})).result?.["challenges"] as Row[];
+  await user.call("axis.approvals", "resolve", { challengeId, decision: "approve", digest: listed[0]?.["digest"] });
+  assert.equal((await plugin.call("axis.runs", "start", s.body(s.ws1, { approval: { challengeId } }), key)).ok, true);
+  assert.equal(s.starts.length, 1);
+  assert.equal((await user.call("axis.plugins", "revoke", { projectId: "p1", pluginId: "acme.board", permission: "runs.start" }, randomUUID())).ok, true);
+  assert.equal((await user.call("axis.plugins", "disable", { projectId: "p1", pluginId: "acme.board" }, randomUUID())).ok, true);
+  assert.deepEqual(s.cancels, [], "neither the revoke nor the disable cancelled the run");
+  assert.equal(s.starts.length, 1);
+  // The next start is refused: the grant is gone.
+  assert.equal((await plugin.call("axis.runs", "start", s.body(), randomUUID())).error?.code, "E_POLICY_DENIED");
 });

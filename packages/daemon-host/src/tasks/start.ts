@@ -6,7 +6,7 @@ import type { Journal, TaskAuthor, TaskRecord } from "@axis/journal";
 import type { TasksRequest, TasksResponse } from "@axis/protocol";
 import { AgentRefusal } from "../agents/service.js";
 import { startWorkerComposer, type AgentStartDeps } from "../agents/start.js";
-import { TasksRefusal } from "./service.js";
+import { TASK_AUDIT, TasksRefusal } from "./service.js";
 
 /**
  * Start (ticket PV-T1 slice 2b; `extensibility.md` §6: Start is the user's): run a worker on a task. The daemon builds the
@@ -88,7 +88,7 @@ export function createTaskStart(deps: TaskStartDeps) {
   const audit = (s: ReturnType<typeof startState>, worker: string, workerKind: string, extra: Record<string, unknown> = {}): void => {
     deps.audit.append({
       actor: "user",
-      action: "task.start",
+      action: TASK_AUDIT.start,
       target: `task:${s.task.taskId}`,
       outcome: "success",
       payload: { taskId: s.task.taskId, projectId: s.task.projectId, seq: s.seq, callerKind: "user", workerId: worker, workerKind, untrusted: s.task.untrusted, hop: s.task.hop, ...extra },
