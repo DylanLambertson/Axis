@@ -5,7 +5,8 @@ import { PLUGIN_PERMISSIONS, type PluginPermission } from "./schema-plugins.js";
 /**
  * Plugin grants (schema version 16, ticket PV-K1b). Every write is the user's own act: no method takes an actor, the rows say
  * `user`, and each write appends one `journal.plugin.record` audit event that names ids and a fixed field, never anything else.
- * The contract methods that will call these (PV-K2) must be tier 4 or main-owned; nothing in K1b calls them but tests.
+ * The contract methods that will call these (PV-K2): `grant` and `enable` at tier 4 or main-owned, `revoke` and `disable` at tier 2
+ * (a decrease applies at once; `docs/design/plugin-grant-contract.md`). Nothing in K1b calls them but tests.
  *
  * `state` is what the daemon's policy reads for every plugin call: whether the plugin is enabled in the project, its generation
  * (OI-3 binds challenges to it) and its granted permissions. A plugin that was never added is `undefined`.
@@ -47,6 +48,20 @@ export class PluginGrantRecords {
       .map((x) => String(x["permission"]))
       .filter((p): p is PluginPermission => PERMS.has(p));
     return { enabled: Number(r["enabled"]) === 1, generation: Number(r["generation"]), permissions: perms };
+  }
+
+  /**
+   * Every plugin added to the project, by plugin id, each with its state (PV-K2 `axis.plugins/1.list`). Read only; at most 64
+   * (the table's per-project cap).
+   */
+  list(projectId: string): Array<PluginState & { readonly pluginId: string }> {
+    const ids = (this.#db.prepare("SELECT plugin_id FROM plugin_enablement WHERE project_id = ? ORDER BY plugin_id").all(projectId) as Row[]).map((r) => String(r["plugin_id"]));
+    const out: Array<PluginState & { readonly pluginId: string }> = [];
+    for (const pluginId of ids) {
+      const s = this.state(pluginId, projectId);
+      if (s !== undefined) out.push({ pluginId, ...s });
+    }
+    return out;
   }
 
   /** The user added the plugin to the project: disabled, generation 1, no grant. Added once. */

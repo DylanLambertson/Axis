@@ -28,15 +28,15 @@ test("a request body over 1 MiB is refused before sending; exactly 1 MiB is not"
 });
 
 test("request headers: client-owned, proxy, malformed and duplicate names and non-printable values are refused", () => {
-  for (const n of ["Host", "content-length", "Transfer-Encoding", "Accept-Encoding", "connection", "keep-alive", "upgrade", "TE", "trailer", "expect", "proxy-authorization", "Proxy-Connection", "proxy-anything", "bad name", "", "x:y", "é"]) {
+  for (const n of ["Authorization", "authorization", "Host", "content-length", "Transfer-Encoding", "Accept-Encoding", "connection", "keep-alive", "upgrade", "TE", "trailer", "expect", "proxy-authorization", "Proxy-Connection", "proxy-anything", "bad name", "", "x:y", "é"]) {
     assert.equal(code(() => requestHeaders({ [n]: "v" })), "header_refused", n);
   }
   for (const n of ["\u212aey", "x-\u212a", "\u0130d", "\u017fet"]) assert.equal(code(() => requestHeaders({ [n]: "v" })), "header_refused", `${JSON.stringify(n)} lower-cases to ASCII`);
   for (const v of ["a\r\nX-Injected: 1", "a\nb", "a\0b", "é"]) assert.equal(code(() => requestHeaders({ "x-ok": v })), "header_refused", JSON.stringify(v));
   assert.equal(code(() => requestHeaders({ "X-A": "1", "x-a": "2" })), "header_refused", "the same name twice");
-  const built = requestHeaders({ Authorization: "Bearer t", "X-Tab": "a\tb", Accept: "application/json" });
+  const built = requestHeaders({ "X-Api-Version": "2", "X-Tab": "a\tb", Accept: "application/json" });
   assert.equal(Object.getPrototypeOf(built), null, "a fresh null-prototype record");
-  assert.deepEqual({ ...built }, { authorization: "Bearer t", "x-tab": "a\tb", accept: "application/json" });
+  assert.deepEqual({ ...built }, { "x-api-version": "2", "x-tab": "a\tb", accept: "application/json" });
 });
 
 test("only identity content encoding is accepted", () => {

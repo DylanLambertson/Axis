@@ -99,6 +99,29 @@ const INTEGRATION = /^[a-z][a-z0-9:._-]{0,63}$/;
  * normalised), U+FE30, U+FF0E, U+2100 ("a/c") and the like are refused whatever the list above says; the list keeps the
  * slash look-alikes that have no compatibility decomposition (U+2215, U+29F5 and others).
  */
+/**
+ * Unicode default-ignorable code points (zero-width space U+200B, soft hyphen U+00AD, the joiners, variation selectors and
+ * others): invisible, and some servers strip them, so `.\u200b.` would be read as `..` (N1e review 3 nit 1). Refused in a
+ * path value by the Unicode property, not a list.
+ */
+const DEFAULT_IGNORABLE = /\p{Default_Ignorable_Code_Point}/u;
+
+/**
+ * Invisible characters that are NOT default-ignorable (N1f review 1 nit 5), refused in a path value as the safe default:
+ * every format character (Cf, U+13430 among them), every space separator but the ASCII space (Zs: U+00A0, U+2000 to
+ * U+200A, U+202F, U+205F, U+3000), and the blank glyphs no Unicode property names (U+2800 BRAILLE PATTERN BLANK, U+1D159
+ * MUSICAL SYMBOL NULL NOTEHEAD, U+16FE4 KHITAN SMALL SCRIPT FILLER). The ASCII space stays: a label name holds spaces.
+ */
+const INVISIBLE = /(?! )[\p{Cf}\p{Zs}\u2800\u{1d159}\u{16fe4}]/u; // by property; the lookahead keeps the ASCII space
+
+/**
+ * Code points with no fixed meaning (N1f nits review B): private use (Co) and unassigned (Cn, the noncharacters such as
+ * U+FDD0 and U+FFFE included). A server or a later Unicode version may give them any reading, so a path value refuses them.
+ */
+const UNSETTLED = /[\p{Co}\p{Cn}]/u;
+/** True when the value is a dot segment once its combining marks are dropped: `.` + U+0301 + `.` is `..` to a server that strips marks. */
+const dotsWithMarks = (text: string): boolean => [text, text.normalize("NFKD")].some((t) => DOT_SEGMENT.test(t.replace(/\p{M}/gu, "")));
+
 export function normalisesToDanger(text: string): boolean {
   return [text.normalize("NFKC"), text.normalize("NFKD")].some((n) => SEPARATOR.test(n) || PERCENT.test(n) || CONTROL.test(n) || DOT_SEGMENT.test(n));
 }
@@ -155,7 +178,7 @@ export function placeholderText(value: ArgValue, type: ValueType, inPath: boolea
   }
   if (text.length === 0) throw new CompositionError("argument_refused");
   if (CONTROL.test(text) || SEPARATOR.test(text) || PERCENT.test(text)) throw new CompositionError("argument_refused");
-  if (inPath && (DOT_SEGMENT.test(text) || PATH_CONFUSABLE.test(text) || normalisesToDanger(text))) throw new CompositionError("argument_refused");
+  if (inPath && (DOT_SEGMENT.test(text) || PATH_CONFUSABLE.test(text) || DEFAULT_IGNORABLE.test(text) || INVISIBLE.test(text) || UNSETTLED.test(text) || dotsWithMarks(text) || normalisesToDanger(text))) throw new CompositionError("argument_refused");
   if (type.kind !== "text" && /[^\x20-\x7e]/.test(text)) throw new CompositionError("non_ascii");
   if (/[\ud800-\udfff]/.test(text.replace(/[\ud800-\udbff][\udc00-\udfff]/g, ""))) throw new CompositionError("argument_refused"); // a lone surrogate
   if (new TextEncoder().encode(text).byteLength > MAX_VALUE_BYTES) throw new CompositionError("argument_too_long");

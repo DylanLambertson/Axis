@@ -20,8 +20,8 @@ import type { EgressTarget } from "./host.js";
  *
  * `authorize` is the only way to attach a `Credential`, and it refuses anything that is not an unspent MatchedTarget, and a
  * credential bound to another integration or origin (review 1 SF2, `credential_mismatch`). The AuthorizedRequest carries
- * the snapshot only; its header value is not a property at all (review 1 nit c): the egress client reads it through
- * `authorizationOf`, the one reader. LIMIT, stated plainly: the value is in process memory, so a debugger or a heap dump of
+ * the snapshot only; its header value is not a property at all (review 1 nit c): the egress client takes it through
+ * `takeAuthorization`, the only reader, which spends it. LIMIT, stated plainly: the value is in process memory, so a debugger or a heap dump of
  * the daemon sees it; nothing here defends against code running in the daemon itself.
  */
 
@@ -83,7 +83,13 @@ export function matchTarget(composed: ComposedRequest, target: EgressTarget): Ma
   const refusal = kind === "net" ? netRefusal(segments, query, parsed) : operationRefusal(segments, query, parsed);
   if (refusal !== null) return refusal;
   if (href !== url) return "identity";
-  const snapshot: Snapshot = Object.freeze({ integration, origin, href, method, body: body === undefined ? undefined : copyBytes(body) });
+  let bodyCopy: Uint8Array | undefined;
+  try {
+    bodyCopy = body === undefined ? undefined : copyBytes(body);
+  } catch {
+    return "target"; // a body whose buffer was detached (transferred) before the match (N1f nits review D)
+  }
+  const snapshot: Snapshot = Object.freeze({ integration, origin, href, method, body: bodyCopy });
   matchedComposed.add(composed);
   const matched = Object.freeze({ origin, href }) as unknown as MatchedTarget;
   records.set(matched, snapshot);
@@ -136,7 +142,7 @@ const HIDDEN = "[credential]";
 /**
  * An opaque credential, BOUND to one integration and one origin: the header value (for example `Bearer <token>`) is held
  * in a module-private map. Every way of turning it into text (`String`, a template, `JSON.stringify`, `util.inspect`)
- * gives `[credential]`; the value leaves only through `authorize` and `authorizationOf`.
+ * gives `[credential]`; the value leaves only through `authorize` and then `takeAuthorization`, once.
  */
 export class Credential {
   constructor(headerValue: string, binding: { readonly integration: string; readonly origin: string }) {
@@ -179,7 +185,7 @@ export interface AuthorizedRequest {
   readonly body: Uint8Array | undefined;
 }
 
-const authorizations = new WeakMap<object, string>();
+const authorizations = new WeakMap<object, { readonly value: string; readonly body: Uint8Array | undefined }>();
 
 /**
  * Attaches the credential to an unspent MatchedTarget, spending it. Refused: anything else (`not_matched`), and a credential
@@ -198,13 +204,25 @@ export function authorize(matched: MatchedTarget, credential: Credential): Autho
     method: snap.method, url: snap.href, origin: snap.origin, integration: snap.integration,
     body: snap.body === undefined ? undefined : copyBytes(snap.body),
   });
-  authorizations.set(request, secret.value);
+  authorizations.set(request, Object.freeze({ value: secret.value, body: snap.body }));
   return request;
 }
 
-/** The Authorization header value of an AuthorizedRequest: the egress client's one reader (`not_authorized` otherwise). */
-export function authorizationOf(request: AuthorizedRequest): string {
-  const value = typeof request === "object" && request !== null ? authorizations.get(request) : undefined;
-  if (value === undefined) throw new CredentialError("not_authorized");
-  return value;
+/** What the egress client takes from an AuthorizedRequest: the header value and the match-time body copy, once. */
+export interface TakenAuthorization {
+  readonly authorization: string;
+  readonly body: Uint8Array | undefined;
+}
+
+/**
+ * The credential of an AuthorizedRequest, TAKEN: the egress client's only reader, single-use, so one authorize is one request
+ * (`not_authorized` for a copy, a forgery or a second take). It hands over the body bytes kept at match time, a fresh copy:
+ * the request's own `body` array is for display, and changing it after authorize changes nothing that is sent (N1f review
+ * 1 nit 4). No non-spending reader exists (nit 1), so no daemon module can read the value without sending it.
+ */
+export function takeAuthorization(request: AuthorizedRequest): TakenAuthorization {
+  const held = typeof request === "object" && request !== null ? authorizations.get(request) : undefined;
+  if (held === undefined) throw new CredentialError("not_authorized");
+  authorizations.delete(request);
+  return Object.freeze({ authorization: held.value, body: held.body === undefined ? undefined : copyBytes(held.body) });
 }

@@ -63,14 +63,16 @@ test("timeout kills the process and records why", async () => {
 
 test("with the production default grace, a process that ignores SIGTERM is killed and its slot released", { skip: !posix }, async () => {
   const dir = mkdtempSync(join(tmpdir(), "axis-run-"));
+  let childPid: number | undefined;
   try {
     const ready = join(dir, "ready");
     const abort = new AbortController();
     const runner = createCommandRunner();
     // Aborted only once the child has installed its SIGTERM handler (it says so by a file), so the kill cannot beat the handler on a loaded host.
-    const script = `process.on("SIGTERM",()=>{});require("fs").writeFileSync(${JSON.stringify(ready)},"1");setInterval(()=>{},1000)`;
+    const script = `process.on("SIGTERM",()=>{});require("fs").writeFileSync(${JSON.stringify(ready)},String(process.pid));setInterval(()=>{},1000)`;
     const run = runner.run(base(script, { signal: abort.signal }));
-    await waitFor(() => existsSync(ready), "the child's handler is installed");
+    await waitFor(() => existsSync(ready) && readFileSync(ready, "utf8") !== "", "the child's handler is installed");
+    childPid = Number(readFileSync(ready, "utf8"));
     abort.abort();
     const r = await run;
     assert.equal(r.endedBy, "aborted");
@@ -79,6 +81,8 @@ test("with the production default grace, a process that ignores SIGTERM is kille
     assert.equal(r.unkillable, false);
     assert.equal(runner.active, 0);
   } finally {
+    // A regression that stops the SIGKILL must fail this test, not leave a SIGTERM-ignoring child holding the test run open.
+    if (childPid !== undefined) try { process.kill(childPid, "SIGKILL"); } catch { /* already gone */ }
     rmSync(dir, { recursive: true, force: true });
   }
 });

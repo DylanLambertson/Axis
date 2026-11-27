@@ -80,7 +80,7 @@ describe("headless slice", { skip, timeout: SUITE_TIMEOUT_MS }, () => {
     sup = started.sup;
     const ready = await started.ready;
     assert.equal(ready["degraded"], undefined);
-    assert.deepEqual([...(ready["contracts"] as string[])].sort(), ["axis.agent-groups", "axis.agents", "axis.approvals", "axis.attention", "axis.audit", "axis.cli-runs", "axis.events", "axis.forge", "axis.git", "axis.messages", "axis.pages", "axis.projects", "axis.providers", "axis.review", "axis.runs", "axis.tasks", "axis.usage", "axis.worktrees"]);
+    assert.deepEqual([...(ready["contracts"] as string[])].sort(), ["axis.agent-groups", "axis.agents", "axis.approvals", "axis.attention", "axis.audit", "axis.cli-runs", "axis.events", "axis.forge", "axis.git", "axis.messages", "axis.pages", "axis.plugins", "axis.projects", "axis.providers", "axis.review", "axis.runs", "axis.tasks", "axis.usage", "axis.worktrees"]);
     trustWindow(sup);
     projectId = await registerProject(sup, fx.repo);
     user = await TestClient.open(sup);

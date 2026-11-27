@@ -30,12 +30,14 @@ import type { HandlerRegistrar } from "./handlers/anchor-guard.js";
 import { createApprovalsHandlers } from "./handlers/approvals.js";
 import { registerCliRunsHandlers, startCliRun, type CliStart } from "./handlers/cli-runs.js";
 import { registerComposerRunsHandlers, startComposerRun, type ComposerRunsHandlerDeps, type ComposerStart } from "./handlers/composer-runs.js";
+import { registerPluginsHandlers } from "./handlers/plugins.js";
 import type { HandlerContext } from "@axis/daemon";
 import { PushedBases } from "./handlers/git-common.js";
 import { registerGitHandlers } from "./handlers/git.js";
 import { registerAgentsHandlers } from "./handlers/agents.js";
 import { providerForConnection } from "./agents/start.js";
 import { registerMessagesHandlers } from "./handlers/messages.js";
+import { hostEnableCheck } from "./messages/enable-check.js";
 import { registerPagesHandlers } from "./handlers/pages.js";
 import { createPagesContentHooks } from "./pages/confirm.js";
 import type { PagesService } from "./pages/service.js";
@@ -61,7 +63,7 @@ import { loadPushedBases, savePushedBases } from "./storage/pushed-bases-file.js
 export interface ServingParts {
   readonly worktrees?: WorktreesBinding;
   readonly runs?: RunsBinding;
-  readonly approvals?: { readonly port: ApprovalsHandlerDeps["approvals"]; readonly onPreview?: (target: string, contentDigest: string, text: string) => void };
+  readonly approvals?: { readonly port: ApprovalsHandlerDeps["approvals"]; readonly onPreview?: (target: string, contentDigest: string, text: string) => void; readonly endPlugin: (pluginId: string, projectId: string) => number };
   readonly agent?: AgentBinding;
   readonly composer?: ComposerService;
   readonly providers?: { readonly cachedModels: NonNullable<ProvidersHandlerDeps["cachedModels"]>; readonly credential: NonNullable<ProvidersHandlerDeps["credential"]> };
@@ -119,10 +121,14 @@ export function registerServing(registrar: HandlerRegistrar, services: HostServi
   const composerRuns: ComposerRunsHandlerDeps = {
     service: { cancel: (id) => composer.cancel(id), get: (id) => composer.get(id), list: (o) => composer.list(o), events: (id, a, l) => composer.events(id, a, l), start: ticketedStart((i, s) => composer.start(i, s), (id) => journal.getWorkspace(id)?.projectId, () => ports.clock.monotonic()) },
     gate,
-    journal, mutex: worktrees.mutex, needsAttention: worktrees.needsAttention };
+    journal, mutex: worktrees.mutex, needsAttention: worktrees.needsAttention,
+    pluginStarts: journal }; // PV-K1e-b: a plugin's start reads its scope and grant from the journal
   registerComposerRunsHandlers(registrar, composerRuns);
+  // PV-K2 K2-g1: the user's plugin list, revoke and disable; a decrease ends the plugin's open challenges at once.
+  registerPluginsHandlers(registrar, { journal, mutex: worktrees.mutex, endPlugin: (pluginId, projectId) => approvals.endPlugin(pluginId, projectId) });
   if (built.messaging === undefined) throw new AxisError("E_INTERNAL", "The host composition is incomplete", { reason: "not_built" });
-  registerMessagesHandlers(registrar, built.messaging);
+  // PV-M7 slice 1: enabling a CLI worker's messaging checks its launch entry (from main, as a CLI start does) and workspace.
+  registerMessagesHandlers(registrar, { ...built.messaging, checkEnable: hostEnableCheck({ journal, settingsGet: (k, o) => control.settingsGet(k, o), platform: config.platform }) });
   if (built.pages === undefined) throw new AxisError("E_INTERNAL", "The host composition is incomplete", { reason: "not_built" });
   // axis.pages/1 (PV-Q1 slice 2): the user's own connection only; main's dialog for markReviewed and delete names the page.
   registerPagesHandlers(registrar, built.pages, createPagesContentHooks({ journal, onPreview: built.approvals?.onPreview ?? (() => undefined) }));

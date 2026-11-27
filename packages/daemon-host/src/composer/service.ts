@@ -257,6 +257,9 @@ export function createComposerService(deps: ComposerServiceDeps): ComposerServic
       if (signal.aborted) throw composerFailure("E_CANCELLED");
       if (closed) throw composerFailure("E_UNAVAILABLE", "shutting_down");
       // Synchronous from here to the loop's start: no other start can interleave between the check and the record.
+      // A plugin's grant is checked again here, after every wait of the start (PV-K1e-b); a plugin start without the check is refused.
+      if ("pluginId" in by && input.grantHolds === undefined) throw composerFailure("E_UNAVAILABLE", "plugin_starts_unavailable");
+      if (input.grantHolds !== undefined && input.grantHolds() !== true) throw composerFailure("E_CONFLICT", "grant_changed");
       // The active-run check comes before the journal's own idempotency replay: a retry whose daemon-side key entry is gone
       // while its run is still RUNNING answers `active_run`, not `replayed` (review r1 N5). The daemon's store normally
       // answers such a retry first; after a restart the run is BLOCKED and the replay works.

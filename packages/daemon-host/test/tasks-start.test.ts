@@ -14,7 +14,8 @@ const SHA = "b".repeat(40);
 const CTX = { identity: { actor: "user", clientKind: "desktop" }, signal: new AbortController().signal } as unknown as HandlerContext;
 const W2: TaskCaller = { kind: "agent", agentId: "w2", projectId: "p", runId: "r0", receivedHop: 2 };
 
-function setup(opts: { onStart?: (req: ComposerStart) => void; refuse?: unknown } = {}) {
+/** `replay`: every start after the first answers the first run, replayed. `runId`: answer a run the journal does not hold. `afterRecheck`: runs once the mutex recheck passed. `failAudit`: the task.start row cannot be written. */
+function setup(opts: { onStart?: (req: ComposerStart) => void; refuse?: unknown; replay?: boolean; afterRecheck?: () => void; failAudit?: boolean; runId?: string } = {}) {
   const db = openDatabase(":memory:");
   const audit = new AuditLog(db, { payloadAllowlist: { ...TASKS_PAYLOAD_ALLOWLIST } });
   const journal = Journal.open(db, { audit });
@@ -26,9 +27,10 @@ function setup(opts: { onStart?: (req: ComposerStart) => void; refuse?: unknown 
   journal.agents.create({ id: "x1", projectId: "q", name: "Other", launch: { kind: "composer", connection: "conn", modelId: "m", mode: "agent" }, homeWorkspaceId: home("q"), groupId: null });
   const service = createTasksService({ journal, audit, random: { bytes: (n) => randomBytes(n) } });
   const calls: ComposerStart[] = [];
+  let first: string | undefined;
   const s = createTaskStart({
     journal,
-    audit,
+    audit: { append: (i) => (opts.failAudit === true && i.action === "task.start" ? assert.fail("the audit log is down") : audit.append(i)) },
     agentStart: {
       journal,
       startCli: async () => assert.fail("a CLI worker gets no run"),
@@ -37,7 +39,11 @@ function setup(opts: { onStart?: (req: ComposerStart) => void; refuse?: unknown 
         opts.onStart?.(req);
         req.recheck?.(); // what startComposerRun does under the project mutex, before the trust gate
         if (opts.refuse !== undefined) throw opts.refuse;
-        return { run: { runId: "run-1" }, replayed: false };
+        opts.afterRecheck?.();
+        if (opts.replay === true && first !== undefined) return { run: { runId: first }, replayed: true };
+        if (opts.runId !== undefined) return { run: { runId: opts.runId }, replayed: false };
+        first = journal.composer.createRun({ workspaceId: req.workspaceId, createdBy: "user" }, { mode: "agent", providerId: "mock", modelId: "mock-model" }).value.id;
+        return { run: { runId: first }, replayed: false };
       },
       providerFor: () => "mock",
     },
@@ -72,11 +78,13 @@ test("start of an untrusted task: the derived prompt, the worker and the source 
   const t = service.create({ kind: "user" }, { projectId: "p", title: "Fix it", body: "x" }).task;
   service.update(W2, { taskId: t.taskId, baseSeq: 1, title: "Fix it", body: "worker text" });
   const p = s.preview({ taskId: t.taskId, worker: "w1" });
-  assert.deepEqual(await s.start({ taskId: t.taskId, worker: "w1", seq: 2, promptDigest: p.promptDigest }, CTX), { kind: "composer", runId: "run-1", workspaceId: calls[0]?.workspaceId, replayed: false });
+  const out = await s.start({ taskId: t.taskId, worker: "w1", seq: 2, promptDigest: p.promptDigest }, CTX);
+  assert.deepEqual(out, { kind: "composer", runId: out.kind === "composer" ? out.runId : "", workspaceId: calls[0]?.workspaceId, replayed: false });
+  const runId = out.kind === "composer" ? out.runId : "";
   assert.equal(calls.length, 1);
   assert.deepEqual([calls[0]?.prompt, calls[0]?.worker], [p.prompt, "w1"]);
   assert.deepEqual(calls[0]?.taint, [{ source: "task_start", senderKind: "agent", sender: "w2", hop: 2, ref: `${t.taskId}:2` }]);
-  assert.deepEqual(rows(), [{ taskId: t.taskId, projectId: "p", seq: 2, callerKind: "user", workerId: "w1", workerKind: "composer", untrusted: true, hop: 2, runId: "run-1" }]);
+  assert.deepEqual(rows(), [{ taskId: t.taskId, projectId: "p", seq: 2, callerKind: "user", workerId: "w1", workerKind: "composer", untrusted: true, hop: 2, runId, linked: true, status: "in_progress" }]);
 });
 
 test("a task only the user wrote starts with no receipt", async () => {
@@ -142,4 +150,79 @@ test("only the Start handler is project-gated (the host refuses to start when a 
   const { service, s } = setup();
   const h = createTasksHandlers(service, s);
   assert.deepEqual(Object.entries(h).filter(([, fn]) => isProjectGated(fn)).map(([m]) => m), ["start"]);
+});
+
+// PV-T2 daemon need (a), `tasks-slice3.md` §6.6: a composer Start links its run to the task and sets `in_progress` in the
+// same transaction as its task.start row. Mutants each case kills: no link, no status, a status only from `open`, the link
+// on a replay, the link or status outside the audit row's transaction, no existence check, `linked` always true.
+
+async function started(o: Parameters<typeof setup>[0] = {}, before?: (x: ReturnType<typeof setup>, taskId: string) => void) {
+  const x = setup(o);
+  const t = x.service.create({ kind: "user" }, { projectId: "p", title: "Fix it", body: "x" }).task;
+  before?.(x, t.taskId);
+  const d = x.s.preview({ taskId: t.taskId, worker: "w1" }).promptDigest;
+  const start = () => x.s.start({ taskId: t.taskId, worker: "w1", seq: 1, promptDigest: d }, CTX);
+  return { ...x, taskId: t.taskId, start };
+}
+const runOf = (out: Awaited<ReturnType<ReturnType<typeof createTaskStart>["start"]>>): string => (out.kind === "composer" ? out.runId : assert.fail("not a composer start"));
+
+test("a composer Start links its run and sets in_progress, from any status, recorded on its task.start row", async () => {
+  for (const from of ["open", "blocked", "done", "cancelled", "in_progress"] as const) {
+    const x = await started({}, (y, id) => void y.journal.tasks.setStatus(id, from));
+    const runId = runOf(await x.start());
+    const t = x.journal.tasks.get(x.taskId);
+    assert.deepEqual([t?.status, t?.links], ["in_progress", [{ kind: "run", target: runId }]], from);
+    assert.deepEqual(x.rows().map((r) => [(r as Record<string, unknown>)["linked"], (r as Record<string, unknown>)["status"]]), [[true, "in_progress"]]);
+  }
+});
+
+test("one transaction with the task.start row: when the row cannot be written, neither the link nor the status is kept", async () => {
+  const x = await started({ failAudit: true });
+  await assert.rejects(x.start(), /audit log is down/);
+  const t = x.journal.tasks.get(x.taskId);
+  assert.deepEqual([t?.status, t?.links], ["open", []]);
+});
+
+test("a replayed Start changes nothing again: no second link, no status reset", async () => {
+  const x = await started({ replay: true });
+  const runId = runOf(await x.start());
+  x.journal.tasks.setStatus(x.taskId, "blocked");
+  assert.equal(runOf(await x.start()), runId);
+  const t = x.journal.tasks.get(x.taskId);
+  assert.deepEqual([t?.status, t?.links.length, x.rows().length], ["blocked", 1, 1]);
+});
+
+test("a task at its 32 links still starts: in_progress, no link, linked false on the row", async () => {
+  const x = await started({}, (y, id) => { for (let n = 1; n <= 32; n++) y.journal.tasks.link(id, { kind: "pr", target: String(n) }); });
+  runOf(await x.start());
+  const t = x.journal.tasks.get(x.taskId);
+  assert.deepEqual([t?.status, t?.links.length, t?.links.some((l) => l.kind === "run")], ["in_progress", 32, false]);
+  assert.deepEqual(x.rows().map((r) => (r as Record<string, unknown>)["linked"]), [false]);
+});
+
+test("a task deleted once its run started: the Start still answers the run, with a row that links nothing", async () => {
+  const holder: { x?: Awaited<ReturnType<typeof started>> } = {};
+  const x = await started({ afterRecheck: () => holder.x?.journal.tasks.delete(holder.x.taskId) });
+  holder.x = x;
+  runOf(await x.start());
+  assert.equal(x.journal.tasks.get(x.taskId), undefined);
+  assert.deepEqual(x.rows().map((r) => [(r as Record<string, unknown>)["linked"], (r as Record<string, unknown>)["status"]]), [[false, undefined]]);
+});
+
+test("a CLI Start and a refused Start link nothing and leave the status", async () => {
+  const { service, s } = setup();
+  const t = service.create({ kind: "user" }, { projectId: "p", title: "Fix it", body: "x" }).task;
+  await s.start({ taskId: t.taskId, worker: "c1", seq: 1, promptDigest: s.preview({ taskId: t.taskId, worker: "c1" }).promptDigest }, CTX);
+  assert.deepEqual([service.get({ taskId: t.taskId }).task.status, service.get({ taskId: t.taskId }).task.links], ["open", []]);
+  const { AgentRefusal } = await import("../src/agents/service.js");
+  const r = await started({ refuse: new AgentRefusal("E_CONFLICT", "busy") });
+  assert.equal(await refusal(r.start()), "busy");
+  assert.deepEqual([r.journal.tasks.get(r.taskId)?.status, r.journal.tasks.get(r.taskId)?.links], ["open", []]);
+});
+
+test("only the link cap is tolerated: a run the journal does not hold is a refused link, and nothing is kept", async () => {
+  const x = await started({ runId: "r-not-in-the-journal" });
+  await assert.rejects(x.start(), (e: unknown) => (e as { detail?: { reason?: string } }).detail?.reason === "link_refused");
+  const t = x.journal.tasks.get(x.taskId);
+  assert.deepEqual([t?.status, t?.links, x.rows()], ["open", [], []]);
 });

@@ -21,6 +21,7 @@ import { createConnectLimiter } from "./control/connect-limiter.js";
 import { createConnectRouter } from "./control/connect-router.js";
 import type { DisposeResult, ListenerTarget } from "./disposables.js";
 import { createEventSources } from "./events/sources.js";
+import { hostMintRecheck } from "./messages/enable-check.js";
 import { installProjectControl } from "./projects/control.js";
 import { registerServing } from "./compose-serving.js";
 import { createChallengeAuditSink } from "./gate/audit-sink.js";
@@ -41,6 +42,7 @@ import { installHostLifecycle, type LifecycleHandle, type LifecycleOptions } fro
 import type { Logger } from "./log/logger.js";
 import { checkCoverage } from "./policy/coverage.js";
 import { createRunTaint } from "./composer/taint.js";
+import { pluginRunStartChallenges } from "./gate/plugin-run-start.js";
 import type { PtyExecPort, PtyForgePort, PtyPort, PtyPushPort } from "./ports/pty.js";
 import type { ChannelMux } from "./transport/mux.js";
 
@@ -200,6 +202,8 @@ export function composeDaemonHost(options: ComposeOptions): ComposedHost {
           clock: ports.clock,
           ...(logger === undefined ? {} : { logger }),
           preflight: anchorPreflight(parts.anchors),
+          // PV-K1e-b: a plugin's run start is challenged in its host window, bound to its grant, and counted (journal v17).
+          plugins: pluginRunStartChallenges(parts.journal, parts.journal.pluginIssues, () => ports.clock.now()),
         });
         cleanups.push(() => approvals.dispose());
         const worktrees = createWorktreesBinding({
@@ -218,7 +222,8 @@ export function composeDaemonHost(options: ComposeOptions): ComposedHost {
         const runs = createRunsBinding({
           journal: parts.journal,
           audit: parts.audit,
-          pty: cliEndpointPty(pty, () => cliEndpoints), // PV-M6: a CLI run's endpoint at spawn, only with the messaging flags on
+          // PV-M6: a CLI run's endpoint at spawn, only with the messaging flags on; PV-M7: the enable rule is checked again first.
+          pty: cliEndpointPty(pty, () => cliEndpoints, hostMintRecheck({ journal: parts.journal, settingsGet: (k, o) => control.settingsGet(k, o), platform: config.platform, agentOfRun: (id) => parts.journal.agents.agentOfRun(id), acknowledged: (id) => parts.journal.messages.cliAcknowledged(id), audit: parts.audit })),
           clock: createRunsClock(ports.clock),
           locator: worktrees.locator,
           snapshotter,
@@ -341,6 +346,7 @@ export function composeDaemonHost(options: ComposeOptions): ComposedHost {
         hub: events,
         journal: services.journalRead,
         auditHead: () => services.auditRead.head()?.seq ?? 0,
+        auditSince: (afterSeq, limit) => services.auditRead.list({ afterSeq, limit }),
         anchorStalled: () => services.anchors.status().stalled,
         pending: (windowId) => approvals?.port.pending(windowId) ?? [],
         ...(options.eventPumpMs === undefined ? {} : { intervalMs: options.eventPumpMs }),
