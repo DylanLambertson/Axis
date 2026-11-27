@@ -5,7 +5,7 @@
 - **Inputs:**
   - ADR 0003 I3: tiers 4 and 5 need `approvals.confirmNative`; the policy can raise a contract's tier, never lower it.
   - ADR 0009 decisions 1 and 2 and D-10.
-  - ADR 0011 §"Security" items 1 and 2.
+  - ADR 0011 "Decision 5: security consequences", items 1 and 2.
   - INT-13 (threat model 4a).
   - `docs/design/plugin-run-start.md` §3.1.
 
@@ -18,7 +18,7 @@
 - **What tier 3 leaves open (RR-92):** a compromised renderer can approve its own outbound write. That means a comment, an issue move or a plugin's POST, sent with the user's credential to a declared origin.
   - The credential itself never reaches the renderer: the vault and the egress client are daemon-side, and the client owns the `authorization` header.
   - Today this is accepted under A10 ("the renderer is the user").
-- **What changes with ADR 0011:** our own renderer has much less authority than the Code OSS renderer did: no file system, no pty and no `encryption` channel (ADR 0011 §"Security" item 1). So A10 is a weaker assumption than before, and a renderer compromise is more likely to be the attacker's ONLY foothold. In that case, the native dialog is the one control left between the attacker and an outbound write made with the user's credential.
+- **What changes with ADR 0011:** our own renderer has much less authority than the Code OSS renderer did: no file system, no pty and no `encryption` channel (ADR 0011 "Decision 5: security consequences", item 1). So A10 is a weaker assumption than before, and a renderer compromise is more likely to be the attacker's ONLY foothold. In that case, the native dialog is the one control left between the attacker and an outbound write made with the user's credential.
 
 ## 2. Options
 
@@ -33,7 +33,7 @@
 
 - **The first credential milestone costs nothing.** The first connector is GitHub read-only (PV-N3, D-9 as taken), and plugin `net:` sends are not enabled with it. So C adds no dialog while only the built-in read-only connector holds a credential.
 - **This is not true of all of Phase 4a.** PV-K is in the same phase, and a granted plugin can POST to its `net:` origin. Once plugin sends are enabled, C adds one native dialog per send, and per connector write once a write connector exists.
-- **With writes or sends:** one native dialog per request, carrying the line of §4.1. That is one more click than the card per write.
+- **With writes or sends:** one native dialog per request, carrying the line of §4.4. That is one more click than the card per write.
   - For a deliberate user comment, that is acceptable.
   - For a plugin that POSTs often, it is noisy. A per-integration relaxation (§4.3) is the release valve; it needs its own design first.
 - **No batching is assumed.** A tier 4 challenge confirms one request digest. "Confirm the next N" would be a new design.
@@ -95,7 +95,7 @@
 
 The dialog's one-line detail is built by the daemon, the same way as the task Start line (`daemon-host/src/tasks/confirm.ts`). The full request is a separate thing, shown in the approval card, escaped, and bound by digest.
 
-- **Why a separate line:** the dialog's sanitiser (`gate/summary.ts`) cannot know where text came from. It replaces a detail holding a control, format or separator character with the bare target, cuts a long one in the MIDDLE to 80 UTF-16 units, and shows any safe ASCII text verbatim, a caller's text included. So the line carries ONLY daemon-derived values, sanitised and fitted by the daemon BEFORE the generic cut, with the most important field first, so the meaning survives.
+- **Why a separate line:** the dialog's sanitiser (`gate/summary.ts`) cannot know where text came from. It first turns every run of Unicode separator characters (spaces, U+00A0, U+2028, U+2029 and the other `\p{Z}`) into one ordinary space and trims the ends; a detail that STILL holds a control, format or unpaired surrogate character (a tab, a bidi control) is then replaced by the bare target. It cuts a long detail in the MIDDLE to 80 UTF-16 units, and shows any safe ASCII text verbatim, a caller's text included. So the line carries ONLY daemon-derived values, sanitised and fitted by the daemon BEFORE the generic cut, with the most important field first, so the meaning survives.
 - **Integration write**, in this order:
   1. the fixed action `write`;
   2. the integration id, daemon-validated against the registry (`[a-z][a-z0-9-]{0,31}`);
@@ -156,7 +156,7 @@ The scope is a BUILT-IN connector with plugin access to integrations and `net:` 
    - RR-87: a plugin's quota and data-out use within its budget, once plugins send.
    - RR-91: the system resolver is the name trust anchor.
    - RR-92: tier 3, until the raise ships.
-   - **Correction:** `integrations-contract.md` §1 ("Request bytes count (RR-81)") and the PV-N1f ticket row label the request-byte accounting as RR-81. That is a mislabel: RR-81 is the device-code-only residual. It is flagged for its own correction.
+   - **Correction:** `integrations-contract.md` §3 ("Request bytes count (RR-81)") and the PV-N1f ticket row label the request-byte accounting as RR-81. That is a mislabel: RR-81 is the device-code-only residual. It is flagged for its own correction.
 
 ## 7. Before ANYTHING plugin-facing is enabled
 
