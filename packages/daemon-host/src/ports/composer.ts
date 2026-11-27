@@ -25,6 +25,11 @@ export interface ComposerStartInput {
    * recorded as `plugin:<id>` and is tainted before its first model call.
    */
   readonly initiator: RunInitiator;
+  /**
+   * Re-checked in the service's synchronous creation step, right before the run is recorded (PV-K1e-b): false refuses the start
+   * with nothing created. Required for a plugin initiator (the plugin still holds `runs.start` at the same grant generation).
+   */
+  readonly recheck?: () => boolean;
 }
 
 export type RunInitiator = { readonly kind: "user" } | { readonly kind: "plugin"; readonly pluginId: string; readonly generation: number };

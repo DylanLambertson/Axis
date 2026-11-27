@@ -14,6 +14,7 @@ import { composerFailure, toComposerError } from "../composer/errors.js";
 import type { ComposerRunsService, ComposerStartInput } from "../ports/composer.js";
 import type { ProjectMutex } from "../worktrees/project-mutex.js";
 import type { HandlerRegistrar } from "./anchor-guard.js";
+import { grantedGeneration, pluginOf, runStartContentHook, scopedWorkspace, type PluginRunStartJournal } from "../gate/plugin-run-start.js";
 
 /**
  * `axis.runs/1` (docs/design/composer-runtime.md section 3) over the `ComposerRunsService` port. Who is calling comes
@@ -34,6 +35,11 @@ export interface ComposerRunsHandlerDeps {
   readonly mutex: Pick<ProjectMutex, "run">;
   /** True for a workspace the last reconcile reported. Refuses `start`; the other methods always work. */
   readonly needsAttention?: (workspaceId: string, method?: string) => boolean;
+  /**
+   * The journal a plugin's `start` reads its scope and grant from (PV-K1e-b). Absent, a plugin start is refused (`E_NOT_FOUND`);
+   * every other method refuses a plugin whatever is given here.
+   */
+  readonly pluginStarts?: PluginRunStartJournal;
 }
 
 const DEFAULT_LIST = 50;
@@ -44,8 +50,10 @@ export function createComposerRunsHandlers(deps: ComposerRunsHandlerDeps): Reado
     <M extends ComposerRunsMethod>(method: M, call: (payload: ComposerRunsRequest<M>, context: HandlerContext) => Promise<unknown> | unknown): Handler =>
     async (context: HandlerContext, payload: never): Promise<unknown> => {
       if (context.signal.aborted) throw composerFailure("E_CANCELLED");
-      // Defence in depth behind the policy row: only the user's own attested connection works with composer runs.
-      if (context.identity.actor !== "user") throw composerFailure("E_NOT_FOUND");
+      // Defence in depth behind the policy row: only the user's own attested connection works with composer runs, and a plugin
+      // only starts one (PV-K1e-b).
+      const plugin = method === "start" && pluginOf(context.identity) !== undefined;
+      if (context.identity.actor !== "user" && !plugin) throw composerFailure("E_NOT_FOUND");
       let out: unknown;
       try {
         out = await call(payload as ComposerRunsRequest<M>, context);
@@ -57,9 +65,10 @@ export function createComposerRunsHandlers(deps: ComposerRunsHandlerDeps): Reado
       return checked.data;
     };
 
-  const start = guarded("start", (req, context) =>
-    startComposerRun(deps, { workspaceId: req.workspaceId, mode: req.mode, prompt: req.prompt, providerId: req.providerId, modelId: req.modelId }, context),
-  );
+  const start = guarded("start", (req, context) => {
+    const fields = { workspaceId: req.workspaceId, mode: req.mode, prompt: req.prompt, providerId: req.providerId, modelId: req.modelId };
+    return pluginOf(context.identity) === undefined ? startComposerRun(deps, fields, context) : startPluginComposerRun(deps, fields, context);
+  });
 
   return {
     start: projectGated(start),
@@ -122,7 +131,51 @@ export async function startComposerRun(deps: ComposerRunsHandlerDeps, req: Compo
   );
 }
 
-/** Register `axis.runs/1` through the host's registrar (never the daemon itself). */
+/**
+ * A plugin's composer run start (PV-K1e-b, `docs/design/plugin-run-start.md` section 3), after the policy (the grant, tier 3), the
+ * content hook (scope, generation bound into the digest) and the spent approval. Again here: the workspace must be in the pinned
+ * project, and the plugin must hold `runs.start`; under the project mutex the same generation is required, then the trust gate runs
+ * through the host window (`trustCallOf`), and the service checks the generation once more right before the run is recorded. The
+ * initiator comes from the attested identity only. The run's own approvals go to the host window: the plugin view cannot answer one.
+ */
+export async function startPluginComposerRun(deps: ComposerRunsHandlerDeps, req: ComposerStart, context: HandlerContext): ReturnType<ComposerRunsService["start"]> {
+  const { identity } = context;
+  const journal = deps.pluginStarts;
+  const pluginId = pluginOf(identity);
+  if (journal === undefined || pluginId === undefined || identity.hostWindowId === undefined || context.approved === undefined) throw composerFailure("E_NOT_FOUND");
+  const scope = scopedWorkspace(journal, identity, req.workspaceId);
+  if (scope === undefined) throw composerFailure("E_NOT_FOUND", "out_of_scope");
+  const generation = grantedGeneration(journal, pluginId, scope.projectId);
+  if (generation === undefined) throw composerFailure("E_NOT_FOUND");
+  if (deps.needsAttention?.(scope.workspaceId, "start") === true) throw composerFailure("E_UNAVAILABLE", "needs_attention");
+  const holds = (): boolean => scopedWorkspace(journal, identity, scope.workspaceId) !== undefined && grantedGeneration(journal, pluginId, scope.projectId) === generation;
+  const hostWindowId = identity.hostWindowId;
+  return deps.mutex.run(
+    scope.projectId,
+    async () => {
+      if (!holds()) throw composerFailure("E_CONFLICT", "grant_changed");
+      return deps.service.start(
+        {
+          workspaceId: scope.workspaceId,
+          mode: req.mode,
+          prompt: req.prompt,
+          providerId: req.providerId,
+          modelId: req.modelId,
+          windowId: hostWindowId,
+          initiator: { kind: "plugin", pluginId, generation },
+          recheck: holds,
+          ...(context.idempotencyKey === undefined ? {} : { idempotencyKey: context.idempotencyKey }),
+        },
+        context.signal,
+        await deps.gate.admit({ projectId: scope.projectId, caller: trustCallOf(identity), workspaceId: scope.workspaceId, signal: context.signal }),
+      );
+    },
+    context.signal,
+  );
+}
+
+/** Register `axis.runs/1` through the host's registrar (never the daemon itself), with the plugin start's content hook. */
 export function registerComposerRunsHandlers(registrar: HandlerRegistrar, deps: ComposerRunsHandlerDeps): void {
-  registrar.register(COMPOSER_RUNS_CONTRACT, COMPOSER_RUNS_VERSION, createComposerRunsHandlers(deps));
+  const content = deps.pluginStarts === undefined ? {} : { content: { start: runStartContentHook(deps.pluginStarts) } };
+  registrar.register(COMPOSER_RUNS_CONTRACT, COMPOSER_RUNS_VERSION, createComposerRunsHandlers(deps), content);
 }

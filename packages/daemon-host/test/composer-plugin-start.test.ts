@@ -10,6 +10,8 @@ import { composerRig, START, until, type ComposerRig, type ComposerRigOptions } 
 
 type Row = Record<string, unknown>;
 const PLUGIN = { kind: "plugin", pluginId: "acme.board", generation: 2 } as const;
+/** The grant re-check a plugin start must carry (PV-K1e-b): here always holding. */
+const OK = (): boolean => true;
 
 async function setup(t: TestContext, over: Partial<ComposerRigOptions> = {}, seen?: { at: Array<{ wire: number; activity: number; runId: string }> }): Promise<ComposerRig> {
   let rig: ComposerRig | undefined;
@@ -32,7 +34,7 @@ const runRow = (c: ComposerRig, runId: string): Row => ({ created_by: (c.db.prep
 
 test("a plugin-started run is created by plugin:<id>, never the user: its creation transition names the plugin", async (t) => {
   const c = await setup(t);
-  const { run } = await c.service.start({ ...START(c.workspaceId), initiator: PLUGIN }, new AbortController().signal);
+  const { run } = await c.service.start({ ...START(c.workspaceId), initiator: PLUGIN, recheck: OK }, new AbortController().signal);
   await until(ended(c, run.runId));
   assert.equal(runRow(c, run.runId)["created_by"], "plugin:acme.board");
   const actors = (c.db.prepare("SELECT actor FROM state_transitions WHERE entity = 'run' AND entity_id = ?").all(run.runId) as Row[]).map((r) => r["actor"]);
@@ -42,7 +44,7 @@ test("a plugin-started run is created by plugin:<id>, never the user: its creati
 test("taint first: the run is marked and audited before its activity opens and before any model call", async (t) => {
   const seen = { at: [] as Array<{ wire: number; activity: number; runId: string }> };
   const c = await setup(t, {}, seen);
-  const { run } = await c.service.start({ ...START(c.workspaceId), initiator: PLUGIN }, new AbortController().signal);
+  const { run } = await c.service.start({ ...START(c.workspaceId), initiator: PLUGIN, recheck: OK }, new AbortController().signal);
   assert.deepEqual(seen.at, [{ wire: 0, activity: 0, runId: run.runId }], "inside creation: no provider request, no activity row");
   assert.equal(c.journal.composer.tainted(run.runId), true);
   const taint = c.audit.list().filter((e) => e.action === "message.taint");
@@ -55,7 +57,7 @@ test("taint first: the run is marked and audited before its activity opens and b
 test("a failing taint store refuses the start with nothing created: no run, no record, no audit row, no provider call", async (t) => {
   const c = await setup(t, { taintAtStart: () => { throw new Error("store down"); } });
   const before = { runs: Number((c.db.prepare("SELECT count(*) AS n FROM agent_runs").get() as Row)["n"]), audit: c.audit.list().length };
-  await assert.rejects(c.service.start({ ...START(c.workspaceId), initiator: PLUGIN }, new AbortController().signal), (e: unknown) => (e as { code?: string; details?: { reason?: string } }).code === "E_UNAVAILABLE" && (e as { details?: { reason?: string } }).details?.reason === "taint_unrecorded");
+  await assert.rejects(c.service.start({ ...START(c.workspaceId), initiator: PLUGIN, recheck: OK }, new AbortController().signal), (e: unknown) => (e as { code?: string; details?: { reason?: string } }).code === "E_UNAVAILABLE" && (e as { details?: { reason?: string } }).details?.reason === "taint_unrecorded");
   assert.equal(Number((c.db.prepare("SELECT count(*) AS n FROM agent_runs").get() as Row)["n"]), before.runs);
   assert.equal(Number((c.db.prepare("SELECT count(*) AS n FROM composer_runs").get() as Row)["n"]), 0);
   assert.equal(c.audit.list().length, before.audit);
@@ -69,7 +71,7 @@ test("a taint whose audit row fails also creates nothing (the mark and its row c
       createRunTaint({ runId, store: (rig as ComposerRig).journal.composer, audit: { append: () => { throw new Error("audit down"); } }, now: () => 1 }).receive(receipt),
   });
   rig = c;
-  await assert.rejects(c.service.start({ ...START(c.workspaceId), initiator: PLUGIN }, new AbortController().signal));
+  await assert.rejects(c.service.start({ ...START(c.workspaceId), initiator: PLUGIN, recheck: OK }, new AbortController().signal));
   assert.equal(Number((c.db.prepare("SELECT count(*) AS n FROM composer_runs").get() as Row)["n"]), 0);
 });
 
@@ -77,7 +79,7 @@ test("without taintAtStart, a plugin start is refused before anything is created
   const c = await setup(t, { taintAtStart: undefined as never });
   const none = await composerRig({ replies: [{ kind: "text", text: "ok" }] });
   t.after(() => none.cleanup());
-  await assert.rejects(none.service.start({ ...START(none.workspaceId), initiator: PLUGIN }, new AbortController().signal), (e: unknown) => (e as { details?: { reason?: string } }).details?.reason === "plugin_starts_unavailable");
+  await assert.rejects(none.service.start({ ...START(none.workspaceId), initiator: PLUGIN, recheck: OK }, new AbortController().signal), (e: unknown) => (e as { details?: { reason?: string } }).details?.reason === "plugin_starts_unavailable");
   const { run } = await none.service.start(START(none.workspaceId), new AbortController().signal);
   await until(ended(none, run.runId));
   assert.equal(runRow(none, run.runId)["created_by"], "user");
@@ -120,7 +122,7 @@ test("review K1e-a F1: the initiator is read once: a getter that answers differe
       return reads === 1 ? "acme.board" : "other.plugin";
     },
   };
-  const { run } = await c.service.start({ ...START(c.workspaceId), initiator: flip as never }, new AbortController().signal);
+  const { run } = await c.service.start({ ...START(c.workspaceId), initiator: flip as never, recheck: OK }, new AbortController().signal);
   await until(ended(c, run.runId));
   assert.equal(runRow(c, run.runId)["created_by"], "plugin:acme.board", "the id that was checked is the id that was recorded");
   assert.equal(reads, 1, "the field was read once");
@@ -128,7 +130,7 @@ test("review K1e-a F1: the initiator is read once: a getter that answers differe
 
 test("review K1e-a F2: a taint hook that returns a promise is refused: nothing is created and the provider is never called", async (t) => {
   const c = await setup(t, { taintAtStart: (() => Promise.resolve()) as never });
-  await assert.rejects(c.service.start({ ...START(c.workspaceId), initiator: PLUGIN }, new AbortController().signal), (e: unknown) => (e as { code?: string }).code === "E_UNAVAILABLE");
+  await assert.rejects(c.service.start({ ...START(c.workspaceId), initiator: PLUGIN, recheck: OK }, new AbortController().signal), (e: unknown) => (e as { code?: string }).code === "E_UNAVAILABLE");
   assert.equal(Number((c.db.prepare("SELECT count(*) AS n FROM composer_runs").get() as Row)["n"]), 0, "no run record");
   assert.equal(c.wire(), 0, "no provider call");
 });
@@ -145,7 +147,7 @@ test("review K1e-a N1: an initiator built on a prototype (an inherited kind) is 
 
 test("review K1e-a N2: a taint hook that returns without marking the run is refused: the run must be tainted before the creation commits", async (t) => {
   const c = await setup(t, { taintAtStart: () => undefined });
-  await assert.rejects(c.service.start({ ...START(c.workspaceId), initiator: PLUGIN }, new AbortController().signal), (e: unknown) => (e as { code?: string }).code === "E_UNAVAILABLE");
+  await assert.rejects(c.service.start({ ...START(c.workspaceId), initiator: PLUGIN, recheck: OK }, new AbortController().signal), (e: unknown) => (e as { code?: string }).code === "E_UNAVAILABLE");
   assert.equal(Number((c.db.prepare("SELECT count(*) AS n FROM composer_runs").get() as Row)["n"]), 0, "no run record");
   assert.equal(c.wire(), 0, "no provider call");
 });
@@ -156,8 +158,21 @@ test("review K1e-a N3: a taint hook that returns a rejected promise is refused w
   process.on("unhandledRejection", on);
   t.after(() => void process.off("unhandledRejection", on));
   const c = await setup(t, { taintAtStart: (() => Promise.reject(new Error("late"))) as never });
-  await assert.rejects(c.service.start({ ...START(c.workspaceId), initiator: PLUGIN }, new AbortController().signal), (e: unknown) => (e as { code?: string }).code === "E_UNAVAILABLE");
+  await assert.rejects(c.service.start({ ...START(c.workspaceId), initiator: PLUGIN, recheck: OK }, new AbortController().signal), (e: unknown) => (e as { code?: string }).code === "E_UNAVAILABLE");
   await new Promise((r) => setImmediate(r));
   await new Promise((r) => setImmediate(r));
   assert.deepEqual(seen, [], "no unhandled rejection");
+});
+
+test("PV-K1e-b: a plugin start must carry the grant re-check; one that fails refuses the start with nothing created", async (t) => {
+  const c = await setup(t);
+  await assert.rejects(c.service.start({ ...START(c.workspaceId), initiator: PLUGIN }, new AbortController().signal), (e: unknown) => (e as { details?: { reason?: string } }).details?.reason === "plugin_starts_unavailable");
+  let asked = 0;
+  await assert.rejects(c.service.start({ ...START(c.workspaceId), initiator: PLUGIN, recheck: () => (asked++, false) }, new AbortController().signal), (e: unknown) => (e as { code?: string; details?: { reason?: string } }).code === "E_CONFLICT" && (e as { details?: { reason?: string } }).details?.reason === "grant_changed");
+  assert.equal(asked, 1, "asked once, in the creation step");
+  assert.equal(Number((c.db.prepare("SELECT count(*) AS n FROM agent_runs").get() as Row)["n"]), 0);
+  assert.equal(c.wire(), 0);
+  // A user start with a re-check that holds is unchanged; one that fails is refused the same way.
+  const { run } = await c.service.start({ ...START(c.workspaceId), initiator: { kind: "user" }, recheck: OK }, new AbortController().signal);
+  assert.equal(runRow(c, run.runId)["created_by"], "user");
 });

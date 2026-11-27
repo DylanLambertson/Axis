@@ -1,6 +1,7 @@
 # Runs started by a plugin (ticket PV-K1e)
 
-- **Status:** PV-K1e-a, a2-1a and a2-1b built (inert). PV-K1e-b (the handler) in progress. a2-2 (the card) on hold for the own-shell plan (ADR 0011).
+- **Status:** PV-K1e-a, a2-1a, a2-1b and PV-K1e-b built. a2-2 (the card) on hold for the own-shell plan (ADR 0011). No plugin can be granted
+  `runs.start` in production yet: the grant contract is PV-K2's, so the path is open in code and unreachable in practice.
 - **Date:** 2026-11-22. Implements ADR 0008 decision 6, rules 1 and 2, and criterion 14 in three slices.
 
 ## 1. PV-K1e-a: the service (built)
@@ -68,7 +69,7 @@ Slices, released in this order (each inert until the next):
   its triggers dropped and recreated from the v17 migration). That offline step is not shipped in the product and is not a
   supported command.
 
-## 3. PV-K1e-b: the handler (design, not built; starts when a2-1b merges)
+## 3. PV-K1e-b: the handler (built: `gate/plugin-run-start.ts`, `handlers/composer-runs.ts` `startPluginComposerRun`)
 
 PV-K1e-b opens `axis.runs/1.start` to a plugin connection, and nothing else of `axis.runs/1`. It is daemon work only: it does not
 need the renderer, but it must not merge before the card exists (a2-2 or its own-shell replacement, section 2).
@@ -94,6 +95,14 @@ need the renderer, but it must not merge before the card exists (a2-2 or its own
    - The status line of this file says which slices are built.
    - The ADR 0003 amendment adds that any code in the host window's renderer can resolve a tier-3 challenge, so the protection
      is the taint, the card and an approval per side effect, not proof of the user's intent.
+
+**As built, beyond the plan below.**
+
+- `axis.runs/1.start` takes an optional `approval` reference, as any method the policy can raise to tier 3 must; a user's
+  tier-2 start never sends one.
+- The run's own approvals (its tool calls) go to the host window: the plugin view cannot answer one.
+- The service checks the grant once more in its synchronous creation step (`ComposerStartInput.recheck`), after every wait of
+  the start (the trust gate, the provider's model list). A plugin start without that check is refused.
 
 **Order of the checks.** The pipeline runs the policy first, then the approval step (with a content hook), then the handler. For
 a plugin each step does this:
