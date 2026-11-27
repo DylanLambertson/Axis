@@ -20,7 +20,7 @@ import { NOT_FOUND, agentRows, defaultAgentSettings, refuse, type AgentSettings,
 export type MessagingSettingsEvent = { readonly kind: "cliMessagingOff"; readonly agentId: string } | { readonly kind: "paused"; readonly projectId: string };
 
 /** Enable refusals the caller sees by name: the launch could not be judged (the rest are `bypass_entry`). */
-const JUDGED: ReadonlySet<string> = new Set(["wrapper_unparsed", "config_unparsed", "too_many_repo_files", "empty_argv"]);
+const JUDGED: ReadonlySet<string> = new Set(["wrapper_unparsed", "config_unparsed", "too_many_repo_files", "empty_argv", "unknown_flag", "env_assignment", "config_home", "real_path_unresolved"]);
 
 export interface MessagingSettingsDeps {
   /** Called after the change committed; a throw is audited (`hook_failed`) and never fails the user's write. */

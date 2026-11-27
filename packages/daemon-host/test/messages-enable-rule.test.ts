@@ -40,7 +40,7 @@ test("every known flag refuses, in both forms, short and long, case-folded value
   ];
   for (const [argv, rule] of cases) assert.equal(refusedBy(argv), rule, argv.join(" "));
   assert.equal(new Set(BYPASS_FLAGS.map((r) => r.id)).size, BYPASS_FLAGS.length, "row ids are unique");
-  for (const r of BYPASS_FLAGS) assert.ok(/^(Claude Code 2\.1\.330|codex-cli 0\.166\.0) --help$/.test(r.source), `${r.id} names the help it came from`);
+  for (const r of BYPASS_FLAGS) assert.ok(/^(Claude Code 2\.1\.332|codex-cli 0\.166\.0) --help$/.test(r.source), `${r.id} names the help it came from`);
 });
 
 test("the pattern rule refuses an unknown bypass-like argument for any CLI, a wrapper included (fail closed)", () => {
@@ -52,7 +52,7 @@ test("the pattern rule refuses an unknown bypass-like argument for any CLI, a wr
 });
 
 test("an ordinary launch is allowed: other permission modes, other sandboxes, other flags", () => {
-  for (const argv of [["claude"], ["claude", "--model", "opus"], ["claude", "--permission-mode", "plan"], ["claude", "--permission-mode", "manual"], ["codex", "-a", "on-request"], ["codex", "-s", "workspace-write"], ["codex", "-c", 'model="o3"']]) {
+  for (const argv of [["claude"], ["claude", "--model", "opus"], ["claude", "-p", "--output-format", "json", "summarise"], ["codex", "-a", "on-request"], ["codex", "-s", "workspace-write"], ["codex", "-c", 'model="o3"']]) {
     assert.deepEqual(decide(argv), { allowed: true, warnings: [] }, argv.join(" "));
   }
 });
@@ -140,7 +140,7 @@ test("review 2 SF8: behind a wrapper, any interpreter named or any inline-code a
     ["npx", "-c", "codex -a never"], ["python3.12", "-c", "x"], ["/usr/bin/ruby3.2", "-e", "x"], ["bash", "-cX"], ["fish", "--command=x"], ["php", "-r", "x"], ["lua5.4", "-e", "x"],
     ["awk", "BEGIN{}"], ["deno", "eval", "x"], ["Rscript", "-e", "x"], ["osascript", "-e", "x"], ["pwsh", "-EncodedCommand", "eA=="], ["mywrapper", "--eval=x"],
   ]) assert.equal(refusedBy(argv), "wrapper_unparsed", argv.join(" "));
-  assert.deepEqual(decide(["claude", "-c"]), { allowed: true, warnings: [] }, "a known CLI's own flags are not inline code (Claude's -c continues a session)");
+  assert.equal(refusedBy(["claude", "-c"]), "unknown_flag", "a known CLI's own -c is not inline code; it is simply not on the safe list");
 });
 
 test("review 2 SF9: when the name and the real path name different CLIs, the rows of both apply", () => {
@@ -176,7 +176,7 @@ test("review 3 N12: a known name whose real path is a wrapper or an interpreter 
   assert.deepEqual(viaBash, { allowed: false, rule: "wrapper_unparsed" }, "the real path is an interpreter with inline code");
   const viaPython = decideCliMessaging({ argv: ["/r/mycli", "-c", "x"], executableReal: "/usr/bin/python3.12", bypassesPrompts: false, exists: none });
   assert.deepEqual(viaPython, { allowed: false, rule: "wrapper_unparsed" }, "review 3 N18: the real path is scanned for interpreters too");
-  const versioned = decideCliMessaging({ argv: ["/r/claude", "-c"], executableReal: "/home/u/.local/share/claude/versions/2.1.330", bypassesPrompts: false, exists: none });
+  const versioned = decideCliMessaging({ argv: ["/r/claude", "--verbose"], executableReal: "/home/u/.local/share/claude/versions/2.1.332", bypassesPrompts: false, exists: none });
   assert.deepEqual(versioned, { allowed: true, warnings: [] }, "an unknown real-path name (a versioned binary) still trusts the name");
 });
 
@@ -200,4 +200,44 @@ test("review 3 N18: the Codex configuration rule also applies behind a wrapper (
 test("review 3 N12: a known name whose real path is an interpreter gets every CLI's rows, even without inline code", () => {
   const viaNode = decideCliMessaging({ argv: ["/r/claude", "-a", "never"], executableReal: "/usr/bin/node", bypassesPrompts: false, exists: none });
   assert.deepEqual(viaNode, { allowed: false, rule: "codex.ask-for-approval.never" }, "not only Claude's rows: the real program is an interpreter");
+});
+
+test("review 4 SF11: a known CLI's launch may carry only its safe flags; every other flag is unknown_flag, values bounded", () => {
+  for (const argv of [
+    ["claude", "--model", "opus", "-p", "--output-format=stream-json", "--verbose", "hi"], ["claude", "-v"], ["claude", "--help"],
+    ["codex", "-m", "o3", "-c", "model_reasoning_effort=high", "-a", "on-request", "-s", "read-only", "exec", "do it"], ["codex", "-V"],
+  ]) assert.deepEqual(decide(argv), { allowed: true, warnings: [] }, argv.join(" "));
+  for (const argv of [
+    ["claude", "--permission-mode", "plan"], ["claude", "--debug"], ["claude", "--include-partial-messages"], ["claude", "--from-pr", "1"], ["claude", "--"],
+    ["claude", "--output-format", "xml"], ["claude", "-pX"], ["claude", "--model", "x".repeat(65)], ["claude", "--model"],
+    ["codex", "--search"], ["codex", "-C", "/elsewhere"], ["codex", "--remote", "h:1"], ["codex", "-a", "untrusted"], ["codex", "-i", "x.png"], ["codex", "--oss"],
+  ]) assert.equal(refusedBy(argv), "unknown_flag", argv.join(" "));
+  assert.deepEqual(decide(["claude", "--model", "m".repeat(64)]), { allowed: true, warnings: [] }, "review 4 N21: a model value of exactly 64 characters");
+});
+
+test("review 4 SF11: the close relatives refuse by name: --plugin-url, and the feature switches", () => {
+  for (const [argv, rule] of [
+    [["claude", "--plugin-url", "https://x/p.zip"], "claude.plugin-url"], [["npx", "claude", "--plugin-url=https://x/p.zip"], "claude.plugin-url"],
+    [["codex", "--enable", "x"], "codex.feature"], [["codex", "--disable", "write_stdin_approval"], "codex.feature"],
+  ] as [string[], string][]) assert.equal(refusedBy(argv), rule, argv.join(" "));
+});
+
+test("review 4 SF11: a wrapper's environment prefix is an allowlist: configuration homes are config_home, other names env_assignment", () => {
+  for (const [argv, rule] of [
+    [["env", "HOME=/x", "codex"], "config_home"], [["env", "XDG_CONFIG_HOME=/x", "claude"], "config_home"], [["env", "XDG_DATA_HOME=/x", "claude"], "config_home"],
+    [["env", "CODEX_HOME=/x", "codex"], "config_home"], [["env", "CLAUDE_CONFIG_DIR=/x", "claude"], "config_home"], [["env", "CODEX_SANDBOX=0", "codex"], "config_home"],
+    [["env", "PATH=/x", "claude"], "env_assignment"], [["env", "LD_PRELOAD=/x.so", "claude"], "env_assignment"],
+  ] as [string[], string][]) assert.equal(refusedBy(argv), rule, argv.join(" "));
+  for (const argv of [["env", "LANG=C.UTF-8", "TERM=xterm", "NO_COLOR=1", "TZ=UTC", "LC_ALL=C", "claude"]]) assert.deepEqual(decide(argv), { allowed: true, warnings: [] }, argv.join(" "));
+  assert.deepEqual(decide(["claude", "-p", "HOME=x"]), { allowed: true, warnings: [] }, "for a known CLI an A=b token is the prompt, not an assignment");
+  assert.deepEqual(decide(["env", "codex", "--config", "model=o3"]), { allowed: true, warnings: [] }, "a safe flag's value is not an assignment");
+});
+
+test("review 4 N19 and N20: the added wrappers are wrappers; an awk real path is always refused", () => {
+  for (const w of ["setsid", "chrt", "ionice", "flock"]) {
+    const d = decideCliMessaging({ argv: ["/r/claude", "-a", "never"], executableReal: `/usr/bin/${w}`, bypassesPrompts: false, exists: none });
+    assert.deepEqual(d, { allowed: false, rule: "codex.ask-for-approval.never" }, w);
+  }
+  const awk = decideCliMessaging({ argv: ["/r/claude", 'BEGIN{system("codex -a never")}'], executableReal: "/usr/bin/awk", bypassesPrompts: false, exists: none });
+  assert.deepEqual(awk, { allowed: false, rule: "wrapper_unparsed" });
 });

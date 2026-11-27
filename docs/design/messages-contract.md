@@ -48,7 +48,7 @@ The contract comments state the rule of `inter-agent-communication.md` section 4
 |---|---|
 | `E_NOT_FOUND` | `not_found` |
 | `E_INVALID_ARGUMENT` | `too_large`, `too_many_recipients` |
-| `E_CONFLICT` | `recipient_refused`, `cross_project` (user only), `paused`, `hop_limit`, `secret_found`, `excerpt_path_refused`, `bypass_entry`; for enabling CLI messaging (section 14), also `wrapper_unparsed`, `config_unparsed`, `too_many_repo_files`, `empty_argv` |
+| `E_CONFLICT` | `recipient_refused`, `cross_project` (user only), `paused`, `hop_limit`, `secret_found`, `excerpt_path_refused`, `bypass_entry`; for enabling CLI messaging (section 14), also `wrapper_unparsed`, `config_unparsed`, `too_many_repo_files`, `empty_argv`, `unknown_flag`, `env_assignment`, `config_home`, `real_path_unresolved` |
 | `E_BACKPRESSURE` | `rate_limited`, `queue_full` |
 
 PV-M1 put the policy refusals under `E_POLICY_DENIED`. A handler cannot raise that code (the daemon answers `E_INTERNAL` for it, because only its pipeline decides it, with its own audit row), so PV-M3 moved them to `E_CONFLICT`, as `axis.review/1` and `axis.git/1` answer their packages' policy refusals. The daemon's error filter now lets `E_BACKPRESSURE` carry `reason`, so `rate_limited` and `queue_full` stay apart on the wire.
@@ -156,12 +156,12 @@ PV-M1 put the policy refusals under `E_POLICY_DENIED`. A handler cannot raise th
 - **The facts.** The worker's `axis.cliAgents` entry as main returns it (user, application or machine scope only, the CLI start's own path), the real path of an absolute executable, the worker's home worktree, and which CLI project-configuration files exist there (`CLI_PROJECT_CONFIG` of `@axis/pty-policy`, the same list as the protected set).
   - Any gap refuses (`no_entry`): an unknown, archived or composer worker, no live home, no answer from main, or no such entry.
 - **Which rows apply.** The CLIs named by the executable's base name AND by its real path, as a union. When neither names a known CLI, every CLI's rows apply, over all of its arguments.
-  - **Real path that is a wrapper.** A known CLI's name whose real path is a wrapper (`env`, `sudo`, `doas`, `su`, `runuser`, `nice`, `nohup`, `timeout`, `time`, `stdbuf`, `xargs`, `npx`, `npm`, `pnpm`, `yarn`, `bunx`, `uvx`, `pipx`) or an interpreter is judged as a wrapper. A real path with an unknown name (Claude's versioned binary) still trusts the name.
+  - **Real path that is a wrapper.** A known CLI's name whose real path is a wrapper (`env`, `sudo`, `doas`, `su`, `runuser`, `nice`, `nohup`, `timeout`, `time`, `stdbuf`, `xargs`, `setsid`, `chrt`, `ionice`, `flock`, `npx`, `npm`, `pnpm`, `yarn`, `bunx`, `uvx`, `pipx`) or an interpreter is judged as a wrapper. A real path with an unknown name (Claude's versioned binary) still trusts the name; that is a residual.
   - **Unresolvable real path.** An absolute executable whose real path cannot be resolved (a broken link, no permission, gone) refuses: `real_path_unresolved`.
   - So for a wrapper, Codex's `-p/--profile` row also refuses an argument meant as another CLI's `-p` (`npx <package> -p hi`). That fails closed.
 - **The rule, in order.**
   1. **User marking.** The entry's `bypassesPrompts` marking, a closed boolean set in user-scope settings: `user_marked`.
-  2. **Empty argv:** `empty_argv`. A configuration home set in the arguments (`CODEX_HOME=` or `CLAUDE_CONFIG_DIR=`, as for `env`) refuses: `config_home`.
+  2. **Empty argv:** `empty_argv`.
   3. **Shells and interpreters** (`wrapper_unparsed`).
      - **The names, exactly:** `sh`, `bash`, `zsh`, `dash`, `ksh`, `ash`, `fish`, `busybox`, `cmd`, `powershell`, `pwsh`, `python`, `pythonw`, `py`, `node`, `nodejs`, `deno`, `bun`, `perl`, `ruby`, `php`, `lua`, `luajit`, `awk`, `gawk`, `mawk`, `nawk`, `rscript`, `osascript`, `tclsh`. Each is matched by its base name with a trailing version dropped (`python3.12`, `ruby3.2`).
      - **As the executable,** a shell or interpreter with an inline-code argument is refused; an `awk`-family executable always is.
@@ -183,17 +183,24 @@ PV-M1 put the policy refusals under `E_POLICY_DENIED`. A handler cannot raise th
      - **Everything else is `config_unparsed`:** every other key, every dotted key, any value with `{`, `[`, a backslash or a non-ASCII character, a quoted key, and mismatched quotes. That is a fixed reason, so no key a caller wrote reaches the audit row.
      - **Verified (2026-11-27).** The two benign keys were checked against the installed codex-cli 0.166.0 in a scratch `CODEX_HOME`, with no login and the network routed to a dead proxy, using `codex debug prompt-input`: `model` and `model_reasoning_effort` leave the approval policy, sandbox mode and network access exactly as the baseline, while the same probe shows `approval_policy=never` and `sandbox_mode=danger-full-access` changing them.
   5. **Flag table.** A frozen table of bypass flags, each verified in the CLI's own `--help`:
-     - Claude Code 2.1.330: `--dangerously-skip-permissions`, `--allow-dangerously-skip-permissions`, `--permission-mode bypassPermissions | auto | acceptEdits`, `--settings` (any value).
-     - Claude Code 2.1.330, also refused whatever their value because they change which configuration, tools or plugins load: `--mcp-config`, `--setting-sources`, `--agents`, `--plugin-dir`.
-     - codex-cli 0.166.0: `--dangerously-bypass-approvals-and-sandbox`, `-a/--ask-for-approval never`, `-s/--sandbox danger-full-access`, `--approve-for-me`, `-p/--profile` (any value).
+     - Claude Code 2.1.332 (first sourced in 2.1.330, checked again): `--dangerously-skip-permissions`, `--allow-dangerously-skip-permissions`, `--permission-mode bypassPermissions | auto | acceptEdits`, `--settings` (any value).
+     - Claude Code 2.1.332, also refused whatever their value because they change which configuration, tools or plugins load: `--mcp-config`, `--setting-sources`, `--agents`, `--plugin-dir`, `--plugin-url` (a plugin fetched from the network).
+     - codex-cli 0.166.0: `--dangerously-bypass-approvals-and-sandbox`, `-a/--ask-for-approval never`, `-s/--sandbox danger-full-access`, `--approve-for-me`, `-p/--profile` (any value), `--enable` and `--disable` (`codex.feature`: the flag form of a feature override, which can switch an approval feature off).
      - Rows match `--flag value`, `--flag=value` and attached short values (`-anever`).
      - Every row refuses.
      - There are no Gemini rows: it is not installed here.
   6. **Pattern rule.** A fail-closed rule over any argument (`dangerously`, `yolo`, `bypass`, `skip-permissions`, `no-confirm`, `auto-approve`, `full-auto`, `approval-mode`, `danger-full-access`, `no-sandbox`, `sandbox=false`): `bypass_pattern`.
+  6a. **Safe flags only (an allowlist, review 4 SF11).** An enabling launch may carry ONLY these flags, sourced from the installed `--help`; every other token that starts with `-` is `unknown_flag`, at enable and at mint:
+     - Claude Code 2.1.332: `--model <value>`, `-p/--print`, `--output-format text | json | stream-json`, `--verbose`, `-v/--version`, `-h/--help`.
+     - codex-cli 0.166.0: `-m/--model <value>`, `-c/--config <key=value>` (judged by step 4), `-a/--ask-for-approval on-request`, `-s/--sandbox read-only | workspace-write`, `-h/--help`, `-V/--version`.
+     - A `<value>` is at most 64 characters of `[A-Za-z0-9._:/-]`. Positional arguments (the prompt, a subcommand) are not flags.
+     - For a wrapper the safe lists of every known CLI apply, so a wrapper's own flags (`npx -y`, `env -i`, `sudo -u`) are refused too: it fails closed.
+     - **A worker whose launch uses any other flag cannot enable messaging.** The shell explains `unknown_flag` to the user that way: change the entry's flags, or keep messaging off.
+  6b. **A wrapper's environment prefix (an allowlist).** For an executable that is not a known CLI, a `NAME=value` argument (as `env` takes it, `docker -e`, `--env=`) may set only `LANG`, `LC_*`, `TERM`, `NO_COLOR`, `TZ` or `COLORTERM`. A configuration home (`HOME`, `XDG_*`, `CODEX_*`, `CLAUDE_*`) is `config_home`: with a planted `$HOME/.codex/config.toml`, Codex runs with approvals and the sandbox off. Any other name is `env_assignment`. For a known CLI, an `A=b` argument is positional (the prompt), not an assignment.
   7. **Project-configuration files.** Each file present, for the CLIs that apply, is a structured warning `{ code: "repo_config", path, cli }`.
      - More than 8 refuses (`too_many_repo_files`); a list is never truncated, because a dropped warning would be a file never confirmed.
      - A row whose `severity` is `refuse` refuses instead (`repo_config`; none in slice 1).
-- **What the caller sees.** An enable the rule cannot judge is refused under its own reason (`wrapper_unparsed`, `config_unparsed`, `too_many_repo_files`, `empty_argv`); every recognised bypass, the marking and a missing fact are `bypass_entry`. The audit row always names the rule.
+- **What the caller sees.** An enable the rule cannot judge is refused under its own reason (`wrapper_unparsed`, `config_unparsed`, `too_many_repo_files`, `empty_argv`, `unknown_flag`, `env_assignment`, `config_home`, `real_path_unresolved`); every recognised bypass, the marking and a missing fact are `bypass_entry`. The audit row always names the rule.
 - **Two steps.** With warnings, the first `updateSettings` writes nothing and answers `changed: false` with the warnings.
   - The request that names every warned file in `acknowledged` (closed, at most 8, path and CLI bound by regular expressions, compared by path AND cli) writes the setting.
   - It also writes the freshly computed warned paths, never the caller's list, to `messaging_cli_acknowledged` (schema v18): a foreign key to the worker, ids and paths only, no NUL.
@@ -207,13 +214,11 @@ PV-M1 put the policy refusals under `E_POLICY_DENIED`. A handler cannot raise th
   - `enable_needs_confirmation` and `enable_allowed`, with the warning count;
   - `mint_refused`, with the rule's id and, for unacknowledged files, their count.
 - **Known evasions (residuals; the user's own entry is the trust anchor, so these are ways it can still auto-approve):**
-  - **Abbreviated or combined flags.** An abbreviated long flag (`--permission-m auto`) is not matched, and combined short flags (`-xa never`) are not split.
-  - **Unlisted config keys.** Codex `-c` keys other than the two security keys are not checked.
+  - **Real path with an unknown name.** It trusts the name, so a renamed or versioned binary that is not a listed wrapper or interpreter is judged as the CLI its name says.
   - **Interpreters off the list.** Shells, interpreters and inline-code forms not in the two exact lists above are not caught.
-  - **Other working directories.** Project configuration in another directory than the worker's home (Codex `-C/--cd DIR`, Claude `--add-dir`) is never checked.
-  - **Tool permissions.** Tool pre-approval by `--allowedTools`, or a `--permission-prompt-tool`, is not inspected.
+  - **Closed by the safe-flag allowlist (no longer residuals):** abbreviated or combined flags, other working directories (Codex `-C/--cd`, Claude `--add-dir`), tool pre-approval (`--allowedTools`, `--permission-prompt-tool`), `--agent`, Codex `--remote`, `node --import=data:` and any other unlisted flag are all `unknown_flag`. Codex `-c` keys outside the allowlist are `config_unparsed`. `docker run --env=CODEX_HOME=...` is `config_home`.
   - **Programs that run programs.** Programs other than the listed wrappers and interpreters can run a CLI or run code: `mshta`, `sqlite3 .shell`, `make`, `sed s///e`, `xargs -I`, `find -exec`, `script -c`, a container runner. Their arguments are judged only by the wrapper union and the pattern rule. An interpreter or shell running a script FILE (`bash run.sh`) is not read.
-  - **Environment and user-level files.** `envPassthrough` variables and the CLI's environment-driven settings are not inspected. User-level CLI configuration (`~/.claude`, `~/.codex/config.toml`) is not inspected either.
+  - **Environment and user-level files.** `envPassthrough` variables (the entry's own pass-through list, not the launch arguments) and the CLI's environment-driven settings are not inspected. User-level CLI configuration (`~/.claude`, `~/.codex/config.toml`) is not inspected either.
   - **File contents.** Project-configuration content is never read, only its presence (by `lstat` of the final component; a file reached through a linked parent directory counts as present). A script run by a shell as a file (`bash run.sh`, a shell as the executable) is not read.
   - **Argument files.** Arguments read from a file (an `@argfile` form, if a CLI has one) are not inspected.
   - **Marking a live endpoint.** Marking an entry, or adding a flag to it, after enabling does not revoke a run's live endpoint; the next mint refuses.

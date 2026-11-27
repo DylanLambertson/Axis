@@ -162,10 +162,10 @@ test("review 3 N13: an absolute executable whose real path cannot be resolved re
 test("review 3 N15: a launch the rule cannot judge is refused by its own reason; a recognised bypass stays bypass_entry", async (t) => {
   const r = await deliveryRig(t, { noDelivery: true });
   const on = { setting: "cliMessaging", agentId: "c1", value: true } as const;
-  for (const rule of ["wrapper_unparsed", "config_unparsed", "too_many_repo_files", "empty_argv"]) {
+  for (const rule of ["wrapper_unparsed", "config_unparsed", "too_many_repo_files", "empty_argv", "unknown_flag", "env_assignment", "config_home", "real_path_unresolved"]) {
     assert.throws(() => r.m.settings.updateSettings(USER, on, { allowed: false, rule }), (e: { reason?: string }) => e.reason === rule, rule);
   }
-  for (const rule of ["claude.dangerously-skip-permissions", "user_marked", "no_entry", "real_path_unresolved", "config_home"]) {
+  for (const rule of ["claude.dangerously-skip-permissions", "user_marked", "no_entry", "bypass_pattern"]) {
     assert.throws(() => r.m.settings.updateSettings(USER, on, { allowed: false, rule }), (e: { reason?: string }) => e.reason === "bypass_entry", rule);
   }
 });

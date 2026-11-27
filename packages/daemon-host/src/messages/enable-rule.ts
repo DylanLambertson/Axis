@@ -19,7 +19,7 @@ interface FlagRow {
   readonly value?: string;
   readonly source: string;
 }
-const CLAUDE_HELP = "Claude Code 2.1.330 --help";
+const CLAUDE_HELP = "Claude Code 2.1.332 --help"; // first sourced in 2.1.330; every row checked again in 2.1.332
 const CODEX_HELP = "codex-cli 0.166.0 --help";
 const row = (id: string, cli: FlagRow["cli"], flags: readonly string[], source: string, value?: string): FlagRow =>
   Object.freeze({ id, cli, flags: Object.freeze([...flags]), source, ...(value === undefined ? {} : { value }) });
@@ -43,6 +43,9 @@ export const BYPASS_FLAGS: readonly FlagRow[] = Object.freeze([
   row("claude.setting-sources", "claude", ["--setting-sources"], CLAUDE_HELP),
   row("claude.subagents", "claude", [["--age", "nts"].join("")], CLAUDE_HELP),
   row("claude.plugin-dir", "claude", ["--plugin-dir"], CLAUDE_HELP),
+  row("claude.plugin-url", "claude", ["--plugin-url"], CLAUDE_HELP),
+  // A feature switch is the flag form of `-c features.<name>=...` (review 4 SF11): `--disable` can turn an approval feature off.
+  row("codex.feature", "codex", ["--enable", "--disable"], CODEX_HELP),
   row("codex.profile", "codex", ["--profile", "-p"], CODEX_HELP),
 ]);
 // No Gemini rows: Gemini is not installed in the environment the table was sourced in (only a wrapper with no binary), so
@@ -141,9 +144,79 @@ function codexConfigRule(kv: string): string | undefined {
 }
 
 /** Programs that run another program (review 3 N12): a known CLI's name whose real path is one of these is a wrapper. */
-const WRAPPERS: ReadonlySet<string> = new Set(["env", "sudo", "doas", "su", "runuser", "nice", "nohup", "timeout", "time", "stdbuf", "xargs", "npx", "npm", "pnpm", "yarn", "bunx", "uvx", "pipx"]);
-/** An environment assignment in the launch arguments that moves a CLI's whole configuration elsewhere (review 3 N17). */
-const CONFIG_HOME = /^(CODEX_HOME|CLAUDE_CONFIG_DIR)=/;
+const WRAPPERS: ReadonlySet<string> = new Set(["env", "sudo", "doas", "su", "runuser", "nice", "nohup", "timeout", "time", "stdbuf", "xargs", "setsid", "chrt", "ionice", "flock", "npx", "npm", "pnpm", "yarn", "bunx", "uvx", "pipx"]);
+/**
+ * Environment assignments in a wrapper's arguments (`env A=b`, `docker -e A=b`, `--env=A=b`), INVERTED (review 4 SF11: a
+ * planted `$HOME/.codex/config.toml` behind `env HOME=/x` runs the CLI with approvals and the sandbox off). Only these names
+ * are allowed; a configuration home (`HOME`, `XDG_*`, `CODEX_*`, `CLAUDE_*`) is `config_home`, any other `env_assignment`.
+ */
+const ENV_SAFE = (name: string): boolean => ["LANG", "TERM", "NO_COLOR", "TZ", "COLORTERM"].includes(name) || /^LC_[A-Z]+$/.test(name);
+const CONFIG_HOME = /^(HOME|XDG_[A-Z_]+|CODEX_[A-Z0-9_]*|CLAUDE_[A-Z0-9_]*)$/;
+
+/**
+ * The flags an ENABLING launch may carry, per CLI, INVERTED (review 4 SF11: refusing bad flags one by one never ends).
+ * Sourced from the installed `--help` (Claude Code 2.1.332, codex-cli 0.166.0) and kept small: model selection, printing
+ * and output format, verbosity, version and help, and for Codex the judged `-c`, `-a` and `-s`. Every other token that
+ * starts with `-` is `unknown_flag`, at enable and at mint; the rows above still refuse their own flags by name first.
+ * `value`: "none" (a switch), "any" (a plain value of at most 64 characters), "config" (judged by `codexConfigRule`),
+ * or the exact values allowed.
+ */
+interface SafeFlag {
+  readonly flags: readonly string[];
+  readonly value: "none" | "any" | "config" | readonly string[];
+}
+const SAFE_FLAGS: Readonly<Record<string, readonly SafeFlag[]>> = Object.freeze({
+  claude: Object.freeze<SafeFlag[]>([
+    { flags: ["--model"], value: "any" },
+    { flags: ["-p", "--print"], value: "none" },
+    { flags: ["--output-format"], value: ["text", "json", "stream-json"] },
+    { flags: ["--verbose"], value: "none" },
+    { flags: ["-v", "--version"], value: "none" },
+    { flags: ["-h", "--help"], value: "none" },
+  ]),
+  codex: Object.freeze<SafeFlag[]>([
+    { flags: ["-m", "--model"], value: "any" },
+    { flags: ["-c", "--config"], value: "config" },
+    { flags: ["-a", "--ask-for-approval"], value: ["on-request"] },
+    { flags: ["-s", "--sandbox"], value: ["read-only", "workspace-write"] },
+    { flags: ["-h", "--help"], value: "none" },
+    { flags: ["-V", "--version"], value: "none" },
+  ]),
+});
+
+/** The first flag of `args` outside the safe lists of `clis`, as a rule, and the indexes the safe flags took as values. */
+function flagScan(clis: ReadonlySet<string>, args: readonly string[]): { readonly rule: string | undefined; readonly values: ReadonlySet<number> } {
+  const safe = [...clis].flatMap((c) => SAFE_FLAGS[c] ?? []);
+  const values = new Set<number>();
+  for (let i = 0; i < args.length; i++) {
+    if (values.has(i)) continue;
+    const tok = args[i] as string;
+    if (!tok.startsWith("-") || tok === "-") continue; // a positional argument (the prompt, a subcommand)
+    let ok = false;
+    for (const f of safe) {
+      for (const flag of f.flags) {
+        if (f.value === "none") {
+          if (tok === flag) ok = true;
+          continue;
+        }
+        const { hit, value } = flagValue(flag, args, i);
+        if (!hit) continue;
+        if (tok === flag) values.add(i + 1);
+        if (value === undefined) return { rule: "unknown_flag", values };
+        if (f.value === "config") {
+          const r = codexConfigRule(value);
+          if (r !== undefined) return { rule: r, values };
+        } else if (f.value === "any" ? !/^[A-Za-z0-9._:/-]{1,64}$/.test(value) : !f.value.includes(fold(value))) {
+          return { rule: "unknown_flag", values };
+        }
+        ok = true;
+      }
+      if (ok) break;
+    }
+    if (!ok) return { rule: "unknown_flag", values };
+  }
+  return { rule: undefined, values };
+}
 
 /**
  * One argument against one flag: `--flag`, `--flag=value`, `--flag value`, and for a short flag also with the value attached
@@ -177,7 +250,6 @@ export function decideCliMessaging(facts: EnableFacts, config: readonly CliProje
   if (facts.argv.length === 0 || facts.argv[0] === "") return { allowed: false, rule: "empty_argv" };
   const [executable = "", ...args] = facts.argv;
   const exes = [executable, ...(facts.executableReal === undefined ? [] : [facts.executableReal])];
-  if (args.some((a) => CONFIG_HOME.test(a))) return { allowed: false, rule: "config_home" };
   // The union of the rows of every known CLI the name or the real path names (review 2 SF9); none known: every CLI's rows.
   // A known name whose real path is a wrapper or an interpreter is a wrapper (review 3 N12: `/r/codex -> /usr/bin/env`).
   const realIsWrapper = facts.executableReal !== undefined && (WRAPPERS.has(cliOf(facts.executableReal)) || interpreterOf(facts.executableReal) !== undefined);
@@ -204,6 +276,19 @@ export function decideCliMessaging(facts: EnableFacts, config: readonly CliProje
   for (const a of args) {
     const f = fold(a).replace(/_/g, "-");
     if (BYPASS_WORDS.some((w) => f.includes(w))) return { allowed: false, rule: "bypass_pattern" };
+  }
+  const scan = flagScan(clis, args);
+  if (scan.rule !== undefined) return { allowed: false, rule: scan.rule };
+  // A wrapper's environment prefix: only the listed names (review 4 SF11). For a known CLI an `A=b` token is a positional
+  // argument (the prompt), not an assignment.
+  if (knownNames.length === 0) {
+    for (let i = 0; i < args.length; i++) {
+      if (scan.values.has(i)) continue;
+      const tok = args[i] as string;
+      const m = /^([A-Za-z_][A-Za-z0-9_]*)=/.exec(tok.startsWith("--env=") ? tok.slice(6) : tok);
+      if (m === null || ENV_SAFE(m[1] as string)) continue;
+      return { allowed: false, rule: CONFIG_HOME.test(m[1] as string) ? "config_home" : "env_assignment" };
+    }
   }
   const warnings: EnableWarning[] = [];
   for (const r of config) {
