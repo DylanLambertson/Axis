@@ -92,6 +92,16 @@ const SEPARATOR = /[/?#\\;]/;
 const PERCENT = /%/;
 const PATH_CONFUSABLE = /[\u2024\u2044\u2215\u2216\u29f5\u29f8\u3002\ufe52\ufe68\uff0e\uff0f\uff3c\uff61]/;
 const INTEGRATION = /^[a-z][a-z0-9:._-]{0,63}$/;
+
+/**
+ * True when a normalising server could read a path value as something else (review 2 SF3, a RULE, not a list): its NFKC or
+ * NFKD form holds a separator, a percent sign or a control character, or is a dot segment. So U+2025 (".." once
+ * normalised), U+FE30, U+FF0E, U+2100 ("a/c") and the like are refused whatever the list above says; the list keeps the
+ * slash look-alikes that have no compatibility decomposition (U+2215, U+29F5 and others).
+ */
+export function normalisesToDanger(text: string): boolean {
+  return [text.normalize("NFKC"), text.normalize("NFKD")].some((n) => SEPARATOR.test(n) || PERCENT.test(n) || CONTROL.test(n) || DOT_SEGMENT.test(n));
+}
 const DOT_SEGMENT = /^\.{1,2}$/;
 
 /** The one encoder: UTF-8, every byte outside the unreserved set as `%XX` with upper-case hex. Throws on a lone surrogate. */
@@ -145,7 +155,7 @@ export function placeholderText(value: ArgValue, type: ValueType, inPath: boolea
   }
   if (text.length === 0) throw new CompositionError("argument_refused");
   if (CONTROL.test(text) || SEPARATOR.test(text) || PERCENT.test(text)) throw new CompositionError("argument_refused");
-  if (inPath && (DOT_SEGMENT.test(text) || PATH_CONFUSABLE.test(text))) throw new CompositionError("argument_refused");
+  if (inPath && (DOT_SEGMENT.test(text) || PATH_CONFUSABLE.test(text) || normalisesToDanger(text))) throw new CompositionError("argument_refused");
   if (type.kind !== "text" && /[^\x20-\x7e]/.test(text)) throw new CompositionError("non_ascii");
   if (/[\ud800-\udfff]/.test(text.replace(/[\ud800-\udbff][\udc00-\udfff]/g, ""))) throw new CompositionError("argument_refused"); // a lone surrogate
   if (new TextEncoder().encode(text).byteLength > MAX_VALUE_BYTES) throw new CompositionError("argument_too_long");

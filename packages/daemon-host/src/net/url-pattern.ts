@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 
 import type { ComposedRequest, Method } from "./compose-request.js";
+import { originSchema } from "@axis/protocol";
 import { copyBytes, isBytes } from "./bytes.js";
 import type { EgressTarget } from "./host.js";
 
@@ -42,6 +43,16 @@ interface Snapshot {
   readonly body: Uint8Array | undefined;
 }
 
+/**
+ * The built-in URL getters, applied to the target's URL: a subclass may override `origin` or `href` to lie, but these read
+ * the parsed record itself (review 2 SF2). Throws for a Proxy or any non-URL, which the caller makes a `target` refusal.
+ */
+const URL_FIELDS = ["href", "origin", "protocol", "username", "password", "pathname", "search", "hash"] as const;
+const URL_GET = Object.fromEntries(URL_FIELDS.map((f) => [f, Object.getOwnPropertyDescriptor(URL.prototype, f)?.get as (this: URL) => string])) as Record<(typeof URL_FIELDS)[number], (this: URL) => string>;
+function urlFields(u: URL): Record<(typeof URL_FIELDS)[number], string> {
+  return Object.fromEntries(URL_FIELDS.map((f) => [f, Reflect.apply(URL_GET[f], u, []) as string])) as Record<(typeof URL_FIELDS)[number], string>;
+}
+
 const records = new WeakMap<object, Snapshot>();
 const matchedComposed = new WeakSet<object>();
 const SEGMENT = /^(?:[A-Za-z0-9\-._~]|%[0-9A-F]{2})+$/;
@@ -55,9 +66,17 @@ export function matchTarget(composed: ComposedRequest, target: EgressTarget): Ma
   // Every field read once: a getter cannot show one value to a check and another to the snapshot.
   const { kind, integration, method, origin, url, segments, query, body } = composed;
   if (typeof integration !== "string" || typeof url !== "string" || !Array.isArray(segments) || !Array.isArray(query) || (body !== undefined && !isBytes(body))) return "target";
-  const [href, uOrigin, protocol, pathname, search, hash] = [u.href, u.origin, u.protocol, u.pathname, u.search, u.hash];
+  let f: Record<(typeof URL_FIELDS)[number], string>;
+  try {
+    f = urlFields(u);
+  } catch {
+    return "target";
+  }
+  const { href, origin: uOrigin, protocol, pathname, search, hash } = f;
+  // The parsed href is parsed again by the built-in parser: what the record says is what a fresh parse says.
+  if (new URL(href).origin !== uOrigin) return "origin";
   if (target.origin !== origin || uOrigin !== origin || protocol !== "https:") return "origin";
-  if (u.username !== "" || u.password !== "") return "userinfo";
+  if (f.username !== "" || f.password !== "") return "userinfo";
   if (hash !== "" || href.includes("#")) return "fragment";
   if (!pathname.startsWith("/")) return "path";
   const parsed = { href, pathname, search };
@@ -124,8 +143,8 @@ export class Credential {
     if (typeof headerValue !== "string" || headerValue.length === 0 || headerValue.length > 8192 || /[^\x20-\x7e]/.test(headerValue)) throw new CredentialError("credential_invalid");
     const integration: unknown = binding?.integration;
     const origin: unknown = binding?.origin;
-    if (typeof integration !== "string" || integration.length === 0 || typeof origin !== "string" || !origin.startsWith("https://")) throw new CredentialError("credential_invalid");
-    secrets.set(this, Object.freeze({ value: headerValue, integration, origin }));
+    if (typeof integration !== "string" || integration.length === 0 || !originSchema.safeParse(origin).success) throw new CredentialError("credential_invalid");
+    secrets.set(this, Object.freeze({ value: headerValue, integration, origin: origin as string }));
     Object.freeze(this);
   }
   toString(): string {
@@ -172,6 +191,8 @@ export function authorize(matched: MatchedTarget, credential: Credential): Autho
   const secret = typeof credential === "object" && credential !== null ? secrets.get(credential) : undefined;
   if (secret === undefined) throw new CredentialError("credential_invalid");
   if (secret.integration !== snap.integration || secret.origin !== snap.origin) throw new CredentialError("credential_mismatch");
+  // The snapshot's URL must be ON its origin, by a fresh parse: the credential goes to the origin it is bound to or nowhere.
+  if (new URL(snap.href).origin !== snap.origin) throw new CredentialError("credential_mismatch");
   records.delete(matched);
   const request: AuthorizedRequest = Object.freeze({
     method: snap.method, url: snap.href, origin: snap.origin, integration: snap.integration,

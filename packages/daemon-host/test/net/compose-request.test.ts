@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { COMPOSE_REFUSALS, composeNetRequest, composeRequest, CompositionError, encodeValue, MAX_VALUE_BYTES, type OperationTemplate, templateProblem } from "../../src/net/compose-request.js";
+import { COMPOSE_REFUSALS, composeNetRequest, composeRequest, CompositionError, encodeValue, MAX_VALUE_BYTES, normalisesToDanger, type OperationTemplate, placeholderText, templateProblem } from "../../src/net/compose-request.js";
 import { ISSUE, NAMED } from "./templates.js";
 
 // PV-N1e: request composition (ADR 0009 decision 3). Every refusal runs BEFORE encoding and has its own case.
@@ -122,6 +122,24 @@ test("the composed path is re-checked by the contract's own table: too long is p
   const v = "\u00e9".repeat(128); // 256 bytes, 768 encoded characters
   assert.equal(reason(() => composeRequest(long, "gh", ORIGIN, { a: v, b: v, c: "x", d: "x" })), "composed");
   assert.equal(reason(() => composeRequest(long, "gh", ORIGIN, { a: v, b: v, c: v, d: "x" })), "path_refused");
+});
+
+test("every code point is judged by the normalisation RULE in a text path segment: refused exactly when NFKC or NFKD makes it dangerous (review 2 SF3)", () => {
+  const danger = (t: string): boolean => [t.normalize("NFKC"), t.normalize("NFKD")].some((n) => /[/?#\\;%]/.test(n) || /[\u0000-\u001f\u007f-\u009f\u2028\u2029\u202a-\u202e\u2066-\u2069]/.test(n) || /^\.{1,2}$/.test(n));
+  let refusedByRule = 0;
+  for (let cp = 0x21; cp <= 0x10ffff; cp++) {
+    if (cp >= 0xd800 && cp <= 0xdfff) continue;
+    const v = String.fromCodePoint(cp);
+    if (!danger(v)) continue;
+    refusedByRule++;
+    assert.equal(reason(() => placeholderText(v, { kind: "text" }, true)), "argument_refused", `U+${cp.toString(16).toUpperCase()}`);
+    assert.equal(normalisesToDanger(v), true);
+  }
+  assert.ok(refusedByRule >= 70, `${refusedByRule} code points normalise to danger`);
+  for (const [v, why] of [["\u2025", "two-dot leader"], ["\ufe30", "vertical two-dot leader"], ["\u2100", "a/c"], ["\u2101", "a/s"], ["\u2105", "c/o"], ["\u2106", "c/u"], ["\uff0e\uff0e", "fullwidth dots"], ["\uff05", "fullwidth percent"], ["\uff1f", "fullwidth question mark"]] as const) {
+    assert.equal(reason(() => composeRequest(NAMED, "gh", ORIGIN, { name: v })), "argument_refused", why);
+  }
+  assert.equal(reason(() => composeRequest(ISSUE, "gh", ORIGIN, { ...BASE, search: "\u2025" })), "composed", "a query value is not a path segment");
 });
 
 test("the integration is recorded on the composed request, and checked", () => {

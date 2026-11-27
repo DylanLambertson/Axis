@@ -102,6 +102,34 @@ test("a hand-built target with userinfo is refused, though egressTarget never re
   assert.equal(matchTarget(c, { url, origin: ORIGIN, host: "api.example.com", port: 443 } as EgressTarget), "userinfo");
 });
 
+test("a URL subclass that lies through its getters cannot match or carry the credential elsewhere (review 2 SF2)", () => {
+  const evil = "https://evil.example.net/x";
+  const forged = () => ({ kind: "operation", integration: "gh", method: "GET", origin: ORIGIN, url: evil, segments: ["x"], query: [], body: undefined }) as unknown as ComposedRequest;
+  class LyingOrigin extends URL {}
+  Object.defineProperty(LyingOrigin.prototype, "origin", { get: () => ORIGIN });
+  class LyingHref extends URL {}
+  Object.defineProperty(LyingHref.prototype, "origin", { get: () => ORIGIN });
+  Object.defineProperty(LyingHref.prototype, "href", { get: () => `${ORIGIN}/x` });
+  assert.equal(matchTarget(forged(), { url: new LyingOrigin(evil), origin: ORIGIN } as EgressTarget), "origin");
+  const honest = { ...forged(), url: `${ORIGIN}/x` } as ComposedRequest;
+  assert.equal(matchTarget(honest, { url: new LyingHref(evil), origin: ORIGIN } as EgressTarget), "origin", "the record is read, not the getters");
+  assert.equal(matchTarget(forged(), { url: new Proxy(new URL(evil), {}), origin: ORIGIN } as EgressTarget), "target", "a Proxy is no URL record");
+  // The plain case still matches and attaches.
+  const c = composed();
+  assert.equal(authorizationOf(authorize(matchTarget(c, parsed(c.url)) as MatchedTarget, credential())), SECRET);
+});
+
+test("only https matches, and a credential's origin is compared exactly, never as a prefix", () => {
+  const http = "http://api.example.com/x";
+  const forgedHttp = { kind: "operation", integration: "gh", method: "GET", origin: "http://api.example.com", url: http, segments: ["x"], query: [], body: undefined } as unknown as ComposedRequest;
+  assert.equal(matchTarget(forgedHttp, { url: new URL(http), origin: "http://api.example.com" } as EgressTarget), "origin", "an http request built by hand");
+  const c = composed();
+  const m = matchTarget(c, parsed(c.url)) as MatchedTarget;
+  assert.throws(() => authorize(m, credential("gh", "https://api.example.co")), isCode("credential_mismatch"), "a prefix of the matched origin");
+  assert.throws(() => new Credential(SECRET, { integration: "gh", origin: "https://API.example.com" }), isCode("credential_invalid"), "the origin schema, not a prefix check");
+  assert.throws(() => new Credential(SECRET, { integration: "gh", origin: "https://api.example.com/" }), isCode("credential_invalid"));
+});
+
 test("a composed request is matched once (review 1 nit a)", () => {
   const c = composed();
   assert.ok(isMatchedTarget(matchTarget(c, parsed(c.url))));
