@@ -5,7 +5,8 @@ import { inspect } from "node:util";
 import { serialize } from "node:v8";
 import { composeRequest, type ComposedRequest } from "../../src/net/compose-request.js";
 import { declaredOrigins, egressTarget, type EgressTarget } from "../../src/net/host.js";
-import { authorizationOf, authorize, Credential, CredentialError, isMatchedTarget, matchTarget, type MatchedTarget } from "../../src/net/url-pattern.js";
+import * as urlPattern from "../../src/net/url-pattern.js";
+import { authorize, Credential, CredentialError, isMatchedTarget, matchTarget, type MatchedTarget, takeAuthorization } from "../../src/net/url-pattern.js";
 import { ISSUE, NAMED } from "./templates.js";
 
 // PV-N1e: the final URL check runs on the PARSED target and compares encoded forms exactly; a match snapshots what is sent;
@@ -119,7 +120,7 @@ test("a URL subclass that lies through its getters cannot match or carry the cre
   assert.equal(matchTarget(forged(), { url: new Proxy(new URL(evil), {}), origin: ORIGIN } as EgressTarget), "target", "a Proxy is no URL record");
   // The plain case still matches and attaches.
   const c = composed();
-  assert.equal(authorizationOf(authorize(matchTarget(c, parsed(c.url)) as MatchedTarget, credential())), SECRET);
+  assert.equal(takeAuthorization(authorize(matchTarget(c, parsed(c.url)) as MatchedTarget, credential())).authorization, SECRET);
 });
 
 test("only https matches, and a credential's origin is compared exactly, never as a prefix", () => {
@@ -165,13 +166,22 @@ test("a credential is bound to its integration and origin: either one different 
     const m = matchTarget(c, parsed(c.url)) as MatchedTarget;
     assert.throws(() => authorize(m, credential(integration, origin)), isCode("credential_mismatch"), `${integration} ${origin}`);
     assert.ok(isMatchedTarget(m), "a refused attach does not spend the match");
-    assert.equal(authorizationOf(authorize(m, credential())), SECRET, "the right credential still attaches");
+    assert.equal(takeAuthorization(authorize(m, credential())).authorization, SECRET, "the right credential still attaches");
   }
   // The other direction: a credential for the other origin attaches only to a request matched on that origin.
   const other = composeRequest(ISSUE, "gh", "https://other.example.com", BASE);
   const om = matchTarget(other, parsed(other.url)) as MatchedTarget;
   assert.throws(() => authorize(om, credential()), isCode("credential_mismatch"));
-  assert.equal(authorizationOf(authorize(om, credential("gh", "https://other.example.com"))), SECRET);
+  assert.equal(takeAuthorization(authorize(om, credential("gh", "https://other.example.com"))).authorization, SECRET);
+});
+
+test("the body sent is the one authorized: changing the request's body array after authorize changes nothing (N1f review 1 nit 4)", () => {
+  const body = new Uint8Array([1, 2, 3]);
+  const c = { ...composeRequest(NAMED, "gh", ORIGIN, { name: "x" }), method: "POST", body } as ComposedRequest;
+  const req = authorize(matchTarget(c, parsed(c.url)) as MatchedTarget, credential());
+  (req.body as Uint8Array).fill(9);
+  body.fill(8);
+  assert.deepEqual([...(takeAuthorization(req).body ?? [])], [1, 2, 3], "the taken body is the match-time copy");
 });
 
 test("a credential is opaque: every way of printing or serialising it hides the value", () => {
@@ -190,12 +200,14 @@ test("the credential is attached only to an unspent MatchedTarget, once; the req
   const c = composed();
   const m = matchTarget(c, parsed(c.url)) as MatchedTarget;
   const req = authorize(m, credential());
-  assert.equal(authorizationOf(req), SECRET, "the client's one reader");
+  assert.equal("authorizationOf" in urlPattern, false, "no non-spending reader is exported (N1f review 1 nit 1)");
+  assert.throws(() => takeAuthorization({ ...req }), isCode("not_authorized"), "a copy carries no credential");
+  assert.throws(() => takeAuthorization(structuredClone(req)), isCode("not_authorized"));
+  assert.equal(takeAuthorization(req).authorization, SECRET, "the client's one reader, which spends it");
+  assert.throws(() => takeAuthorization(req), isCode("not_authorized"), "taken once");
   for (const shown of [JSON.stringify(req), inspect(req, { depth: 5, showHidden: true }), JSON.stringify({ ...req }), inspect(structuredClone(req)), serialize(req).toString("latin1"), Object.getOwnPropertyNames(req).join()]) {
     assert.ok(!shown.includes("CANARY"), shown);
   }
-  assert.throws(() => authorizationOf({ ...req }), isCode("not_authorized"), "a copy carries no credential");
-  assert.throws(() => authorizationOf(structuredClone(req)), isCode("not_authorized"));
   assert.throws(() => authorize(m, credential()), isCode("not_matched"), "a MatchedTarget is spent once");
   assert.equal(isMatchedTarget(m), false);
   const d = composed();

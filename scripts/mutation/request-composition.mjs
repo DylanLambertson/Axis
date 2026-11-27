@@ -6,10 +6,9 @@
 //
 // Each mutant edits ONE compiled file under dist (or a lint script), runs the tests that must catch it, and restores the
 // file. A mutant whose anchor text is no longer found is STALE and fails the run, so the list keeps up with the code. Lines
-// starting `// equivalent:` record a mutant that cannot change behaviour, and why. Not part of the gate: run it after a
-// change to these files and state the result in the review.
-import { readFileSync, writeFileSync } from "node:fs";
-import { spawnSync } from "node:child_process";
+// with a fifth field are documented equivalents: they run and must survive (scripts/mutation/run.mjs). Not part of the
+// gate: run it after a change to these files and state the result in the review.
+import { runMutants } from "./run.mjs";
 const root = process.argv[2];
 const D = `${root}/packages/daemon-host/dist`;
 const F = { c: `${D}/src/net/compose-request.js`, u: `${D}/src/net/url-pattern.js`, p: `${root}/packages/protocol/dist/src/integrations-wire.js`, b: `${D}/src/net/bytes.js`, k: `${D}/src/net/egress-client.js`, l: `${D}/src/net/egress-limits.js` };
@@ -24,7 +23,6 @@ const M = [
   ["c", "separator backslash", "const SEPARATOR = /[/?#\\\\;]/;", "const SEPARATOR = /[/?#;]/;"],
   ["c", "C1 controls", "\\u0000-\\u001f\\u007f-\\u009f", "\\u0000-\\u001f\\u007f"],
   ["c", "bidi controls", "\\u202a-\\u202e", "\\u202a"],
-  // equivalent: the direct dot-segment test is a fast path; the normalisation rule refuses "." and ".." too
   ["c", "empty value", "if (text.length === 0)", "if (false)"],
   ["c", "non-ascii", "if (type.kind !== \"text\" && /[^\\x20-\\x7e]/.test(text))", "if (false)"],
   ["c", "lone surrogate", "if (/[\\ud800-\\udfff]/.test(", "if (false && /[\\ud800-\\udfff]/.test("],
@@ -76,8 +74,6 @@ const M = [
   ["u", "credential inspect", "[Symbol.for(\"nodejs.util.inspect.custom\")]() {\n        return HIDDEN;", "[Symbol.for(\"nodejs.util.inspect.custom\")]() {\n        return secrets.get(this).value;"],
   ["u", "credential value check", "/[^\\x20-\\x7e]/.test(headerValue)", "false"],
   ["u", "credential binding check", "typeof integration !== \"string\" || integration.length === 0 || !originSchema.safeParse(origin).success", "false"],
-  ["u", "header as property", "authorizations.set(request, secret.value);\n    return request;", "authorizations.set(request, secret.value);\n    return { ...request, authorization: secret.value };"],
-  ["u", "reader check", "if (value === undefined)\n        throw new CredentialError(\"not_authorized\");", ""],
   ["c", "percent refused", "if (CONTROL.test(text) || SEPARATOR.test(text) || PERCENT.test(text))", "if (CONTROL.test(text) || SEPARATOR.test(text))"],
   ["c", "path confusables", "PATH_CONFUSABLE.test(text) || DEFAULT_IGNORABLE.test(text)", "DEFAULT_IGNORABLE.test(text)"],
   ["c", "integration checked", "if (typeof integration !== \"string\" || !INTEGRATION.test(integration))\n        throw new CompositionError(\"integration_refused\");\n    if (!originSchema.safeParse(origin).success)\n        throw new CompositionError(\"origin_refused\");\n    const used", "const used"],
@@ -86,47 +82,38 @@ const M = [
   ["p", "table: %25 in path", "[\"an escaped percent sign in the path\", (p) => /%25/i.test(p.split(\"?\", 1)[0])],", ""],
   ["b", "isBytes tag", "Reflect.apply(TAG, value, []) === \"Uint8Array\"", "value instanceof Uint8Array"],
   ["b", "intrinsic length", "const length = Reflect.apply(BYTE_LENGTH, value, []);", "const length = value.byteLength;"],
-  // equivalent: the target array is our own, so its set is the intrinsic one (the code now says so)
   ["b", "a copy", "const out = new Uint8Array(length);\n    out.set(value);", "const out = value;"],
-  // equivalent: a Proxy body passing instanceof makes the intrinsic copy throw, which the client makes request_refused before a slot
   ["k", "content length from the copy", "sent[\"content-length\"] = String(copy.byteLength);", "sent[\"content-length\"] = String(body.byteLength);"],
   ["k", "client copies by slots", "const bytes = body === undefined ? undefined : copyBytes(body);", "const bytes = body === undefined ? undefined : body.slice();"],
   ["l", "name checked before lower-casing", "if (typeof name !== \"string\" || !/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(name))\n            throw new EgressError(\"header_refused\");", "if (false)\n            throw new EgressError(\"header_refused\");"],
   ["u", "matcher uses isBytes", " || (body !== undefined && !isBytes(body))", ""],
   ["u", "intrinsic URL getters", "Reflect.apply(URL_GET[f], u, [])", "u[f]"],
-  // equivalent: the built-in getters read the parsed record, so a fresh parse of its href gives the same origin; defence in depth
   ["u", "https only", "|| protocol !== \"https:\")", "|| false)"],
   ["u", "credential origin exact", "secret.origin !== snap.origin)\n        throw", "!snap.origin.startsWith(secret.origin))\n        throw"],
   ["u", "credential origin schema", "!originSchema.safeParse(origin).success", "typeof origin !== \"string\" || !origin.startsWith(\"https://\")"],
   ["c", "normalisation rule", "|| normalisesToDanger(text)))", "))"],
-  // equivalent: the all-code-point scan shows NFKD alone catches the same set today; both kept against Unicode changes
-  // equivalent: the all-code-point scan shows NFKC alone catches the same set today; both kept against Unicode changes
   ["c", "normalised percent", "SEPARATOR.test(n) || PERCENT.test(n) || CONTROL.test(n) || DOT_SEGMENT.test(n)", "SEPARATOR.test(n) || CONTROL.test(n) || DOT_SEGMENT.test(n)"],
   ["c", "normalised dot segment", "SEPARATOR.test(n) || PERCENT.test(n) || CONTROL.test(n) || DOT_SEGMENT.test(n)", "SEPARATOR.test(n) || PERCENT.test(n) || CONTROL.test(n)"],
-  // equivalent: authorize's fresh-parse recheck of the snapshot (match already refuses a record whose fresh parse differs); defence in depth
   ["l", "authorization owned", "\"accept-encoding\", \"authorization\",", "\"accept-encoding\","],
-  ["u", "take is single-use", "const value = authorizationOf(request);\n    authorizations.delete(request);", "const value = authorizationOf(request);"],
-  ["k", "forgery refused", "        catch {\n            throw new EgressError(\"not_authorized\");\n        }", "        catch {\n            value = \"\";\n        }"],
-  ["k", "credential attached", "snap.headers.authorization = value;", ""],
+  ["k", "credential attached", "snap.headers.authorization = taken.authorization;", ""],
   ["c", "default ignorable", "|| DEFAULT_IGNORABLE.test(text) ", ""],
-  // equivalent: sendAuthorized's url/origin recheck (an AuthorizedRequest's url is a parsed href that egressTarget gives back unchanged); defence in depth
+  ["c", "invisible characters", "|| INVISIBLE.test(text) ", ""],
+  ["c", "the ASCII space kept", "/(?! )[\\p{Cf}\\p{Zs}", "/[\\p{Cf}\\p{Zs}"],
+  ["c", "blank glyphs", "\\u2800\\u{1d159}\\u{16fe4}]/u", "]/u"],
+  ["u", "take consumes", "authorizations.delete(request);\n    return Object.freeze", "return Object.freeze"],
+  ["u", "taken body is the match-time copy", "body: held.body === undefined ? undefined : copyBytes(held.body) });", "body: request.body });"],
+  ["k", "client sends the taken body", "...(taken.body === undefined ? {} : { body: taken.body }),", "...(req.body === undefined ? {} : { body: req.body }),"],
+  ["k", "forgery refused", "        catch {\n            throw new EgressError(\"not_authorized\");\n        }", "        catch {\n            taken = { authorization: \"\", body: undefined };\n        }"],
+  ["c", "dot-segment fast path", "(DOT_SEGMENT.test(text) || PATH_CONFUSABLE.test(text)", "(PATH_CONFUSABLE.test(text)", "the normalisation rule refuses . and .. too"],
+  ["k", "client isBytes", "if (body !== undefined && !isBytes(body))", "if (body !== undefined && !(body instanceof Uint8Array))", "a Proxy body passing instanceof makes the intrinsic copy throw, which the client makes request_refused before a slot"],
+  ["u", "fresh parse in match", "if (new URL(href).origin !== uOrigin)\n        return \"origin\";", "", "the built-in getters read the parsed record, so a fresh parse of its href gives the same origin"],
+  ["c", "NFKC only", "[text.normalize(\"NFKC\"), text.normalize(\"NFKD\")]", "[text.normalize(\"NFKD\")]", "the all-code-point scan shows NFKD alone catches the same set today; both kept against Unicode changes"],
+  ["c", "NFKD only", "[text.normalize(\"NFKC\"), text.normalize(\"NFKD\")]", "[text.normalize(\"NFKC\")]", "the all-code-point scan shows NFKC alone catches the same set today; both kept against Unicode changes"],
+  ["u", "authorize recheck", "if (new URL(snap.href).origin !== snap.origin)\n        throw new CredentialError(\"credential_mismatch\");", "", "match already refuses a record whose fresh parse differs; defence in depth"],
+  ["k", "sendAuthorized recheck", "if (snap.target.url.href !== req.url || snap.target.origin !== req.origin)\n            throw new EgressError(\"not_authorized\");", "", "an AuthorizedRequest's url is a parsed href that egressTarget gives back unchanged; defence in depth"],
   ["p", "table: dot segment", "[\"no dot segments\", (p) => DOT_SEGMENT.test(p.split(\"?\", 1)[0])],", ""],
   ["p", "table: %3b", "[\"an escaped path-parameter separator\", (p) => /%3b/i.test(p)],", ""],
   ["p", "table: one query", "[\"one query only\", (p) => p.split(\"?\").length > 2],", ""],
   ["p", "schema uses table", "if (reason !== null)\n        ctx.addIssue", "if (false)\n        ctx.addIssue"],
 ];
-const orig = Object.fromEntries(Object.entries(F).map(([k, f]) => [k, readFileSync(f, "utf8")]));
-let bad = 0;
-try {
-  for (const [f, name, from, to] of M) {
-    const n = orig[f].split(from).length - 1;
-    if (n !== 1) { console.log(`STALE(${n}) ${name}`); bad++; continue; }
-    writeFileSync(F[f], orig[f].replace(from, to));
-    const r = spawnSync(process.execPath, ["--test", "--test-timeout=60000", ...T[f]], { cwd: root, encoding: "utf8", timeout: 300_000 });
-    writeFileSync(F[f], orig[f]);
-    if (r.status === 0) bad++;
-    console.log(`${r.status !== 0 ? "killed " : "SURVIVED"} ${name}`);
-  }
-} finally { for (const k of Object.keys(F)) writeFileSync(F[k], orig[k]); }
-console.log(`${M.length} mutants, ${bad} survived or stale`);
-process.exit(bad ? 1 : 0);
+runMutants({ root, files: F, tests: T, mutants: M });

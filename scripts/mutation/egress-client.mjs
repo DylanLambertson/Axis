@@ -6,10 +6,9 @@
 //
 // Each mutant edits ONE compiled file under dist (or a lint script), runs the tests that must catch it, and restores the
 // file. A mutant whose anchor text is no longer found is STALE and fails the run, so the list keeps up with the code. Lines
-// starting `// equivalent:` record a mutant that cannot change behaviour, and why. Not part of the gate: run it after a
-// change to these files and state the result in the review.
-import { readFileSync, writeFileSync } from "node:fs";
-import { spawnSync } from "node:child_process";
+// with a fifth field are documented equivalents: they run and must survive (scripts/mutation/run.mjs). Not part of the
+// gate: run it after a change to these files and state the result in the review.
+import { runMutants } from "./run.mjs";
 const root = process.argv[2];
 const D = `${root}/packages/daemon-host/dist`;
 const F = {
@@ -29,11 +28,7 @@ const M = [
   ["c", "raw throw", "const closed = (e) => (e instanceof EgressError ? e : new EgressError(\"request_refused\"));", "const closed = (e) => e;"],
   ["c", "method checked", "if (typeof method !== \"string\" || !EGRESS_METHODS.includes(method))\n        throw new EgressError(\"method_refused\");", ""],
   ["c", "integration checked", "if (typeof integration !== \"string\" || !/^[\\x21-\\x7e]{1,128}$/.test(integration))\n        throw new EgressError(\"request_refused\");", ""],
-  // equivalent: without it, copying a non-array throws, which the catch-all makes request_refused before a slot
-  // ["c", "body type", "if (body !== undefined && !(body instanceof Uint8Array))\n        throw new EgressError(\"request_refused\");", ""],
   ["c", "no body on a read", "if (body !== undefined && (method === \"GET\" || method === \"HEAD\"))\n        throw new EgressError(\"request_refused\");", ""],
-  // equivalent: without it Node throws synchronously on a non-AbortSignal, which the catch-all also makes request_refused before anything is sent
-  // ["c", "signal type", "if (req.signal !== undefined && !(req.signal instanceof AbortSignal))\n        throw new EgressError(\"request_refused\");", ""],
   ["c", "headers type", "if (headers !== undefined && (typeof headers !== \"object\" || headers === null || ![Object.prototype, null].includes(Object.getPrototypeOf(headers))))\n        throw new EgressError(\"header_refused\");", ""],
   ["c", "lookup throw caught", "            catch {\n                return cb(new EgressError(\"connect_failed\"));\n            }", "            catch (e) {\n                throw e;\n            }"],
   ["c", "response throw caught", "                        finish(closed(e));\n                    }\n                });", "                        throw e;\n                    }\n                });"],
@@ -45,6 +40,8 @@ const M = [
   ["c", "headers plain", "![Object.prototype, null].includes(Object.getPrototypeOf(headers))", "Array.isArray(headers)"],
   ["x", "spec query stripped", "spec.replace(/[?#].*$/s, \"\")", "spec"],
   ["x", "spec decoded", "path = decodeURIComponent(path);", ""],
+  ["c", "signal type", "if (signal !== undefined && !(signal instanceof AbortSignal))\n        throw new EgressError(\"request_refused\");", "", "without it Node throws synchronously on a non-AbortSignal, which the catch-all also makes request_refused"],
+  ["c", "body type", "if (body !== undefined && !isBytes(body))\n        throw new EgressError(\"request_refused\");", "", "without it, the intrinsic copy throws on a non-array, which the catch-all makes request_refused before a slot"],
   ["x", "namespace import", "else if (named === undefined || !ts.isNamedImports(named)) bad.push(", "else if (named === undefined) bad.push("],
   ["x", "named allowlist", "if (!EGRESS_CLIENT_VALUES.has(name) && !EGRESS_CLIENT_TYPES.has(name)) bad.push(", "if (false) bad.push("],
   ["x", "default import", "else if (clause.name !== undefined) bad.push(", "else if (false) bad.push("],
@@ -122,18 +119,4 @@ const M = [
   ["a", "pin wired", "bad.push(...egressClientPinRefusals(stagedPathOf(file, pkg, pkgRel), source), ", "bad.push("],
   ["i", "lint edge", "if (client !== null && rel.startsWith(`src${sep}`)) return client;", ""],
 ];
-const orig = Object.fromEntries(Object.entries(F).map(([k, f]) => [k, readFileSync(f, "utf8")]));
-let bad = 0;
-try {
-  for (const [f, name, from, to] of M) {
-    const n = orig[f].split(from).length - 1;
-    if (n !== 1) { console.log(`STALE(${n}) ${name}`); bad++; continue; }
-    writeFileSync(F[f], orig[f].replace(from, to));
-    const r = spawnSync(process.execPath, ["--test", "--test-timeout=60000", ...T[f]], { cwd: root, encoding: "utf8", timeout: 300_000 });
-    writeFileSync(F[f], orig[f]);
-    if (r.status === 0) bad++;
-    console.log(`${r.status !== 0 ? "killed " : "SURVIVED"} ${name}`);
-  }
-} finally { for (const k of Object.keys(F)) writeFileSync(F[k], orig[k]); }
-console.log(`${M.length} mutants, ${bad} survived or stale`);
-process.exit(bad ? 1 : 0);
+runMutants({ root, files: F, tests: T, mutants: M });
