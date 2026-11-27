@@ -8,7 +8,7 @@ import { test } from "node:test";
 test("the shipped journal migration is pinned by hash (add a new migration instead of editing it)", async () => {
   const { createHash } = await import("node:crypto");
   const { JOURNAL_MIGRATIONS } = await import("../src/index.js");
-  assert.equal(JOURNAL_MIGRATIONS.length, 20);
+  assert.equal(JOURNAL_MIGRATIONS.length, 21);
   assert.equal(createHash("sha256").update(JOURNAL_MIGRATIONS[0]?.sql ?? "").digest("hex"), "92332f71a375b32c59a45d0059e20ffd5a90090032b72c567ac0698c5db4d2e9");
   assert.equal(createHash("sha256").update(JOURNAL_MIGRATIONS[1]?.sql ?? "").digest("hex"), "9302852a810e1b6069f421ebb3af4b5493bbeb28753da79d24ed832e2571d0bf");
   assert.equal(createHash("sha256").update(JOURNAL_MIGRATIONS[2]?.sql ?? "").digest("hex"), "d5e282807fca70f2c7d4d627af46c38106a0395e67107f20a0c07012adf0d139");
@@ -29,4 +29,5 @@ test("the shipped journal migration is pinned by hash (add a new migration inste
   assert.equal(createHash("sha256").update(JOURNAL_MIGRATIONS[17]?.sql ?? "").digest("hex"), "d1c712fd13537e242e0b6cb7bb04c9f8471d90da8091612f497fef5b9524099c");
   assert.equal(createHash("sha256").update(JOURNAL_MIGRATIONS[18]?.sql ?? "").digest("hex"), "6d54210294c99a1b7d5dc167162b1f65f9e411d5147f7b0b6cd07b0bbbb95a16");
   assert.equal(createHash("sha256").update(JOURNAL_MIGRATIONS[19]?.sql ?? "").digest("hex"), "5e16e1c14187b473483a60fa6762b741bdcc01f06ddd6492474cdc94b7ec7b1d");
+  assert.equal(createHash("sha256").update(JOURNAL_MIGRATIONS[20]?.sql ?? "").digest("hex"), "5af27a9e57fe8f03964e7e7cd5fb7e101f7d098206a36710367ee4f4e4ab85bc");
 });

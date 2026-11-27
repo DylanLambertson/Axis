@@ -32,6 +32,8 @@ export const LOG_EVENTS = [
   "log.invalid",
   // PV-D2 slice 2: one per `gh` run of the forge binding, with the closed state (`reason`) and the exit code (`code`) only.
   "forge.list",
+  // DC-0b: the startup sweep of stale index locks, by count (`reason` removed, kept or sweep_failed); never a path.
+  "host.index_locks",
 ] as const;
 export type LogEvent = (typeof LOG_EVENTS)[number];
 

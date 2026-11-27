@@ -121,6 +121,7 @@ export function registerServing(registrar: HandlerRegistrar, services: HostServi
     ptyRunner: ptyGitRunnerFor(services.gitPath),
     assertNoDrift: (w) => worktrees.assertNoDrift(w),
     excludeDirs: services.excludeDirs,
+    indexLockLedger: journal.indexLocks, // DC-0b: the startup sweep removes only a lock recorded here
   });
   const basesPath = join(config.dataDir, "push-bases.v1.json");
   const reviewDir = join(config.dataDir, "review-index");

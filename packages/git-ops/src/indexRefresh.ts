@@ -75,6 +75,13 @@ function conflictsWithStaying(path: string, staying: readonly string[], has: Rea
   return lo < staying.length && (staying[lo] as string).startsWith(below);
 }
 
+/** Records the identity of the lock file Axis holds (DC-0b), when a ledger is configured. */
+async function recordLock(deps: GitOpsDeps, lock: string): Promise<void> {
+  if (deps.indexLockLedger === undefined) return;
+  const st = await stat(lock, { bigint: true });
+  await deps.indexLockLedger.record({ path: lock, dev: st.dev, ino: st.ino, mtimeNs: st.mtimeNs });
+}
+
 /** The paths of a `diff-index --name-only -z` answer. */
 function names(out: string): Set<string> {
   return new Set(out.split("\0").filter((n) => n !== ""));
@@ -167,6 +174,9 @@ async function refreshOnce(deps: GitOpsDeps, w: WorktreeRef, oldHead: string, ne
       return (e as { code?: unknown }).code === "EEXIST" ? { skipped: "locked" } : { skipped: "failed" };
     }
     lock = `${index}.lock`;
+    // DC-0b: recorded right away, so a crash from here on leaves a lock the startup sweep can prove is Axis's. A record that
+    // cannot be written stops the refresh (the lock is removed below): an unrecorded lock left by a crash would be the user's.
+    await recordLock(deps, lock);
     await hooks.afterLock?.();
     // The copy keeps the index's own times (review 2 S1): git marks "racily clean" entries for a content re-check relative to
     // the index file's mtime, and a copy stamped "now" would make such an entry look clean for good after the rename.
@@ -232,6 +242,8 @@ async function refreshOnce(deps: GitOpsDeps, w: WorktreeRef, oldHead: string, ne
     const write = await daemonGitFor(w, deps, { GIT_INDEX_FILE: lock }, { config: ["core.splitIndex=false"] });
     const upd = await write(["update-index", "-z", "--index-info"], `${lines.join("\0")}\0`);
     if (upd.code !== 0) return { skipped: "failed" };
+    // git wrote the copy through `index.lock.lock` and renamed it over the lock: a new inode, recorded again.
+    await recordLock(deps, lock);
     await chmod(lock, st.mode & 0o7777);
     try {
       await (hooks.rename ?? fsRename)(lock, index);
@@ -244,5 +256,8 @@ async function refreshOnce(deps: GitOpsDeps, w: WorktreeRef, oldHead: string, ne
     return { skipped: "failed" };
   } finally {
     if (lock !== undefined && !renamed) await rm(lock, { force: true }).catch(() => undefined);
+    // The lock is gone (renamed into the index or removed): its record goes too. A failed clear leaves a record whose file no
+    // longer matches, which the sweep only deletes.
+    if (lock !== undefined) await Promise.resolve(deps.indexLockLedger?.clear(lock)).catch(() => undefined);
   }
 }
