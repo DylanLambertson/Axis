@@ -29,7 +29,9 @@ This list is the gate; the PV-K2 ticket row points here.
 6. **The connection is still there.** A plugin's run start checks that the plugin's connection, and so its host window, is still
    open after the spend and right before the run is recorded. Today a start whose host window closes after the spend still goes
    ahead (review 2 of PV-K1e-b; a user's own start behaves the same). A test closes the host window at each step after the spend
-   and asserts that nothing is created.
+   and asserts that nothing is created. **Precondition of this condition** (2026-11-27, owner delegation): the own shell's main
+   sends the daemon `window.gone` when a window is destroyed or its renderer dies (own-shell plan OS-3). Until then a window's
+   lifetime ends at its last connection's close, and only a renderer death that no connection reports is missed.
 
 ## 2. The calls
 
@@ -171,8 +173,8 @@ project and the permission's wording. So the line follows the task Start pattern
 
 ## 8. Implementation plan
 
-Five slices, each its own PR with a security-critical review. The first four can merge while the grant calls stay switched off;
-the fifth switches them on, and only once all six conditions of section 1 hold. Today nothing in production writes a grant: only
+Six slices, each its own PR with a security-critical review. The first five can merge while the grant calls stay switched off;
+the sixth (K2-enable) switches them on, and only once all six conditions of section 1 hold. Today nothing in production writes a grant: only
 tests call `journal.plugins.grant` and `setEnabled`.
 
 ### 8.1 Slices
@@ -182,8 +184,9 @@ tests call `journal.plugins.grant` and `setEnabled`.
 | **K2-g1** | `axis.plugins/1` in the protocol with `list`, `revoke` and `disable` handlers; the policy rows (user only; outside `WEB_ALLOWED`; `axis.plugins/` added to `PLUGIN_DENY_CONTRACTS`); `approvals.endPlugin(pluginId, projectId)`. **Built.** A revoke of a permission not granted answers `E_NOT_FOUND` (`not_granted`) and changes nothing; a disable of a plugin already off answers its unchanged state. | PV-K1e-b (merged) | M |
 | **K2-g2** | `grant` and `enable` at tier 4: the content hook (the versioned tuple digest, the project mutex at the spend), the native line builder of section 3.1, and `already_granted`. Registered but switched off: the handler refuses with `E_UNAVAILABLE` unless the host option `pluginGrants` is on, and it is off in production. **Built, off.** An enable of a plugin already on is refused at issue (`already_enabled`), as a grant that exists is (`already_granted`); neither shows a dialog. It provides none of the six conditions' evidence (section 8.2): K2-enable stays blocked. | K2-g1 | M-L |
 | **K2-g3** | **Condition 4, by construction.** The journal mints grant tokens and hands its minting function out once (`takeGrantMint`), to the approved action at wiring time; `grant` and `setEnabled(…, true)` refuse any write without a token of that instance (section 8.4). | K2-g2 | S |
-| **K2-g4** | **Condition 6.** Window lifetimes (epochs) in the daemon and main's window-gone notice; the plugin's binding pins the host window's epoch at issue; the start checks it at entry, under the mutex and in the service's synchronous creation step (section 8.4). | PV-K1e-b | M |
-| **K2-enable** | Turns `pluginGrants` on in the production composition. Merges only when conditions 1, 2, 3 and 5 hold, and K2-g3 and K2-g4 are on `main`. Also before it merges: the dialog's short plugin id is widened, or the whole id is shown (section 3.1, review K2-g2 N2). | all above; OS-30; PV-K3 | S (code), plus the evidence |
+| **K2-g4a** | **Condition 6, the daemon part.** The lifecycle hook in `@axis/daemon` (`DaemonOptions.lifecycle`: `accepted`, `closed`, once per attested session); the strict `window.gone { windowId }` control message and its shell-independent sender in `daemon-host/src/main`; `WindowLifetimes` (epoch, counts, the ring of ended epochs, `alive`) with the epoch-rule tests. Not wired into the Code OSS seam (section 8.4). | PV-K1e-b | M |
+| **K2-g4b** | **Condition 6, the binding and the checks.** `PluginChallenges` pins the host window's epoch at issue; `valid()` requires it alive; `ApprovedPluginStart` carries it; the three start checks (handler entry, the mutex, the service's synchronous step) test it and the plugin connection's signal; the tests at each await after the spend: plugin close, last host close, close then reopen, `window.gone`. | K2-g4a | M |
+| **K2-enable** | Turns `pluginGrants` on in the production composition. Merges only when conditions 1, 2, 3 and 5 hold, and K2-g3, K2-g4a and K2-g4b are on `main`. Also before it merges: the dialog's short plugin id is widened, or the whole id is shown (section 3.1, review K2-g2 N2). | all above; OS-30; PV-K3 | S (code), plus the evidence |
 
 Install, update, signatures and extraction (ADR 0008 decisions 7 and 8) are the other PV-K2 tickets. They propose grants and
 call `grant` once per permission (decision 1). They never write the store directly, because K2-g3's token makes that impossible.
@@ -197,7 +200,7 @@ call `grant` once per permission (decision 1). They never write the store direct
 | 3 | A real-host test | A test on the composed host with a signed plugin attestation. It sends a request to the host window's pending list, reads the detail, resolves, spends, and checks the run is created as `plugin:<id>` and tainted. It also covers out of scope, ungranted, a generation change, and a closed host window. | K2-enable, after PV-K3 (section 8.5) |
 | 4 | Every grant path | K2-g3's write token, plus a test that a grant written without it is refused, and the caller pin. | K2-g3 |
 | 5 | The tier | The owner's recorded decision on PV-K1e-T4. If tier 4 is chosen, a slice before K2-enable raises `PLUGIN_MAX_TIER` and teaches `PluginChallenges.prepare` the native path, with tests. | decision row, maybe a slice |
-| 6 | The connection | K2-g4's test closes the host window at each step after the spend and asserts that nothing is created. | K2-g4 |
+| 6 | The connection | K2-g4b's test closes the host window at each step after the spend and asserts that nothing is created. | K2-g4 |
 
 ### 8.3 What each slice's PR must show
 
@@ -293,12 +296,12 @@ merge. Its compensating controls are the construction rule and review. A test pi
 second `Journal.open` over the same handle can mint. If a per-database authority is chosen later (option (a) of review 3), that
 test flips and the row closes.
 
-**K2-g4: a closed connection or host window stops the start.**
+**K2-g4 (a: the daemon part; b: the binding and the checks): a closed connection or host window stops the start.**
 
 - **The plugin connection.**
   - When it closes, the daemon aborts every in-flight request of that connection (`session.ts` `close()`), and the handler's
     `context.signal` is that request's.
-  - The service checks the signal after `engine.prepare`, and K2-g4 checks it again inside the synchronous creation step, next
+  - The service checks the signal after `engine.prepare`, and K2-g4b checks it again inside the synchronous creation step, next
     to `grantHolds`.
 - **The host window: lifetimes, not counts.**
   - The window id `w<n>` stays the same across a renderer reload or reconnect (main derives it from the code window), so it
@@ -309,9 +312,17 @@ test flips and the row closes.
     - the last close ends the epoch for good;
     - a rejected handshake changes nothing;
     - a close reported twice is counted once.
-  - **Unreported death.** Main owns the window lifecycle: when a code window is destroyed or its renderer is gone, main sends the
-    daemon a `window.gone` control notice, which ends that window's epoch even if a connection's close was never reported. The
-    supported transports report a close when their port closes, and the crash tests cover the rest.
+  - **Where the counts come from:** a lifecycle hook in `@axis/daemon`, `DaemonOptions.lifecycle` with `accepted(identity)` and
+    `closed(identity)`. It is called once per attested session, since only the daemon knows when a session was attested and when
+    it closed. The host's `WindowLifetimes` keeps the epochs from it, with a bounded ring of ended epochs so an ended one is
+    answered as ended, not as unknown.
+  - **Unreported death.** Main owns the window lifecycle. A shell-independent sender in `daemon-host/src/main` sends the daemon a
+    strict `window.gone { windowId }` control message, which ends that window's epoch even if a connection's close was never
+    reported. Main calls it when a window is destroyed or its renderer dies.
+    - The Code OSS seam does **not** call it: the owner stopped new Code-OSS-only work (2026-11-27). The own shell's main
+      (OS-3) wires it, and that wiring is a precondition of condition 6.
+    - Until then the epoch ends at the window's last connection close, and only a renderer death that no connection reports is
+      missed.
 - **Pinned at issue.** The plugin's challenge binding records the host window's epoch when the challenge is issued.
   - `valid()` fails when that epoch has ended, so resolve, detail and the spend refuse a challenge whose window closed even once,
     including a close followed by a reconnect.
