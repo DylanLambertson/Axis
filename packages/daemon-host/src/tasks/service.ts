@@ -74,7 +74,7 @@ export interface TasksService {
   unlink(req: TasksRequest<"unlink">): TasksResponse<"unlink">;
   delete(req: TasksRequest<"delete">): TasksResponse<"delete">;
   /** A task as a run may see it: only one of its worker's project, else `not_found`. */
-  readForRun(caller: WorkerCaller, taskId: string, seq?: number): { readonly task: TaskRecord; readonly title: string; readonly body: string; readonly seq: number; readonly authors: readonly TaskAuthor[] };
+  readForRun(caller: WorkerCaller, taskId: string, seq?: number): { readonly task: TaskRecord; readonly title: string; readonly body: string; readonly seq: number; readonly author: TaskAuthor; readonly authors: readonly TaskAuthor[] };
   /** The project's tasks for a run: an untrusted task's title is never shown (ids, status and the flag only). */
   listForRun(caller: WorkerCaller): readonly { readonly taskId: string; readonly status: string; readonly untrusted: boolean; readonly title: string | null }[];
 }
@@ -199,7 +199,7 @@ export function createTasksService(deps: TasksServiceDeps): TasksService {
       const task = get(taskId);
       const r = store.revision(taskId, seq) ?? NOT_FOUND();
       const authors = store.revisions(taskId).map((m) => m.author);
-      return { task, title: r.title, body: r.body, seq: r.seq, authors };
+      return { task, title: r.title, body: r.body, seq: r.seq, author: r.author, authors };
     },
     listForRun: (caller) =>
       store.list(caller.projectId).map((t) => ({ taskId: t.taskId, status: t.status, untrusted: t.untrusted, title: t.untrusted ? null : current(t.taskId).title })),
