@@ -60,9 +60,18 @@ export interface ProjectActionsOptions {
 type Answer = Extract<OutboundMessage, { type: "projects.inspected" | "projects.result" }>;
 type Inspected = Extract<Answer, { type: "projects.inspected"; ok: true }>;
 
+/**
+ * Main's answer to the renderer. `projectId` is present only on `status_trusted` and `status_read_only`: the opaque journal id of
+ * THIS window's registered project (the renderer already receives it in axis.projects/1.list), so the dashboard can show that
+ * project's home (PV-D1-0). Never a name, a path or another project's id.
+ */
+export type ProjectActionResult =
+  | { readonly nonce: string; readonly outcome: ProjectOutcome }
+  | { readonly nonce: string; readonly outcome: "status_trusted" | "status_read_only"; readonly projectId: string };
+
 export interface ProjectActions {
   /** One renderer request from `codeWindowId` (resolved by main from the IPC sender). Never throws. */
-  act(codeWindowId: number, payload: unknown): Promise<{ readonly nonce: string; readonly outcome: ProjectOutcome } | undefined>;
+  act(codeWindowId: number, payload: unknown): Promise<ProjectActionResult | undefined>;
   /** A code window closed: its rate-limit and in-flight entries go (nothing per window outlives it). */
   windowClosed(codeWindowId: number): void;
   /** `projects.inspected` / `projects.result` from the host; true when it answered one of ours. */
@@ -160,13 +169,15 @@ export function createProjectActions(o: ProjectActionsOptions): ProjectActions {
     return r.refused === "queue_full" ? "busy" : "unavailable";
   };
 
-  async function status(codeWindowId: number): Promise<ProjectOutcome> {
+  type StatusAnswer = { outcome: ProjectOutcome } | { outcome: "status_trusted" | "status_read_only"; projectId: string };
+  async function status(codeWindowId: number): Promise<StatusAnswer> {
     const folder = o.windowFolder(codeWindowId);
-    if (folder === undefined) return "no_folder";
+    if (folder === undefined) return { outcome: "no_folder" };
     const i = await inspect(folder);
     // Only the closed status answers, or no_folder / unavailable / refused (a folder that is not a repository is just refused).
-    if (typeof i === "string") return i === "not_a_repository" ? "refused" : i;
-    return i.registered === undefined ? "status_not_registered" : i.registered.trusted ? "status_trusted" : "status_read_only";
+    if (typeof i === "string") return { outcome: i === "not_a_repository" ? "refused" : i };
+    if (i.registered === undefined) return { outcome: "status_not_registered" };
+    return { outcome: i.registered.trusted ? "status_trusted" : "status_read_only", projectId: i.registered.projectId };
   }
 
   /** A per-window bucket: false (and nothing recorded) when the window already has `limit` in the last minute. */
@@ -225,7 +236,7 @@ export function createProjectActions(o: ProjectActionsOptions): ProjectActions {
         if (statusBusy.has(codeWindowId) || !take(statusRecent, codeWindowId, STATUS_PER_MINUTE)) return { nonce, outcome: "busy" };
         statusBusy.add(codeWindowId);
         try {
-          return { nonce, outcome: await status(codeWindowId) };
+          return { nonce, ...(await status(codeWindowId)) };
         } catch {
           return { nonce, outcome: "unavailable" };
         } finally {
