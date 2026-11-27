@@ -1,6 +1,6 @@
 # The plugin grant contract (ticket PV-K2, grant part)
 
-- **Status:** design only, not built. Date 2026-11-26; revised 2026-11-27 after review 1 (Codex) and the decisions of
+- **Status:** design only, not built. Date 2026-11-26; revised 2026-11-27 after review 1 and the decisions of
   2026-11-26 (owner delegation, reversible).
 - **Scope:** who may write `plugin_enablement` and `plugin_grants` (journal v16, PV-K1b), through which calls, what each write is
   bound to, and what a revoke or a disable ends.
