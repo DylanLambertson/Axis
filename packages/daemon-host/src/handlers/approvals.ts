@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import { ChallengeError } from "@axis/challenge";
 import { DaemonError, type Handler, type HandlerContext } from "@axis/daemon";
-import { approvalsPendingResponseSchema, approvalsResolveResponseSchema, resolveChallengeRequestSchema } from "@axis/protocol";
+import { approvalsDetailRequestSchema, approvalsDetailResponseSchema, approvalsPendingResponseSchema, approvalsResolveResponseSchema, resolveChallengeRequestSchema } from "@axis/protocol";
 import type { ApprovalsPort } from "../gate/approvals.js";
 
 /**
@@ -84,7 +84,32 @@ export function createApprovalsPendingHandler(deps: ApprovalsHandlerDeps): Handl
   };
 }
 
+/**
+ * `detail` (PV-K1e-a2): the full request of one pending plugin challenge of the caller's own window. Only the user's desktop
+ * connection reads it; an unknown id, another window, a web client, a plugin or a worker, an ended challenge and a binding that
+ * no longer holds all get the same `E_NOT_FOUND`, so the method tells nobody which challenges exist elsewhere.
+ */
+export function createApprovalsDetailHandler(deps: ApprovalsHandlerDeps): Handler {
+  return (context: HandlerContext, payload: never) => {
+    if (context.signal.aborted) return fail("E_CANCELLED", "The request was cancelled.");
+    const { identity } = context;
+    if (identity.actor !== "user" || identity.clientKind !== "desktop") return fail("E_NOT_FOUND", NOT_AVAILABLE);
+    const request = approvalsDetailRequestSchema.safeParse(payload);
+    if (!request.success) return fail("E_INVALID_ARGUMENT", "The confirmation request is invalid.");
+    let detail;
+    try {
+      detail = deps.approvals.detail({ actor: identity.actor, windowId: identity.windowId, clientKind: identity.clientKind }, request.data.challengeId);
+    } catch {
+      return fail("E_INTERNAL", "The confirmation could not be processed.");
+    }
+    if (detail === undefined) return fail("E_NOT_FOUND", NOT_AVAILABLE);
+    const answer = approvalsDetailResponseSchema.safeParse({ challengeId: request.data.challengeId, detail });
+    if (!answer.success) return fail("E_INTERNAL", "The confirmation could not be processed.");
+    return answer.data;
+  };
+}
+
 /** The handlers of this contract by method name, as the registry assembly (design section 4) expects them. */
-export function createApprovalsHandlers(deps: ApprovalsHandlerDeps): { readonly resolve: Handler; readonly pending: Handler } {
-  return { resolve: createApprovalsResolveHandler(deps), pending: createApprovalsPendingHandler(deps) };
+export function createApprovalsHandlers(deps: ApprovalsHandlerDeps): { readonly resolve: Handler; readonly pending: Handler; readonly detail: Handler } {
+  return { resolve: createApprovalsResolveHandler(deps), pending: createApprovalsPendingHandler(deps), detail: createApprovalsDetailHandler(deps) };
 }

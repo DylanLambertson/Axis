@@ -4,7 +4,11 @@ import { z } from "zod";
 import { canonicalJson, requestDigest } from "./crypto.js";
 import { ChallengeError } from "./errors.js";
 
-const ACTOR = /^(?:user|daemon|agent:[A-Za-z0-9._/-]{1,96})$/;
+/**
+ * A requester: the user, the daemon, a worker (`agent:<id>`) or, since PV-K1e-a2, a plugin (`plugin:<id>`, the audit log's rule):
+ * a plugin may cause a challenge and consume its approval on its own connection, but only `user` ever resolves one.
+ */
+const ACTOR = /^(?:user|daemon|agent:[A-Za-z0-9._/-]{1,96}|plugin:(?=[a-z0-9.-]{1,64}$)[a-z][a-z0-9-]*(?:\.[a-z][a-z0-9-]*){0,3})$/;
 const WINDOW = /^[A-Za-z0-9._:-]{1,64}$/;
 /**
  * Text a native dialog may show. Refuses control characters (C0, DEL, C1,
@@ -14,7 +18,7 @@ const WINDOW = /^[A-Za-z0-9._:-]{1,64}$/;
  */
 export const displaySafe = (s: string): boolean => !/[\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}]/u.test(s);
 
-export type ActorId = "user" | "daemon" | `agent:${string}`;
+export type ActorId = "user" | "daemon" | `agent:${string}` | `plugin:${string}`;
 
 /** Structurally compatible with `@axis/audit`'s `AuditSink`; not imported so the packages stay decoupled. */
 export interface ChallengeAuditEvent {

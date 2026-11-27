@@ -151,7 +151,10 @@ export async function runApproval(a: ApprovalStep): Promise<Outcome> {
       return fail("E_INTERNAL", "Internal error");
     }
     await auditor.soft("denied", { decision: "allow", reason: "approval_required" });
-    return fail("E_APPROVAL_REQUIRED", "Confirmation required", { challenge: challenge as unknown as JsonValue });
+    // A plugin learns the challenge id only (PV-K1e-a2): what it asked for is shown to the user in its host window, never
+    // echoed back. Every other requester gets the challenge as before.
+    const shown = identity.clientKind === "plugin" ? { challengeId: (challenge as { challengeId: string }).challengeId } : challenge;
+    return fail("E_APPROVAL_REQUIRED", "Confirmation required", { challenge: shown as unknown as JsonValue });
   }
 
   // Spend the approval and run the action inside it, under the content lock. The action runs at most once.
