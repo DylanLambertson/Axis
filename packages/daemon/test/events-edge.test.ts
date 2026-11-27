@@ -53,6 +53,7 @@ test("EV10 acks: before the handshake an ack closes the connection; an unknown o
 test("EV11 Subscription unit: coalescing keys, nothing before activation, end only for an active subscription", () => {
   assert.equal(coalesceKey({ topic: "workspaces", workspaceId: "a" }), "workspaces:a");
   assert.equal(coalesceKey({ topic: "runs", runId: "a" }), "runs:a");
+  assert.equal(coalesceKey({ topic: "tasks", projectId: "a" }), "tasks:a", "one queued hint per project, not one for all");
   assert.equal(coalesceKey({ topic: "anchor", stalled: true }), "anchor");
   const sent: OutboundFrame[] = [];
   const s = new Subscription("S".repeat(22), new Set(["anchor", "audit"]), "w", { window: 4, queueMax: 2 }, (f) => sent.push(f), () => 7);

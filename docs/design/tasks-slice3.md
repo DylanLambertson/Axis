@@ -99,4 +99,4 @@ For the own-shell plan. Most of it is served already. The gaps are marked.
    - A Start does not link the run to the task or move it to `in_progress`. Proposed for the daemon: `start` adds a `run` link and sets `in_progress` in the same transaction as its `task.start` row.
    - Then the task view shows its run with no extra call.
    - A worker cannot trigger it. It happens only inside `axis.tasks/1.start`, the user's own tier-4 action that main's dialog confirms. The worker tools have no link or status call, and runs reach no `axis.tasks/1` row.
-7. **Freshness: GAP.** `axis.events/1` has no tasks topic, so the shell would have to poll `list`. Proposed: a `tasks` topic (an invalidation hint per project carrying no text: the shell then calls `list`, as for the other topics).
+7. **Freshness: built.** The `tasks` topic of `axis.events/1` (`events.md` §1 and §4): an invalidation hint per project, `{ topic: "tasks", projectId }`, carrying no text; the shell then calls `list`, as for the other topics.

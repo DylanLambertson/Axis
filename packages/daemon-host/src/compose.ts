@@ -346,6 +346,7 @@ export function composeDaemonHost(options: ComposeOptions): ComposedHost {
         hub: events,
         journal: services.journalRead,
         auditHead: () => services.auditRead.head()?.seq ?? 0,
+        auditSince: (afterSeq, limit) => services.auditRead.list({ afterSeq, limit }),
         anchorStalled: () => services.anchors.status().stalled,
         pending: (windowId) => approvals?.port.pending(windowId) ?? [],
         ...(options.eventPumpMs === undefined ? {} : { intervalMs: options.eventPumpMs }),
