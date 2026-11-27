@@ -38,6 +38,8 @@ for (const sig of ["SIGTERM", "SIGINT", "SIGHUP"]) {
 const never = () => new Promise(() => {});
 const run = async (name, command, args) => {
   if (terminating) return never();
+  // The gate reads this line to name the suite a killed run was in (a run cut off by a time limit prints no summary).
+  console.log(`\n== running ${name}`);
   const result = await runSuite(name, command, args, { cwd: root });
   return terminating ? never() : result;
 };
