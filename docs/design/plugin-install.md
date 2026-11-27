@@ -1,7 +1,9 @@
 # Plugin packages: manifest, signature, extraction, install and update (ticket PV-K2, package part)
 
 - **Status:** design only, not built. Date 2026-11-27; revised the same day after review 1 (package scope, a durable
-  publication protocol, reinstall, curated downgrade, load bounds, portable names, audit) and the decisions on its open points.
+  publication protocol, reinstall, curated downgrade, load bounds, portable names, audit) and the decisions on its open points,
+  and after review 2 (the package lock, consent bound to the revision, identity equality, downgrade-reinstall, the stored
+  listing).
 - **Scope:** the plugin package (manifest, files, signature), where a signature's trust comes from, how an archive is verified
   and extracted, and the install, update, uninstall and load-integrity flows. The grant calls are
   `plugin-grant-contract.md`'s; this note only says how install and update reach them.
@@ -68,9 +70,17 @@ cannot give two hashes for one bundle or one hash for two. Repacking a bundle ke
 
 ### 2.4 Packages and installations
 
-- A **package** is identified by `(id, version, bundleHash)`; its **identity hash** is the SHA-256 of
-  `id NUL version NUL bundleHash`, 64 hex digits. It is stored at `<dataDir>/plugins/packages/<identity hash>/` and never
-  changes after publication. Any number of installations may reference it.
+- A **package** is everything immutable about one verified archive: the id, the version, the bundle hash, the canonical
+  manifest, the kind (curated or unsigned) and the curated publisher key. Its **identity hash** is the SHA-256 of
+  `axis.plugin.package/1 NUL id NUL version NUL bundleHash NUL sha256(canonical manifest) NUL kind NUL publisherKey-or-empty`,
+  64 hex digits. Two archives with the same bundle but different manifests or provenance are therefore **different packages**,
+  and an existing identity can only ever be the same package (review 2 S2). A row whose identity exists but whose stored fields
+  differ is refused `identity_conflict` (only a hash collision could cause it), never repaired.
+- The package's files are stored at `<dataDir>/plugins/packages/<identity hash>/bundle/`, and nothing else is in that directory:
+  the manifest and the signature live in the journal row (§6.1). The directory never changes after publication. Any number of
+  installations may reference it.
+- The **canonical listing** of §2.3 is stored with the package row. Its SHA-256 is the bundle hash, so the stored listing is
+  authenticated by the trusted hash, and it is the expectation every later check reads (§5.6).
 - An **installation** is one plugin in one project: its package identity, its state (`installed` or `uninstalled`), a
   **revision** that rises by one at every committed install, update, downgrade or uninstall, the highest version ever installed
   there, and the curated publisher key it was bound to (if any). Requests and grants hang off the installation.
@@ -208,7 +218,8 @@ fixtures on every platform, not only on Windows.
   commit can never move a version the user did not see.
 - Codes are closed: `not_a_file`, `too_large`, `bad_archive`, `bad_entry`, `bad_manifest`, `p2_refused`, `permission_refused`,
   `bad_signature`, `curated_mismatch`, `key_changed`, `not_listed`, `list_expired`, `list_refused`, `other_plugin`,
-  `lower_version`, `not_installed`, `already_installed`, `changed_since_inspect`, `expired`, `busy`, `unavailable`.
+  `lower_version`, `not_installed`, `already_installed`, `changed_since_inspect`, `identity_conflict`, `expired`, `busy`,
+  `unavailable`.
 - Main keeps its project-action rules: the shared native queue, one action per window, 6 a minute, the cancel cooldown, and a
   dialog closed by window close, abort or a new supervisor generation (the staging record dies with its generation).
 
@@ -225,14 +236,19 @@ fixtures on every platform, not only on Windows.
 
 **Reinstall** after an uninstall reuses the retained enablement row (disabled, no grants, its generation and issue counters
 kept): `journal.plugins.add` is called only for a plugin and project never seen before. The installation's highest version and
-curated key are kept, so a reinstall below the highest version needs `mode: "downgrade"`, and a curated installation stays bound
-to its key.
+curated key are kept, and a curated installation stays bound to its key.
+- `mode: "install"` on an uninstalled installation reinstalls a version at or above the highest one.
+- A lower version needs `mode: "downgrade"`, which also accepts an uninstalled installation (§5.3).
 
 ### 5.3 Update and downgrade
 
 - `mode: "update"` names the installed plugin. Refused: `not_installed`, `other_plugin` (a package of another id), a version not
   above the installed one (`lower_version`), `key_changed`, a curated installation receiving an unsigned package.
-  `mode: "downgrade"` permits a lower version ("Install an older version?" with a fixed warning); it is otherwise an update.
+- `mode: "downgrade"` permits a version below the installed one, or below the highest one when the installation is
+  **uninstalled** (review 2 S3). The dialog is "Install an older version?" with a fixed warning, the baseline being the installed
+  version or, when uninstalled, the last installed one and "not installed now". An uninstalled target commits like a reinstall:
+  it reuses the retained enablement row, raises the revision and keeps the generation, the issue counters, the highest version
+  and the curated key. Otherwise a downgrade is an update.
 - **The diff** compares the canonical manifests over tier, permissions, origins, contribution points and integrations, and is
   shown **even when empty** (OI-6, 4a/L26): "Update this plugin?", the old and new version, the publisher, the diff.
 - **On commit** (one transaction, §5.4):
@@ -249,35 +265,54 @@ to its key.
 
 ### 5.4 Publication and recovery
 
-The **commit point** is the journal transaction. Files are published before it, and anything unreferenced afterwards is garbage.
-1. **Verified staging.** Inspection leaves a staging directory whose files are written, `fsync`ed, and whose directories are
-   `fsync`ed.
-2. **Publish.** If `packages/<identity hash>/` exists, its full content is verified against the expected listing (§5.6's bounded
-   check):
-   - equal: the staging copy is discarded and the existing one used;
-   - different (corruption or tampering): it is moved to `plugins/quarantine/<random>/` and the staging copy takes its place.
+**One package lock.** Packages are shared, so publication and collection are serialised by one daemon-wide asynchronous lock (the
+package lock) over every package and quarantine directory. The order is fixed: a project mutex first, then the package lock;
+nothing takes a project mutex while it holds the package lock. Only one daemon process holds a data directory (the host lock), so
+the lock is in memory.
 
-   Otherwise the staging directory is renamed into place and the parent folder is `fsync`ed. Nothing referenced is ever written
-   over.
-3. **Commit** (synchronous, `withTransaction`; no await inside):
+**Pins.** A live staging record pins its staging directory. A commit pins its target identity from publication until its
+transaction has committed or failed. Collection never removes a pinned directory.
+
+**The commit point** is the journal transaction. Files are published before it, under the package lock held through it:
+1. **Verified staging** (inspection, no lock needed: the directory is private and pinned): files written and `fsync`ed, then their
+   directories `fsync`ed.
+2. **Publish** (the project mutex, then the package lock; the identity pinned):
+   - if `packages/<identity>/` does not exist, the staging directory is renamed there and the parent is `fsync`ed;
+   - if it exists and a package row references the identity, it is verified against the row's stored listing (§5.6's bounded
+     check). Equal: the staging copy is discarded and the existing one reused. Different: the existing directory is moved to
+     `plugins/quarantine/<random>/` (parent `fsync`ed), then the staging copy is renamed into place (parent `fsync`ed);
+   - if it exists with no row (a publication that never committed), it is unreferenced garbage. It is verified against the
+     staging record's listing and reused if equal; otherwise it is quarantined and replaced as above.
+
+   Every decision is taken under the package lock, so no other publication, quarantine or deletion can interleave between the
+   check and the rename, and a second install of the same identity waits, then finds the directory and verifies it.
+3. **Commit** (still under both locks; synchronous `withTransaction`, no await inside):
+   - the package row if new (an existing row must have equal fields, else `identity_conflict`);
    - the installation row (created, pointed at the new identity, or reinstalled), its revision and highest version;
    - the requests, and the grant revocations of §5.3;
    - `journal.plugins.add` for a new pair only;
    - the audit row (§7).
+4. **Release** the pin and the package lock, then, still under the project mutex: end the challenges (§5.3), tell PV-K3 (§5.6),
+   release the mutex, and collect garbage (§5.7). These post-commit steps never turn a committed install into a refusal: the
+   reply is `ok`, a failure is logged and audited, and each step is safe to repeat.
 
-   If it fails, nothing is installed, and step 2's directory is unreferenced garbage.
-4. **After commit:** end the challenges (§5.3), tell PV-K3 (§5.6), and collect garbage.
-
-| Crash after | What is on disk and in the journal | What the next start does |
+| Fault or crash | State | Outcome |
 |---|---|---|
-| step 1 | a staging directory | removes every staging directory |
-| step 2 | a published directory, no reference | removes unreferenced package directories |
-| step 3 | committed; the old version's directory unreferenced (update) | removes it; the installation already points at the new one |
-| step 4 | committed; challenges not ended | none survive a restart (they are in memory); garbage collected |
+| during staging (disk full, fsync error) | a partial staging directory, no row | refused; the staging directory is removed now or at start |
+| after staging fsync, before the rename | staging only | the next start removes staging; nothing installed |
+| after the rename, before the parent fsync | the directory may or may not survive; no row | either way unreferenced: collected at start |
+| after the parent fsync, before the commit | a published directory, no row | collected at start |
+| the commit fails (disk full, constraint) | a published directory, no new row; the old version still referenced | refused; the directory is collected; the old version still loads |
+| after a quarantine move, before the replacement rename | the identity directory absent, a quarantine entry, no new row | refused or crashed before commit: an existing row's package is missing, so its next load fails closed (§5.6) and a reinstall of the same identity republishes it |
+| after the commit, before the challenges end | committed | the challenges are in memory and do not survive a restart; at runtime the binding's revision check refuses them anyway (§5.3) |
+| after the commit, before PV-K3 is told | committed | the old views fail closed: a plugin connection is bound to the revision current when it was accepted, and its calls are refused once that revision is stale (§5.6) |
+| during collection | a directory partly deleted | it is still unreferenced: collected again at start |
 
-The working version is never touched before the commit, so a failed or interrupted update leaves the old version installed and
-loadable. Uninstall commits first, then collects garbage (§5.5). Tests inject a crash (a thrown fault, then a fresh process on
-the same data directory) after each step and assert the table's outcome.
+At start, before any connection is accepted: staging is removed, then, under the package lock, each package directory with no
+referencing row is removed. There are no live views to reconcile at start; views created later read the committed revision.
+Tests inject each fault of the table at its point (with fault-injecting file-system and fsync ports, then a fresh process on
+the same data directory), plus two concurrent installs of one identity in two projects, and collection racing a publication;
+every committed installation must have its package, and every precommit fault must leave the old version loadable.
 
 ### 5.5 Uninstall
 
@@ -295,13 +330,14 @@ references it. Other projects' installations are untouched.
 ### 5.6 Loading and integrity (the handoff to PV-K3)
 
 `verifyInstalled(projectId, pluginId)` returns the buffers to serve for the installation's current package and revision, or
-nothing. It enumerates the package directory with a bounded walk:
-- at most 2,000 entries, 16 deep;
+nothing. The expectation is the listing stored in the package row (§2.4), whose SHA-256 must equal the row's bundle hash before
+it is used; nothing is reconstructed from the directory under test. It enumerates the package directory with a bounded walk:
+- the root holds exactly `bundle/`; under it at most 2,000 entries, 16 deep;
 - every entry `lstat`ed;
-- refused on a link, a non-regular file, anything outside the root, or a file not in the expected listing.
+- refused on a link, a non-regular file, anything outside the root, or a file not in the stored listing.
 
-Then it opens each expected file without following links, checks its size against the listing (at most 10 MiB, 50 MiB in total),
-reads at most that size plus one byte, and hashes it. The bundle hash must match.
+Then it opens each listed file without following links, checks its size against the listing (each at most 10 MiB, 50 MiB in
+total), reads at most that size plus one byte, and compares its SHA-256 with the listed one.
 - The walk and the reads are bounded in time by an abort signal.
 - **Any failure** (a mismatch, an extra or missing file, a link, an oversize, a growth during the read, a timeout, an I/O error)
   takes the same path: the plugin is disabled in every project that installs this package, `plugin.integrity_failed` is
@@ -309,11 +345,17 @@ reads at most that size plus one byte, and hashes it. The bundle hash must match
 - PV-K3 serves only the returned buffers. Each view is bound to the installation revision it loaded, and an update or uninstall
   (a revision change) retires the project's views of that plugin, so an old view can never act under requests or grants meant
   for the replacement.
+- **Fail closed without the notice:** the daemon records the installation revision when it accepts a plugin connection (the
+  K2-g4a lifecycle hook), and refuses that connection's calls once the revision has moved (`plugin_updated`). A missed or late
+  notice to PV-K3 therefore leaves no old view able to act. This is a PV-K3 requirement, tested there.
 
 ### 5.7 Garbage
 
-At every start, and after each commit: every staging directory not held by a live staging record is removed, and every package
-directory that no installation references (installed or uninstalled) is removed. Quarantine is kept for the user to inspect, at
+At every start, and after each commit, under the package lock: every staging directory not pinned by a live staging record is
+removed, and every package directory that is not pinned and that no installation references (installed or uninstalled) is
+removed. References are read from the journal synchronously under the lock, immediately before each deletion, so a deletion
+can never follow a stale snapshot. An uninstalled installation keeps its package (a retention choice: the reinstall and its
+history need it). Quarantine is kept for the user to inspect, at
 most 4 entries (the oldest removed first). Collection is the daemon's own work and is audited as `daemon` (§7).
 
 ## 6. The journal (one schema version: the next free one when K2-p3 lands)
@@ -321,8 +363,10 @@ most 4 entries (the oldest removed first). Collection is the daemon's own work a
 ### 6.1 Tables (all `STRICT`)
 
 - `plugin_packages`: `identity` (64 hex, key), `plugin_id`, `version`, `tier`, `bundle_hash` (64 hex), `manifest` (the canonical
-  JSON, at most 64 KiB), `kind` (`curated` or `unsigned`), `publisher_key` (canonical base64url, present exactly for `curated`).
-  A row is inserted once and never changed.
+  JSON, at most 64 KiB), `kind` (`curated` or `unsigned`), `publisher_key` (canonical base64url, present exactly for `curated`),
+  `signature` (the signature file's canonical JSON, or null), `listing` (the canonical listing of §2.3, at most 2,000 records and
+  2.5 MiB; its SHA-256 equals `bundle_hash`, checked on insert by the store and on every read). A row is inserted once and never
+  changed; an update or delete trigger refuses it.
 - `plugin_installations`: `plugin_id`, `project_id` (key together), `identity` (references `plugin_packages`), `state`
   (`installed` or `uninstalled`), `revision` (rises by one per commit; a trigger refuses any other change), `highest_version`
   (never lowered), `curated_key` (set once by the first curated install; refused if changed).
@@ -341,7 +385,13 @@ writer of user rows). No table or store method mints a grant token or reaches th
   the grant action writes, together with the installation being `installed`.
 - A request removed while a grant challenge is open (an update or uninstall) therefore refuses that grant.
 - `enable` likewise needs an installed installation (`not_installed`).
-- `plugin-grant-contract.md` records this in its §2 when K2-p3 lands.
+- **Consent bound to the revision** (review 2 S1). The grant and enable content digests (`plugins/grant-content.ts`) gain the
+  installation's revision, read under the project mutex at issue and again at the spend, in a new tuple version
+  (`axis.plugin-grant/2`, `axis.plugin-enable/2`); the v16 generation stays in them. A user's approved but unspent grant or enable
+  is then refused after any update, downgrade, uninstall or reinstall, even one that keeps the permission requested and changes
+  no grant, and an uninstall then reinstall cannot replay it (the revision only rises). `approvals.endPlugin` does not end these
+  (they are the user's challenges, not the plugin's), so the digest is what refuses them.
+- `plugin-grant-contract.md` records both changes in its §2 and §3 when K2-p3 lands; they change the merged grant contract.
 
 ## 7. Audit rows
 
@@ -368,7 +418,7 @@ No row carries the manifest's `name` or `description`, a path, or archive text.
 |---|---|---|---|
 | **K2-p1** | Pure code: the JSON profile and JCS (§3.4); the manifest schema, SemVer order, the bundle hash and the identity hash; the signature message and verification; the curated list format and its check. | none | M |
 | **K2-p2** | The ZIP validator, the portable names, inflation with caps, staging and modes (§4); its own independent review. | K2-p1 | M |
-| **K2-p3** | The journal (§6.1), the list check at start, the audit allowlist and encodings (§7), `not_requested` and `not_installed` in the grant calls (§6.2), the revision in the run-start binding (§5.3). | K2-p1 | M |
+| **K2-p3** | The journal (§6.1), the list check at start, the audit allowlist and encodings (§7), `not_requested` and `not_installed` in the grant calls and the revision in their digests (§6.2), the revision in the run-start binding (§5.3), the stored listing (§2.4). | K2-p1 | M |
 | **K2-i1** | Install and reinstall: the control messages, the staging record, the publication protocol and garbage (§5.4, §5.7), main's dialog builder in `daemon-host/src/main` (Electron-free), `verifyInstalled`. | K2-p2, K2-p3 | M |
 | **K2-i2** | Update, downgrade and uninstall, with the diff and the grant intersection. | K2-i1 | M |
 
@@ -402,14 +452,21 @@ Every refusal suite includes a valid control input that passes, so a component t
   - the list version never going down across restarts;
   - `not_requested` before the dialog and under the lock (a request removed while a grant is open refuses it);
   - the binding refusing after a revision change (a start approved and waiting under the mutex during an update);
+  - an approved but unspent user grant and an approved but unspent enable, each refused after a package-only update that keeps
+    the permission requested, and after an uninstall and reinstall;
+  - the listing stored with the package, its hash checked on read, and a row whose identity exists with other fields refused;
   - persisted audit rows with the scalar encodings, never manifest text;
   - mutants: the recheck at the write removed, the revision left out of `valid()`, the allowlist entry missing.
 - **K2-i1:**
   - install end to end through the supervisor (installed, disabled, no grants, the files at the identity path);
-  - reinstall after uninstall reusing the retained row, generation kept, and an older package refused without downgrade;
+  - reinstall after uninstall reusing the retained row, generation kept, and an older package refused without downgrade, while
+    v2, uninstall, then a confirmed downgrade to v1 succeeds;
+  - one bundle with two different manifests (or unsigned against curated) in projects A and B: two packages, A unchanged, B gets
+    exactly what it confirmed;
   - a commit with a stale, reused, expired, other-generation or wrong-digest `stagingId`, or a stale baseline, refused;
   - the source archive replaced after inspection never changes what is committed;
-  - the crash table of §5.4, step by step;
+  - every row of §5.4's fault table at its point, two concurrent installs of one identity, and collection racing a publication;
+  - after a restart, a valid package loads, and extra, missing, oversized and swapped files are refused from the stored listing;
   - an existing identity directory with corrupted content is quarantined, not reused;
   - `verifyInstalled`:
     - each failure of §5.6 (an oversize replacement, an added tree, a link or cycle, a file growing during the read, a swapped
@@ -419,7 +476,8 @@ Every refusal suite includes a valid control input that passes, so a component t
   - a repository file or workspace setting that names a plugin installs and enables nothing, and shows the notice (4a/L6);
   - an expired or refused list blocks curated installs, while installed curated plugins load with the warning and unsigned local
     installs are unchanged (4a/L12);
-  - mutants: the baseline check, single use, the digest check, publication after the commit, the quarantine path, each read cap.
+  - mutants: the baseline check, single use, the digest check, publication after the commit, the package lock or a pin dropped,
+    collection without the recheck, the quarantine path, each read cap.
 - **K2-i2:**
   - every update shows the dialog, an empty diff included (4a/L26);
   - two projects, A and B, on v1 with grants: an update or uninstall in A leaves B's version, requests, grants and package
