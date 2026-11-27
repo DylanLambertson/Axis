@@ -209,6 +209,7 @@ export function registerServing(registrar: HandlerRegistrar, services: HostServi
   );
   registerGitHandlers(registrar, {
     gate,
+    audit: { append: (e) => (audit.append(e), services.anchors.noteWrite()) },
     ops: createGitOperations({ git, now: () => ports.clock.monotonic(), runs: runs.service, pushHooksUnavailable: typeof pty?.exec === "function", resolveSshHost: options.sshSpawn === undefined ? unavailableSshResolver : createSshResolver({ spawn: options.sshSpawn, env: ports.env, excludeDirs: services.excludeDirs, platform: config.platform }) }),
     review: createCommitPreparer(reviewDeps),
     trees,

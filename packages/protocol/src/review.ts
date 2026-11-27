@@ -42,7 +42,7 @@ const MAX_FILE_TAGS = 4;
  * `truncated_hunk` and `nothing_accepted` are refusals of `build()` that a handler following the rules below never
  * triggers (it does not build such a review and answers `treeHash: null`), but a handler bug would, so they are on the
  * wire. Not on this wire: `not_a_commit` and `no_hunks` (no `against`, no hunk API), and the commit-side reasons
- * (`head_moved`, `stale`, `index_changed`, `operation_in_progress`, `detached_head`), which are `axis.git/1.commit`'s.
+ * (`head_moved`, `stale`, `index_changed` (retired, no longer produced), `operation_in_progress`, `detached_head`), which are `axis.git/1.commit`'s.
  */
 export const REVIEW_DIFF_REFUSALS = {
   /** `too_large`: more files than the review holds (see `MAX_REVIEW_FILES`), or git output cut off. `not_found`: HEAD is gone. */

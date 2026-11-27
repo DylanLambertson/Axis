@@ -29,28 +29,27 @@ test("review, partial accept, prepare and Axis commit: the commit holds exactly 
     const { b } = await reviewed(f, async (s) => s.acceptHunk("a.txt", (await s.hunks("a.txt")).hunks?.[0]?.id ?? ""));
     const prepared = await prepareCommit(f.deps, b);
     assert.equal(prepared.reviewedTreeHash, b.reviewedTree);
-    assert.equal(f.git("write-tree").trim(), b.reviewedTree, "the real index now holds the reviewed tree");
+    const base = f.git("rev-parse", "HEAD^{tree}").trim();
+    assert.equal(f.git("write-tree").trim(), base, "the real index is untouched: it still holds HEAD's tree (DC-0)");
     const result = await executeCommit(f.gitOps, await prepared.handoff("accept the first hunk"));
     assert.equal(result.tree, b.reviewedTree);
     assert.equal(f.git("rev-parse", "HEAD^{tree}").trim(), b.reviewedTree);
     assert.equal(f.git("rev-parse", "HEAD~1").trim(), b.head);
     assert.equal(readFileSync(join(f.repo, "a.txt"), "utf8"), edited, "the rejected hunk is still in the worktree, unstaged");
-    assert.match(f.git("diff", "--stat"), /a\.txt \| 2 \+-/);
+    assert.match(f.git("diff", "HEAD", "--stat"), /a\.txt \| 2 \+-/, "against the new HEAD only the rejected hunk differs (the index refresh is DC-0 slice 2)");
     assert.equal(f.git("log", "-1", "--format=%an <%ae>").trim(), "Dylan Lambertson <me@dylanlambertson.dev>");
   } finally {
     f.cleanup();
   }
 });
 
-test("Axis commit alone refuses a reviewed tree that was never staged: the prepare step is what stages it", async () => {
+test("git-ops alone commits a reviewed tree that was never staged: the tree object is the commit, the binding is the caller's", async () => {
   const f = fixture();
   try {
     twoEdits(f);
     const { b } = await reviewed(f, async (s) => s.acceptHunk("a.txt", (await s.hunks("a.txt")).hunks?.[0]?.id ?? ""));
     const raw = { worktree: f.wt, reviewedTreeHash: b.reviewedTree, message: "m", expectedParent: f.head(), expectedBranch: "axis/feat" };
-    const e = await refusal2(executeCommit(f.gitOps, raw));
-    assert.equal(e.code, "E_CONFLICT");
-    assert.match(e.message, /index differs from the tree that was reviewed/);
+    assert.equal((await executeCommit(f.gitOps, raw)).tree, b.reviewedTree);
   } finally {
     f.cleanup();
   }
@@ -224,7 +223,7 @@ test("a binding that this package did not mint is refused, however it is built",
   }
 });
 
-test("git-ops refuses what the review layer prepared if the index is changed between prepare and commit", async () => {
+test("a git add between prepare and commit is neither committed nor overwritten", async () => {
   const f = fixture();
   try {
     f.write("a.txt", BASE.replace("l2\n", "L2\n"));
@@ -232,18 +231,17 @@ test("git-ops refuses what the review layer prepared if the index is changed bet
     const prepared = await prepareCommit(f.deps, b);
     f.write("evil.txt", "x\n");
     f.git("add", "evil.txt");
-    assert.equal((await refusal(prepared.handoff("m"))).details?.["reason"], "index_changed", "the hand-over notices first");
-    const raw = { worktree: f.wt, reviewedTreeHash: b.reviewedTree, message: "m", expectedParent: f.head(), expectedBranch: "axis/feat" };
-    const e = await refusal2(executeCommit(f.gitOps, raw));
-    assert.equal(e.code, "E_CONFLICT");
-    const plan = await refusal2(planCommit(f.gitOps, raw));
-    assert.equal(plan.code, "E_CONFLICT");
+    const evil = f.git("ls-files", "--stage", "evil.txt");
+    const input = await prepared.handoff("m");
+    assert.equal((await executeCommit(f.gitOps, input)).tree, b.reviewedTree, "the commit is the reviewed tree, without evil.txt");
+    assert.equal(f.git("ls-files", "--stage", "evil.txt"), evil, "the user's staging is still there");
+    assert.equal((await refusal2(planCommit(f.gitOps, input))).details?.["reason"], "head_moved", "and the spent review cannot be committed twice");
   } finally {
     f.cleanup();
   }
 });
 
-test("a sparse checkout is refused rather than losing its skip-worktree state", async () => {
+test("a sparse checkout is refused: its files outside the cone would be committed as deleted", async () => {
   const f = fixture();
   try {
     f.write("a.txt", BASE.replace("l2\n", "L2\n"));

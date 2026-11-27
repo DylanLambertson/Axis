@@ -144,7 +144,8 @@ test("prepare checks the git directory of a linked worktree, not the main one", 
 });
 
 /** A runner that runs `after` once the real index has been written by `read-tree` (the staging step of prepare). */
-function afterStaging(f: Fixture, act: () => void): Fixture["gitOps"] {
+/** Runs `act` once, right after prepare loaded `tree` into its private index (DC-0: the real index is never written). */
+function afterStaging(f: Fixture, act: () => void, tree: string): Fixture["gitOps"] {
   const inner = createNodeRunner({ allowPtyContext: true, allowUnpinnedGit: true });
   let done = false;
   return {
@@ -152,7 +153,7 @@ function afterStaging(f: Fixture, act: () => void): Fixture["gitOps"] {
     runner: {
       async run(req: GitRunRequest) {
         const r = await inner.run(req);
-        if (!done && req.argv.includes("read-tree") && req.env["GIT_INDEX_FILE"] === undefined) {
+        if (!done && req.argv.includes("read-tree") && req.argv.at(-1) === tree && req.env["GIT_INDEX_FILE"] !== undefined) {
           done = true;
           act();
         }
@@ -162,7 +163,7 @@ function afterStaging(f: Fixture, act: () => void): Fixture["gitOps"] {
   };
 }
 
-test("prepare re-checks the operation and HEAD after it staged the tree", async () => {
+test("prepare re-checks the operation and HEAD after it loaded the reviewed tree", async () => {
   for (const act of [(f: Fixture) => writeFileSync(join(f.repo, ".git", "MERGE_HEAD"), `${f.head()}\n`), (f: Fixture) => {
     const c = f.git("commit-tree", "HEAD^{tree}", "-p", "HEAD", "-m", "foreign").trim();
     f.git("update-ref", "refs/heads/axis/feat", c);
@@ -173,7 +174,7 @@ test("prepare re-checks the operation and HEAD after it staged the tree", async 
       const s = await ReviewSession.start(f.deps, { worktree: f.wt, against: f.head() });
       s.acceptFile("a.txt");
       const b = await s.build();
-      const e = await refusal(prepareCommit({ ...f.deps, git: afterStaging(f, () => act(f)) }, b));
+      const e = await refusal(prepareCommit({ ...f.deps, git: afterStaging(f, () => act(f), b.reviewedTree) }, b));
       assert.equal(e.code, "E_CONFLICT");
     } finally {
       f.cleanup();
@@ -192,7 +193,7 @@ test("the hand-over refuses when HEAD moved after prepare, and carries the paren
     s.acceptFile("a.txt");
     const b = await s.build();
     const prepared = await prepareCommit(f.deps, b);
-    assert.equal(prepared.previousIndexTree, staged, "the user's staging can be put back if the commit is refused");
+    assert.equal(f.git("write-tree").trim(), staged, "the user's staging is still in the real index (DC-0: prepare never writes it)");
     const input = await prepared.handoff("m");
     assert.equal(input.expectedParent, b.head);
     assert.equal(input.expectedBranch, "axis/feat");

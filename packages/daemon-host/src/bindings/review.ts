@@ -127,8 +127,8 @@ export function reviewBindingOf(handle: ReviewHandle): ReviewBinding {
 }
 
 /**
- * The commit side of the review binding (ticket H9): `prepareCommit`, its `handoff`, `checkFresh` for `assertReviewFresh`,
- * and the put-back of the person's own index when a prepared commit is refused. `prepareCommit` is the brand check: the
+ * The commit side of the review binding (ticket H9): `prepareCommit`, its `handoff` and `checkFresh` for `assertReviewFresh`.
+ * Nothing is staged, so a refused commit has nothing to put back (DC-0). `prepareCommit` is the brand check: the
  * handle is passed to it before anything is read from it. Every failure is a `ReviewRefusal` (code and closed reason).
  */
 export function createCommitPreparer(deps: ReviewBindingDeps): CommitPreparer {
@@ -140,21 +140,6 @@ export function createCommitPreparer(deps: ReviewBindingDeps): CommitPreparer {
         const prepared = await prepareCommit(reviewDeps, reviewBindingOf(handle));
         return {
           handoff: (message, author) => guarded(() => prepared.handoff(message, author)),
-          restoreIndex: async (): Promise<void> => {
-            const previous = prepared.previousIndexTree;
-            if (previous === undefined) return;
-            try {
-              const git = await daemonGitFor(prepared.worktree, deps.git);
-              // Only while HEAD is still the reviewed commit: a commit that may have landed is never rewound under the person.
-              const head = (await git(["rev-parse", "--verify", "--quiet", "--end-of-options", "HEAD^{commit}"])).stdout.trim();
-              // And only while the index still holds what Axis staged: anything the person staged since is theirs. A window of one
-              // git call remains between this check and `read-tree` (closing it would need the restore to hold index.lock).
-              const staged = (await git(["write-tree"])).stdout.trim();
-              if (head === prepared.head && staged === prepared.reviewedTreeHash) await git(["read-tree", previous]);
-            } catch {
-              // The index is the person's staging only; a failed put-back is not worth masking the refusal that caused it.
-            }
-          },
         };
       }),
     assertFresh: (handle) =>
