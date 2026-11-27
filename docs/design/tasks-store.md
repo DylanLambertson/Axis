@@ -2,8 +2,8 @@
 
 - **Status:** Built. Slice 1: journal schema version 15, `Journal.tasks` and the contract's schemas. Slice 2a: the tasks service, `axis.tasks/1` **served** to the user with user-only rows, and the worker task tools (§5). Slice 2b: Start (§6). Slice 3: the user's approval for a worker revision over the user's text, and the user's newest revision kept (`tasks-slice3.md`).
 - **Decides nothing new.** It builds `extensibility.md` §6 (the task record, Start is the user's, non-user text taints) with the PV-Q1 guards (`pages-store.md`).
-- **Code:** `packages/journal/src/schema-tasks.ts`, `packages/journal/src/task-store.ts`, `packages/protocol/src/tasks.ts`, `packages/daemon-host/src/policy/planned.ts`.
-- **Slice 2 (after PV-G4):** the tasks service and handlers (served rows, audit with ids only), **Start** (shows the full prompt and its source, marks non-user text and taints the run, IAC-T source 5), the agent task tools (side-effecting under IAC-T, audited, a task read is source 8), `list` paging (the store answers all of a project's tasks today), and the plugin rows of ADR 0008.
+- **Code:** `packages/journal/src/schema-tasks.ts`, `packages/journal/src/task-store.ts`, `packages/protocol/src/tasks.ts`, `packages/daemon-host/src/tasks/`, `packages/daemon-host/src/bindings/agent-tasks.ts`.
+- **Built slices:** the tasks service and handlers, Start, worker task tools and paging are served. Start of non-user text taints a composer run before its first model call (IAC-T source 5); `read_task` is source 8. A composer Start links the new run and sets the task in progress in the same transaction as `task.start` (`packages/daemon-host/test/tasks-start.test.ts`). Plugin task writes remain PV-K4 work.
 
 ## 1. Tables (schema version 15)
 
