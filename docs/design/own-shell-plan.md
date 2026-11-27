@@ -103,7 +103,7 @@ The renderer packages import only `@axis/protocol`, each other and their pinned 
 | OS-23 | Docs: `ROADMAP.md` gate rewrite (ADR 0011 "Roadmap gate changes"), `PRODUCT.md`, `UX.md`, `ARCHITECTURE.md`, `LICENSING.md`, the threat model revision (new surfaces in ADR 0011 Decision 5 item 8) | M | ADR accepted; before the 1a gate review |
 | OS-28 | Rebrand safety: the stable ids of ADR 0011 Decision 2 (app scheme, app name, `userData`, data roots, the `safeStorage` keychain entry, the anchor's location and tag, vault file names) live in one internal-id module that the brand module cannot import. An acceptance test changes only the display brand, then checks that the audit anchor and a vault entry still decrypt and that the renderer origin is unchanged | S | OS-3, OS-6 |
 | OS-29 | Tasks Start screen (PV-T2 on the own shell): task list and detail, worker picker, prompt preview, confirm through the tier-4 card and main's dialog, retry on `stale_version`, the composer result followed by run events, and the CLI result as text to copy (§6.1) | M | OS-8, OS-11, OS-12, DC-8; DC-9 for live refresh (polling before it) |
-| OS-30 | **Opus.** Plugin approval card (§6.2): the strict reader for `pending` with the optional `requester` and for `axis.approvals/1.detail`, and the card showing the full escaped prompt, project, workspace, mode, provider and model before Approve. It is a precondition of PV-K1e-b | M | OS-11 |
+| OS-30 | **Opus.** Plugin approval card (§6.2): the strict reader for `pending` with the optional `requester` and for `axis.approvals/1.detail`, and the card showing the full escaped prompt, project, workspace, mode, provider and model before Approve. It is a hard precondition of PV-K2 | M | OS-11; it gates PV-K2, not PV-K1e-b |
 | DC-8 | `axis.tasks/1.start` links the started run to the task and sets `in_progress` in the same transaction as its `task.start` row | S | PV-T1 (merged) |
 | DC-9 | A `tasks` topic on `axis.events/1`: a per-project invalidation hint with no task text | S | E1 (merged) |
 | OS-22 | Retire Code OSS: delete the overlay, patches, removals, replacements, the pin, the Code OSS scripts, the extension matrix and the overlay-tests CI job | S to M | G0 passed |
@@ -132,7 +132,8 @@ Wave D   DC-1b <- DC-1a                            DC-4  <- DC-2
 Wave E   OS-19 <- OS-2, OS-3, OS-18                OS-21 <- OS-3
          OS-24 <- OS-8, OS-14, OS-15               OS-25 <- OS-8
          OS-26 <- OS-19, OS-21                     OS-22 <- G0
-         OS-29 <- OS-8, OS-11, OS-12, DC-8 (DC-9)  OS-30 <- OS-11 (precedes PV-K1e-b)
+         OS-29 <- OS-8, OS-11, OS-12, DC-8 (DC-9)  OS-30 <- OS-11
+         PV-K2 <- OS-30 (hard; plus §6.2's four other conditions)   PV-K1e-b: not gated (waiver)
 ```
 
 OS-15 sits behind the whole demo 1 chain through OS-13. Demo 2's other long chain is DC-1 then OS-14 then OS-17.
@@ -196,13 +197,20 @@ The interim Code OSS shell stays buildable as a fallback demo until G0. Nothing 
 **What the own shell renders for a plugin challenge:**
 - In `axis.approvals/1.pending`, a challenge a plugin caused carries the optional closed `requester { kind: "plugin", pluginId }`. A window holds at most 4 such challenges (`MAX_PLUGIN_CHALLENGES_PER_WINDOW`), and the reader is strict and accepts the field only in that shape.
 - `axis.approvals/1.detail { challengeId }` (tier 0, user rows only, never a plugin view or a web client) returns `runs.start` detail: the requester, the **full escaped prompt** (up to 64 Ki UTF-16 units; a longer one is refused at issue, never cut), the project and workspace display names, the mode, the provider and the model. The card shows all of it as text before Approve is offered. It offers no Approve when `detail` fails, the challenge is gone or its binding broke.
-- **Tier:** a plugin run start is **tier 3**, resolved in the renderer by the user principal. There is no native dialog (plugins are refused tier 4), and no copy may call it native. Its protection is the taint, the full prompt on the card and an approval for each side effect of the run.
+- **Tier:** a plugin run start is **tier 3**, resolved in the renderer by the user principal. There is no native dialog (plugin challenges are refused tier 4 today; the open question PV-K1e-T4 may change that), and no copy may call it native. Its protection is the taint, the full prompt on the card and an approval for each side effect of the run.
 
-**Ordering:** OS-30 must merge before PV-K1e-b, the first producer of plugin challenges (`plugin-run-start.md` §2). The Code OSS renderer half (a2-2) is on hold and is replaced by OS-30. The later plugin tickets (PV-K2 onward) assume the card exists.
+**Ordering: OS-30 is a hard precondition of PV-K2** (the plugin grant contract; `plugin-run-start.md` §3.1, in review on the PV-K1e-b branch, and the PV-K2 grant-contract note, in review). It is one of five conditions, all of which must hold before PV-K2 is merged or enabled:
+1. The own shell's card exists (OS-30).
+2. The Code OSS shell is retired, or every supported pending-approvals reader accepts the optional `requester` and `detail`.
+3. A test through the real host composition covers the plugin run-start wiring.
+4. A source or test pin shows that every production path granting `runs.start` goes through PV-K2's main-owned tier-4 flow with native confirmation.
+5. The open question PV-K1e-T4 (tier 4 for plugin run starts) is decided.
+
+**PV-K1e-b merges first, by waiver** (owner delegation, 2026-11-26): it is inert, because no plugin can hold `runs.start` until PV-K2, so OS-30 does not gate it. The Code OSS renderer half (a2-2) stays on hold, and OS-30 replaces it.
 
 ### 6.3 Demo 1 scope
 
-**Tasks Start is out of Demo 1.** Demo 1 proves the core loop: add and trust, workspace, terminal, composer, approval, commit and push. Tasks are Phase 2a work (OS-25), and Start adds DC-8 to the path. Nothing in Demo 1 blocks it: OS-29 reuses OS-11's card and main's tier-4 dialog unchanged. **The plugin approval card is out of Demo 1 too**: no plugin challenge is produced until PV-K1e-b.
+**Tasks Start is out of Demo 1.** Demo 1 proves the core loop: add and trust, workspace, terminal, composer, approval, commit and push. Tasks are Phase 2a work (OS-25), and Start adds DC-8 to the path. Nothing in Demo 1 blocks it: OS-29 reuses OS-11's card and main's tier-4 dialog unchanged. **The plugin approval card is out of Demo 1 too**: no plugin can hold `runs.start` until PV-K2, so no plugin challenge reaches a window before then.
 
 ## 7. Open items
 
