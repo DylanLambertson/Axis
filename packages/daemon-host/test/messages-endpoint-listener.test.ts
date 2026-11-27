@@ -24,7 +24,7 @@ function fakeHandle(): PtyHandle & { exit(): void } {
 }
 
 test("the endpoint relay is wired only when the user's switch is on at start, and only to a pty port that relays", () => {
-  const relay = { onRelay: async () => [], mint: () => undefined, revoke: () => undefined, revokeWorker: () => [], dropPaused: () => [], flush: () => undefined };
+  const relay = { onRelay: async () => [], mint: () => undefined, revoke: () => undefined, revokeWorker: () => [], revokeAll: () => [], dropPaused: () => [], flush: () => undefined };
   const endpoints = { relay, source: Symbol("pty-control") };
   const port = { onRelay: () => ({ dispose: () => undefined }), relay: () => true };
   assert.equal(wireCliEndpoints(false, port, endpoints, []), undefined, "the switch off");

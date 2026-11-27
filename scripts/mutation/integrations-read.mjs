@@ -88,6 +88,7 @@ const M = [
   ["v", "backend id compared", "held.backend !== current.id || ", ""],
   ["v", "entry protection none", 'held.protection === "none" || ', "", "an entry whose protection is none differs from a protected current backend, and a current backend of none is refused by its own comparison"],
   ["v", "current protection none", 'current.protection === "none" || ', "", "a current backend of none differs from a protected entry, and an entry of none is refused by its own comparison"],
+  ["v", "protection equality", " || held.protection !== current.protection", "", "PROTECTIONS is os_protected, none and ephemeral; the memory backend is always ephemeral and any other id maps ephemeral to none, so two records with the same backend id and different protection include none, which the two clauses before refuse"],
   // The registry and the composition.
   ["r", "token shape length", "tokenShape: /^[\\x21-\\x7e]{20,255}$/,", "tokenShape: /^[\\x21-\\x7e]{1,255}$/,"],
   ["r", "registry not frozen", "            deepFreeze(v);", ""],
