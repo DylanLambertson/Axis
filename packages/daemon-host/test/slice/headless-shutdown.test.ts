@@ -62,8 +62,19 @@ describe("headless slice: shutdown", { skip: gitSkipReason(), timeout: SUITE_TIM
     const ws = await createWorkspace(client, projectId, "Shutdown");
     const started = await client.ok<{ run: { runId: string } }>("axis.cli-runs", "start", { workspaceId: ws.id, agentId: "gate" }, true);
     await awaitRun(client, started.run.runId, "RUNNING");
-    await until(() => existsSync(dump) && sup.anchorPuts.length > 0, "the CLI's pid file and the first anchor");
-    const cliPid = (JSON.parse(readFileSync(dump, "utf8")) as { pid: number }).pid;
+    // The file exists before it is complete (the CLI writes it in place): wait until it parses, not just until it exists.
+    let cliPid = 0;
+    await until(() => {
+      if (sup.anchorPuts.length === 0 || !existsSync(dump)) return false;
+      try {
+        const pid = (JSON.parse(readFileSync(dump, "utf8")) as { pid?: unknown }).pid;
+        if (typeof pid !== "number") return false;
+        cliPid = pid;
+        return true;
+      } catch {
+        return false; // half written: look again
+      }
+    }, "the CLI's complete pid file and the first anchor");
     sup.holdAcks = true; // the final put will wait for its acknowledgement
     client.close();
     const exited = stop(sup);
