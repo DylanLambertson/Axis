@@ -138,3 +138,17 @@ test("through the host's binding (hostMessagingDeps): the user's switch turned o
   assert.equal(f.r.journal.getRun(next)?.state, "QUEUED");
   assert.equal(f.mint(next), undefined, "nothing is minted after the switch is off");
 });
+
+test("audit B F3 through the host's binding: a run that went BLOCKED and back to RUNNING with no message between answers revoked at its next message", { skip }, async (t) => {
+  const specs: { runId: string; messagesEndpoint?: { endpoint: string; token: string } }[] = [];
+  const f = await setup(t, async (spec, inner) => (specs.push(spec), inner.spawn(spec)));
+  await f.start();
+  const e = specs[0]?.messagesEndpoint;
+  const runId = specs[0]?.runId as string;
+  assert.ok(e !== undefined);
+  assert.deepEqual(await f.relay({ t: "relay-open", endpoint: e.endpoint, conn: "c1" }), []);
+  assert.deepEqual(f.reply(await f.relay({ t: "relay-frame", endpoint: e.endpoint, conn: "c1", frame: JSON.stringify({ op: "auth", token: e.token }) })), [{ ok: true, op: "auth" }]);
+  f.r.journal.transitionRun(runId, "BLOCKED");
+  f.r.journal.transitionRun(runId, "RUNNING");
+  assert.deepEqual(f.reply(await f.relay({ t: "relay-frame", endpoint: e.endpoint, conn: "c1", frame: JSON.stringify({ op: "read", id: "r1" }) })), [{ t: "endpoint-close", endpoint: e.endpoint, reason: "revoked" }, { ok: false, reason: "revoked" }]);
+});

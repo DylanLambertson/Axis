@@ -74,6 +74,7 @@ const reason = async (p: Promise<unknown>): Promise<string> => {
 };
 const live = (): AbortSignal => new AbortController().signal;
 const actions = (r: Rig): string[] => r.rows.map((x) => x.action);
+const failureRows = (r: Rig): Array<[string, string, unknown]> => r.rows.map((x) => [x.action, x.outcome, (x.payload as Record<string, unknown>)["reason"]]);
 const requestRow = (r: Rig): Record<string, unknown> => r.rows.find((x) => x.action === "integration.request")?.payload as Record<string, unknown>;
 
 test("a read: one send with the credential, the reduced result, then exactly the two allowlisted rows", async () => {
@@ -82,7 +83,7 @@ test("a read: one send with the credential, the reduced result, then exactly the
   assert.deepEqual(out, { status: 200, result: { items: [{ number: 7, title: "Fix", state: "open", author: "octo" }] } });
   assert.deepEqual(r.sent, [{ url: `https://api.github.com${PATH}`, authorization: `Bearer ${TOKEN}` }]);
   assert.deepEqual(actions(r), ["integration.credential", "integration.request"]);
-  assert.deepEqual(r.rows[0]?.payload, { integrationId: "github", operation: "pulls_list", projectId: "p1", actorKind: "user", purpose: "integration_request" });
+  assert.deepEqual(r.rows[0]?.payload, { integrationId: "github", operation: "pulls_list", projectId: "p1", actorKind: "user", purpose: "integration_request", reason: "ok" });
   assert.deepEqual(requestRow(r), { integrationId: "github", operation: "pulls_list", projectId: "p1", status: 200, bytesOut: Buffer.byteLength(PATH), bytesIn: JSON.stringify([PR]).length, durationMs: requestRow(r)["durationMs"], reason: "ok" });
   assert.ok(Number.isInteger(requestRow(r)["durationMs"]) && (requestRow(r)["durationMs"] as number) > 0);
   for (const row of r.rows) assert.deepEqual(Object.keys(row.payload as object).filter((k) => !INTEGRATIONS_PAYLOAD_ALLOWLIST[row.action]?.includes(k)), [], row.action);
@@ -186,7 +187,7 @@ test("the reveal gate: a weak entry, an entry moved between the state read and t
   const shape = rig({ seed: false });
   shape.backend.seed("integration:github", "short");
   assert.equal(await reason(shape.service.read(INPUT, live())), "needs_reconnect");
-  for (const x of [weak, moved, shape]) assert.deepEqual([x.sent.length, actions(x)], [0, []]);
+  for (const x of [weak, moved, shape]) assert.deepEqual([x.sent.length, failureRows(x)], [0, [["integration.credential", "failure", "needs_reconnect"]]], "the reveal is audited, nothing is sent");
   assert.equal(shape.redactor.registeredForms, 0, "a token of the wrong shape is never registered");
 });
 
@@ -199,7 +200,32 @@ test("no entry is not_connected; a failing backend is internal for read and for 
   assert.equal(await reason(failing.service.read(INPUT, live())), "internal");
   assert.equal(await reason(failing.service.status("p1", "github")), "internal");
   assert.equal(await reason(failing.service.list("p1")), "internal");
-  for (const x of [none, failing]) assert.deepEqual([x.sent.length, actions(x)], [0, []]);
+  assert.deepEqual([none.sent.length, failureRows(none)], [0, [["integration.credential", "failure", "not_connected"]]]);
+  assert.deepEqual([failing.sent.length, failureRows(failing)], [0, [["integration.credential", "failure", "internal"]]]);
+  assert.equal(JSON.stringify(failing.rows).includes(TOKEN), false, "no backend text crosses into a row");
+});
+
+test("audit C L1: a short stored token (the vault accepts 8 characters, the shape needs 20) is a revealed secret: one failure row, never registered or sent", async () => {
+  const r = rig({ seed: false });
+  r.backend.seed("integration:github", "abcdefghij");
+  assert.equal(await reason(r.service.read(INPUT, live())), "needs_reconnect");
+  assert.deepEqual([r.sent.length, failureRows(r), r.redactor.registeredForms], [0, [["integration.credential", "failure", "needs_reconnect"]], 0]);
+  assert.equal(JSON.stringify(r.rows).includes("abcdefghij"), false);
+});
+
+test("audit C L1: a registration that fails after the reveal writes one failure row (internal) and sends nothing", async () => {
+  const r = rig({ redactor: { registerSecret: () => { throw new Error(`refused ${TOKEN}`); } } as never });
+  assert.equal(await reason(r.service.read(INPUT, live())), "internal");
+  assert.deepEqual([r.sent.length, failureRows(r)], [0, [["integration.credential", "failure", "internal"]]]);
+  assert.equal(JSON.stringify(r.rows).includes(TOKEN), false);
+});
+
+test("a refused reveal keeps its own reason even when its failure row cannot be written", async () => {
+  const r = rig({ seed: false });
+  r.backend.seed("integration:github", "abcdefghij");
+  r.failAudit = () => true;
+  assert.equal(await reason(r.service.read(INPUT, live())), "needs_reconnect");
+  assert.equal(r.sent.length, 0);
 });
 
 test("no backend: list and status show available with no scope, read is not_connected, nothing is sent or audited", async () => {

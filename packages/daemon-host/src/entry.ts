@@ -125,12 +125,19 @@ const realClock: Clock = { now: () => Date.now(), monotonic: () => performance.n
 
 /** True for an argument that opens a debugger or inspector port, in any spelling Node accepts. */
 export const isDebugFlag = (arg: string): boolean => DEBUG_FLAG.test(arg);
+/** The one `execArgv` a daemon may be forked with: the flag that stops SIGUSR1 from opening the inspector (audit C M1). */
+export const EXEC_ARGV_ALLOWED = "--disable-sigusr1";
+/** Empty, or exactly `[EXEC_ARGV_ALLOWED]`. */
+export const execArgvAllowed = (args: readonly string[]): boolean => args.length === 0 || (args.length === 1 && args[0] === EXEC_ARGV_ALLOWED);
 
 function reasonOf(error: unknown): string | undefined {
   if (!(error instanceof AxisError)) return undefined;
   const r = error.detail["reason"];
   return typeof r === "string" && REASON.test(r) ? r : undefined;
 }
+
+/** The one closed line the entry writes when SIGUSR1 arrives (the inspector stays closed). */
+export const DEBUG_SIGNAL_LINE = "axis.daemon ignored SIGUSR1: the inspector stays closed";
 
 export function runDaemonEntry(deps: DaemonEntryDeps): DaemonEntryHandle {
   let resolveStarted: (ok: boolean) => void = () => undefined;
@@ -148,6 +155,18 @@ export function runDaemonEntry(deps: DaemonEntryDeps): DaemonEntryHandle {
       // a failing log line never changes the outcome
     }
   };
+
+  // Audit C M1: SIGUSR1 would open Node's unauthenticated inspector on 127.0.0.1:9229, from which any local user could read the
+  // heap and every revealed credential. The one complete fix is `--disable-sigusr1` (EXEC_ARGV_ALLOWED), which holds from the
+  // first instruction. This listener is the second line, for a fork without the flag: it replaces Node's handler once this
+  // file runs, which is after the module graph has loaded (a signal before then opens the inspector or kills the process).
+  // It is installed first, on every path, and never removed: with no listener the signal's default applies again.
+  let signalled = false;
+  deps.process.on("SIGUSR1", () => {
+    if (signalled) return;
+    signalled = true;
+    line(DEBUG_SIGNAL_LINE);
+  });
 
   /** A refusal before the channel exists: best-effort `fatal` straight on the parent port, then exit. */
   const refuseEarly = (reason: string): DaemonEntryHandle => {
@@ -167,8 +186,9 @@ export function runDaemonEntry(deps: DaemonEntryDeps): DaemonEntryHandle {
   // Step 1: the process must be what the design says it is.
   if (deps.parentPort === undefined || typeof deps.parentPort.postMessage !== "function") return refuseEarly("not_utility_process");
   if (deps.execArgv.some(isDebugFlag)) return refuseEarly("debug_flag_refused");
-  // Main always forks with an empty `execArgv`; `--require`, `--import` and loaders would run code before this file does.
-  if (deps.execArgv.length > 0) return refuseEarly("exec_args_refused");
+  // `--require`, `--import` and loaders would run code before this file does: the one allowed argument is the flag that keeps
+  // the inspector closed (audit C M1), alone. Main forks with an empty `execArgv` today; passing it is the forking main's ticket.
+  if (!execArgvAllowed(deps.execArgv)) return refuseEarly("exec_args_refused");
   for (const [name, reason] of REFUSED_ENV) {
     if (envSet(deps.env, name, deps.platform)) return refuseEarly(reason);
   }

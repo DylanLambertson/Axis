@@ -48,6 +48,11 @@ export interface TestSupervisorOptions {
   readonly root?: string;
   /** The attestation key of an earlier host on the same data (default: a fresh one). */
   readonly key?: Buffer;
+  /**
+   * Keep every byte the child writes, stdout included, uncapped, in `output` (a process host only; audit C L2). Off by default,
+   * where stdout is ignored and `stderr` keeps the last 64 KiB.
+   */
+  readonly fullOutput?: boolean;
 }
 
 export interface ExitInfo {
@@ -63,6 +68,8 @@ const nextCid = ((n = 0) => () => `tc${String(++n).padStart(8, "0")}`)();
 export class TestSupervisor {
   readonly key: Buffer;
   readonly dataDir: string;
+  /** The supervisor's own directory (the data directory and everything else the host writes under it). */
+  readonly root: string;
   readonly mux: ChannelMux;
   /** Everything the host sent on the control plane, parsed (an invalid one is kept raw under `invalid`). */
   readonly received: OutboundMessage[] = [];
@@ -76,6 +83,19 @@ export class TestSupervisor {
   trustAnswer: (m: Extract<OutboundMessage, { type: "trust.check" }>) => boolean | undefined = () => true;
   settings: Record<string, unknown> = {};
   stderr = "";
+  #output: string | undefined;
+  /** Everything the child wrote to stdout and stderr, uncapped. Only with `fullOutput`: otherwise reading it throws. */
+  get output(): string {
+    if (this.#output === undefined) throw new Error("TestSupervisor.output needs the fullOutput option");
+    return this.#output;
+  }
+
+  /** Start keeping every byte of the child's stdout and stderr (`fullOutput`). */
+  captureOutput(child: ChildProcess): void {
+    this.#output = "";
+    child.stdout?.on("data", (d: Buffer) => void (this.#output += d.toString("utf8")));
+    child.stderr?.on("data", (d: Buffer) => void (this.#output += d.toString("utf8")));
+  }
 
   readonly #channel: DisposableChannel & Partial<ChannelFlow>;
   readonly #root: string;
@@ -97,6 +117,7 @@ export class TestSupervisor {
     this.#ownsRoot = options.root === undefined;
     this.key = options.key ?? randomBytes(32);
     this.dataDir = join(root, "data");
+    this.root = root;
     this.#channel = channel;
     this.#kill = kill;
     this.exited = exited;
@@ -121,6 +142,7 @@ export class TestSupervisor {
     // Whatever was started is killed again if anything below throws, so a failed start leaves no child behind.
     let killStarted: () => void = () => undefined;
     try {
+      if (options.mode === "worker" && options.fullOutput === true) throw new Error("fullOutput is for a process host only (a worker has no stdout to capture)");
       if (options.mode === "worker") {
         const worker = new Worker(entry, { stderr: true });
         killStarted = () => void worker.terminate();
@@ -131,7 +153,8 @@ export class TestSupervisor {
         const channel = adaptNodePort(worker, "exit");
         sup = new TestSupervisor(root, channel, () => void worker.terminate(), exited, options, (hook) => worker.stderr.on("data", (d: Buffer) => hook(d.toString("utf8"))));
       } else {
-        const child: ChildProcess = fork(entry, [], { stdio: ["ignore", "ignore", "pipe", "ipc"], serialization: "json", ...(options.env === undefined ? {} : { env: options.env as NodeJS.ProcessEnv }) });
+        const full = options.fullOutput === true;
+        const child: ChildProcess = fork(entry, [], { stdio: ["ignore", full ? "pipe" : "ignore", "pipe", "ipc"], serialization: "json", ...(options.env === undefined ? {} : { env: options.env as NodeJS.ProcessEnv }) });
         killStarted = () => void child.kill("SIGKILL");
         // `error` (spawn failure, failed kill) may arrive without `exit`: `dispose()` must not wait for one forever.
         const exited = new Promise<ExitInfo>((resolve) => {
@@ -140,6 +163,7 @@ export class TestSupervisor {
         });
         const channel = adaptNodeIpc(child);
         sup = new TestSupervisor(root, channel, (sig) => void child.kill(sig ?? "SIGKILL"), exited, options, (hook) => child.stderr?.on("data", (d: Buffer) => hook(d.toString("utf8"))));
+        if (full) sup.captureOutput(child);
       }
       if (options.skipInit !== true) sup.sendInit(options.config);
     } catch (e) {

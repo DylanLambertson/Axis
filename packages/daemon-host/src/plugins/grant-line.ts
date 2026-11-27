@@ -10,7 +10,8 @@ import { PLUGIN_DANGEROUS_COMBINATIONS } from "../policy/plugin-rules.js";
  * text), sanitised part by part and budgeted as a WHOLE before it is handed over: it is never cut and never replaced.
  *
  * Order: the danger marker (when the grant completes a dangerous combination), the permission's fixed wording, then the plugin
- * in a stable short form, then the project's display name (the user's own) in what remains. The marker and the wording are
+ * in a stable short form, then the project's display name (the repository folder's name, which its author chose, not the user;
+ * like the plugin id it can only add words after the fixed wording) in what remains. The marker and the wording are
  * never dropped: a line whose fixed parts leave the project fewer than `MIN_PROJECT_UNITS` is refused (`dialog_overflow`), and
  * the content hook then refuses the request at issue. The digest binds the full ids; the short id only names them.
  */

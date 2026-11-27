@@ -99,9 +99,9 @@ test("review 1 SF2: a wrapper cannot hide a row (every CLI's rows over all its a
     [["npx", "@openai/codex", "-a", "never"], "codex.ask-for-approval.never"],
     [["/usr/bin/node", "cli.js", "--permission-mode=bypassPermissions"], "claude.permission-mode.bypassPermissions"],
   ] as [string[], string][]) assert.equal(refusedBy(argv), rule, argv.join(" "));
-  const viaLink = decideCliMessaging({ argv: ["/home/u/.local/share/claude/versions/2.1.330", "--permission-mode", "auto"], executableReal: "/home/u/.local/share/claude/versions/2.1.330", bypassesPrompts: false, exists: none });
+  const viaLink = decideCliMessaging({ argv: ["/home/u/.local/share/claude/versions/2.1.330", "--permission-mode", "auto"], executableReal: "/home/u/.local/share/claude/versions/2.1.330", executableNative: true, bypassesPrompts: false, exists: none });
   assert.deepEqual(viaLink, { allowed: false, rule: "claude.permission-mode.auto" }, "a versioned binary is unknown by name: every row applies");
-  const linked = decideCliMessaging({ argv: ["/opt/bin/x", "-p", "summarise"], executableReal: "/opt/claude", bypassesPrompts: false, exists: none });
+  const linked = decideCliMessaging({ argv: ["/opt/bin/x", "-p", "summarise"], executableReal: "/opt/claude", executableNative: true, bypassesPrompts: false, exists: none });
   assert.deepEqual(linked, { allowed: true, warnings: [] }, "the real path names Claude: Codex's -p row does not apply");
 });
 
@@ -144,9 +144,9 @@ test("review 2 SF8: behind a wrapper, any interpreter named or any inline-code a
 });
 
 test("review 2 SF9: when the name and the real path name different CLIs, the rows of both apply", () => {
-  const both = decideCliMessaging({ argv: ["/opt/bin/claude", "-a", "never"], executableReal: "/opt/lib/codex.js", bypassesPrompts: false, exists: none });
+  const both = decideCliMessaging({ argv: ["/opt/bin/claude", "-a", "never"], executableReal: "/opt/lib/codex.js", executableNative: true, bypassesPrompts: false, exists: none });
   assert.deepEqual(both, { allowed: false, rule: "codex.ask-for-approval.never" });
-  const files = decideCliMessaging({ argv: ["/opt/bin/claude"], executableReal: "/opt/lib/codex", bypassesPrompts: false, exists: (s) => s.join("/") === ".codex/config.toml" });
+  const files = decideCliMessaging({ argv: ["/opt/bin/claude"], executableReal: "/opt/lib/codex", executableNative: true, bypassesPrompts: false, exists: (s) => s.join("/") === ".codex/config.toml" });
   assert.deepEqual(files, { allowed: true, warnings: [{ code: "repo_config", path: ".codex/config.toml", cli: "codex" }] }, "and both CLIs' project files");
 });
 
@@ -170,13 +170,13 @@ test("review 3 SF10: Codex -c is an allowlist: model and model_reasoning_effort 
 });
 
 test("review 3 N12: a known name whose real path is a wrapper or an interpreter is judged as a wrapper", () => {
-  const viaEnv = decideCliMessaging({ argv: ["/r/codex", "claude", "--permission-mode", "auto"], executableReal: "/usr/bin/env", bypassesPrompts: false, exists: none });
+  const viaEnv = decideCliMessaging({ argv: ["/r/codex", "claude", "--permission-mode", "auto"], executableReal: "/usr/bin/env", executableNative: true, bypassesPrompts: false, exists: none });
   assert.deepEqual(viaEnv, { allowed: false, rule: "claude.permission-mode.auto" }, "every CLI's rows over all arguments");
-  const viaBash = decideCliMessaging({ argv: ["/r/claude", "-c", "x"], executableReal: "/usr/bin/bash", bypassesPrompts: false, exists: none });
+  const viaBash = decideCliMessaging({ argv: ["/r/claude", "-c", "x"], executableReal: "/usr/bin/bash", executableNative: true, bypassesPrompts: false, exists: none });
   assert.deepEqual(viaBash, { allowed: false, rule: "wrapper_unparsed" }, "the real path is an interpreter with inline code");
-  const viaPython = decideCliMessaging({ argv: ["/r/mycli", "-c", "x"], executableReal: "/usr/bin/python3.12", bypassesPrompts: false, exists: none });
+  const viaPython = decideCliMessaging({ argv: ["/r/mycli", "-c", "x"], executableReal: "/usr/bin/python3.12", executableNative: true, bypassesPrompts: false, exists: none });
   assert.deepEqual(viaPython, { allowed: false, rule: "wrapper_unparsed" }, "review 3 N18: the real path is scanned for interpreters too");
-  const versioned = decideCliMessaging({ argv: ["/r/claude", "--verbose"], executableReal: "/home/u/.local/share/claude/versions/2.1.332", bypassesPrompts: false, exists: none });
+  const versioned = decideCliMessaging({ argv: ["/r/claude", "--verbose"], executableReal: "/home/u/.local/share/claude/versions/2.1.332", executableNative: true, bypassesPrompts: false, exists: none });
   assert.deepEqual(versioned, { allowed: true, warnings: [] }, "an unknown real-path name (a versioned binary) still trusts the name");
 });
 
@@ -198,7 +198,7 @@ test("review 3 N18: the Codex configuration rule also applies behind a wrapper (
 });
 
 test("review 3 N12: a known name whose real path is an interpreter gets every CLI's rows, even without inline code", () => {
-  const viaNode = decideCliMessaging({ argv: ["/r/claude", "-a", "never"], executableReal: "/usr/bin/node", bypassesPrompts: false, exists: none });
+  const viaNode = decideCliMessaging({ argv: ["/r/claude", "-a", "never"], executableReal: "/usr/bin/node", executableNative: true, bypassesPrompts: false, exists: none });
   assert.deepEqual(viaNode, { allowed: false, rule: "codex.ask-for-approval.never" }, "not only Claude's rows: the real program is an interpreter");
 });
 
@@ -235,15 +235,15 @@ test("review 4 SF11: a wrapper's environment prefix is an allowlist: configurati
 
 test("review 4 N19 and N20: the added wrappers are wrappers; an awk real path is always refused", () => {
   for (const w of ["setsid", "chrt", "ionice", "flock"]) {
-    const d = decideCliMessaging({ argv: ["/r/claude", "-a", "never"], executableReal: `/usr/bin/${w}`, bypassesPrompts: false, exists: none });
+    const d = decideCliMessaging({ argv: ["/r/claude", "-a", "never"], executableReal: `/usr/bin/${w}`, executableNative: true, bypassesPrompts: false, exists: none });
     assert.deepEqual(d, { allowed: false, rule: "codex.ask-for-approval.never" }, w);
   }
-  const awk = decideCliMessaging({ argv: ["/r/claude", 'BEGIN{system("codex -a never")}'], executableReal: "/usr/bin/awk", bypassesPrompts: false, exists: none });
+  const awk = decideCliMessaging({ argv: ["/r/claude", 'BEGIN{system("codex -a never")}'], executableReal: "/usr/bin/awk", executableNative: true, bypassesPrompts: false, exists: none });
   assert.deepEqual(awk, { allowed: false, rule: "wrapper_unparsed" });
 });
 
 test("review 5 N24: a known name is trusted only when its real path is that CLI itself (its name, or a directory named after it)", () => {
-  const real = (argv: string[], executableReal: string) => decideCliMessaging({ argv, executableReal, bypassesPrompts: false, exists: none });
+  const real = (argv: string[], executableReal: string) => decideCliMessaging({ argv, executableReal, executableNative: true, bypassesPrompts: false, exists: none });
   assert.deepEqual(real(["/r/claude", "1", "env", "HOME=/x", "codex"], "/usr/bin/taskset"), { allowed: false, rule: "wrapper_unparsed" }, "a link named claude to a program that runs programs");
   assert.deepEqual(real(["/r/claude", "--verbose"], "/opt/x/some-binary"), { allowed: false, rule: "wrapper_unparsed" }, "an unknown real path is not trusted by name");
   assert.deepEqual(real(["/r/claude", "--verbose"], "/home/u/.local/share/claude/versions/2.1.332"), { allowed: true, warnings: [] }, "Claude's versioned binary lives under a claude directory");
@@ -257,7 +257,7 @@ test("review 5 N26: an environment assignment is judged as a bare NAME=value tok
 });
 
 test("review 6 N28 and N30: inside a CLI-named directory only a version-number file is the CLI; a directory is matched as a whole segment, case-folded; codex too", () => {
-  const real = (argv: string[], executableReal: string) => decideCliMessaging({ argv, executableReal, bypassesPrompts: false, exists: none });
+  const real = (argv: string[], executableReal: string) => decideCliMessaging({ argv, executableReal, executableNative: true, bypassesPrompts: false, exists: none });
   assert.deepEqual(real(["/r/claude", "--verbose"], "/home/u/claude/bin/taskset"), { allowed: false, rule: "wrapper_unparsed" }, "a copy of taskset under a claude directory");
   assert.deepEqual(real(["/r/claude", "--verbose"], "/tmp/claude/evil"), { allowed: false, rule: "wrapper_unparsed" }, "any other file name under a claude directory");
   assert.deepEqual(real(["/r/claude", "--verbose"], "/opt/claude-evil/2.1.332"), { allowed: false, rule: "wrapper_unparsed" }, "a segment, not a substring");
@@ -267,7 +267,7 @@ test("review 6 N28 and N30: inside a CLI-named directory only a version-number f
 });
 
 test("review 6 N29: the npm layout of Claude Code is accepted by its exact package path; anything near it is not", () => {
-  const real = (argv: string[], executableReal: string) => decideCliMessaging({ argv, executableReal, bypassesPrompts: false, exists: none });
+  const real = (argv: string[], executableReal: string) => decideCliMessaging({ argv, executableReal, executableNative: true, bypassesPrompts: false, exists: none });
   assert.deepEqual(real(["/usr/local/bin/claude", "--verbose"], "/usr/local/lib/node_modules/@anthropic-ai/claude-code/cli.js"), { allowed: true, warnings: [] });
   assert.deepEqual(real(["/usr/local/bin/claude", "--verbose"], "/usr/local/lib/node_modules/@evil/claude-code/cli.js"), { allowed: false, rule: "wrapper_unparsed" }, "another scope");
   assert.deepEqual(real(["/usr/local/bin/claude", "--verbose"], "/x/@anthropic-ai/claude-code/other.js"), { allowed: false, rule: "wrapper_unparsed" }, "another file");
@@ -276,7 +276,7 @@ test("review 6 N29: the npm layout of Claude Code is accepted by its exact packa
 });
 
 test("review 7 N35: the layout rules are anchored, a version has at least two numbers, and a Windows real path is read by its segments", () => {
-  const real = (argv: string[], executableReal: string) => decideCliMessaging({ argv, executableReal, bypassesPrompts: false, exists: none });
+  const real = (argv: string[], executableReal: string) => decideCliMessaging({ argv, executableReal, executableNative: true, bypassesPrompts: false, exists: none });
   assert.deepEqual(real(["/r/claude", "--verbose"], "/home/u/.local/share/claude/versions/evil2.1.332"), { allowed: false, rule: "wrapper_unparsed" }, "the version must be the whole file name");
   assert.deepEqual(real(["/r/claude", "--verbose"], "/opt/claude/7"), { allowed: false, rule: "wrapper_unparsed" }, "a single number is not a version");
   assert.deepEqual(real(["/r/claude", "--verbose"], "/x/@anthropic-ai/claude-code/cli.jsx"), { allowed: false, rule: "wrapper_unparsed" }, "the package script must end the path");

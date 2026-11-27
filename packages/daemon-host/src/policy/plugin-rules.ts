@@ -33,7 +33,7 @@ export const PLUGIN_METHOD_SETS: Readonly<Record<PluginPermission, readonly stri
 export const PLUGIN_SET_TIER: Readonly<Record<string, number>> = Object.freeze({ "axis.pages/1.create": 2, "axis.pages/1.update": 2, "axis.runs/1.start": 3 });
 
 /** Whole contracts no plugin may reach. */
-export const PLUGIN_DENY_CONTRACTS: readonly string[] = Object.freeze(["axis.approvals/", "axis.plugins/", "axis.audit/", "axis.providers/", "axis.projects/", "axis.worktrees/", "axis.git/", "axis.forge/", "axis.events/"]);
+export const PLUGIN_DENY_CONTRACTS: readonly string[] = Object.freeze(["axis.approvals/", "axis.plugins/", "axis.audit/", "axis.providers/", "axis.projects/", "axis.worktrees/", "axis.git/", "axis.forge/", "axis.events/", "axis.integrations/", "axis.usage/", "axis.attention/"]);
 
 /** Methods no plugin may reach, whatever is granted (ADR 0008 decision 4's deny list and decision 6's exclusions). */
 export const PLUGIN_DENY_METHODS: ReadonlySet<string> = new Set([
@@ -59,6 +59,17 @@ export const PLUGIN_DENY_METHODS: ReadonlySet<string> = new Set([
   "axis.pages/1.restore",
   "axis.pages/1.markReviewed",
   "axis.pages/1.delete",
+  // Task Start, its preview, an assignment that starts work, and delete are the user's alone (ADR 0008 decision 6, TSK-1).
+  "axis.tasks/1.start",
+  "axis.tasks/1.startPreview",
+  "axis.tasks/1.assign",
+  "axis.tasks/1.delete",
+  // Not decided for plugins yet (ADR 0008 decides only list and get for tasks.read and draft create and update for tasks.write):
+  // denied until a decision names them (review of the audit-A fix, N3).
+  "axis.tasks/1.revisions",
+  "axis.tasks/1.setStatus",
+  "axis.tasks/1.link",
+  "axis.tasks/1.unlink",
   // The CLI endpoint switch (PV-M7 slice 2): the user's alone. The disable too, so a plugin cannot switch the user's endpoints off.
   "axis.messages/1.enableCliEndpoint",
   "axis.messages/1.disableCliEndpoint",
