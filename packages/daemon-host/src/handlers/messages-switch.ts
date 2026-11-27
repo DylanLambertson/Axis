@@ -14,8 +14,8 @@ import type { ProjectMutex } from "../worktrees/project-mutex.js";
  *   plugin deny list, and these handlers refuse every other caller again with `not_found`.
  * - **On:** tier 4, only inside a spent approval for this target (main's native confirmation; `cli-endpoint-content.ts`), through
  *   the approved enable action, the one holder of the journal's switch mint. The write runs inside the content hook's hold.
- * - **Off:** tier 1, at once, under the same mutex; no token (a decrease). The relay reads the switch at every mint and every
- *   relayed message, so an endpoint serves nothing more once it is off (slice 2 PR 2 adds the eager revocation).
+ * - **Off:** tier 1, at once, under the same mutex; no token (a decrease). After the write, every live endpoint is revoked at
+ *   once (`onChanged`); and the relay reads the switch at every mint and every relayed message, so none serves after it is off.
  *
  * What the switch turns on is exactly the CLI endpoint path: its relay, its own run-to-worker lookup and minting for an enabled
  * CLI worker. It turns on nothing else: delivery into runs and the composer's message tools stay with `messaging.enabled`.
@@ -26,6 +26,24 @@ export interface CliEndpointSwitchDeps {
   readonly mutex: Pick<ProjectMutex, "run">;
   readonly platform: NodeJS.Platform;
   readonly onPreview?: (target: string, contentDigest: string, text: string) => void;
+  /** After a committed change: the live wiring turns on (the next CLI run gets an endpoint) or off (every endpoint revoked). */
+  readonly onChanged?: (enabled: boolean) => void;
+  /** The live wiring failed after a committed change: the host logs a closed line (nothing about the change itself). */
+  readonly onLiveError?: () => void;
+}
+
+/** Tell the live wiring; its failure never undoes the committed change (the relay reads the switch at every mint and message). */
+function changed(deps: CliEndpointSwitchDeps, enabled: boolean): void {
+  try {
+    deps.onChanged?.(enabled);
+  } catch {
+    // The backstop holds: nothing is minted while off, and every endpoint is revoked at its next message.
+    try {
+      deps.onLiveError?.();
+    } catch {
+      // a failing log line never changes the outcome
+    }
+  }
 }
 
 type SwitchMethod = "enableCliEndpoint" | "disableCliEndpoint";
@@ -54,11 +72,21 @@ export function createCliEndpointSwitchHandlers(deps: CliEndpointSwitchDeps | un
       if (deps === undefined || deps.platform === "win32") return fail("E_UNAVAILABLE", "endpoint_unavailable");
       // Only inside a spent approval for this target: the content hook holds the switch mutex around this call.
       if (context.approved?.target !== CLI_ENDPOINT_TARGET) return fail("E_NOT_FOUND", "not_found");
-      return { enabled: true, changed: deps.action.switchOn().changed };
+      const out = { enabled: true, changed: deps.action.switchOn().changed };
+      changed(deps, true);
+      return out;
     }),
     disableCliEndpoint: guarded("disableCliEndpoint", async (context) => {
       if (deps === undefined) return fail("E_UNAVAILABLE", "endpoint_unavailable");
-      return deps.mutex.run(CLI_ENDPOINT_LOCK, async () => ({ enabled: false, changed: deps.store.switchOff().changed }), context.signal);
+      return deps.mutex.run(
+        CLI_ENDPOINT_LOCK,
+        async () => {
+          const out = { enabled: false, changed: deps.store.switchOff().changed };
+          changed(deps, false);
+          return out;
+        },
+        context.signal,
+      );
     }),
   });
 }

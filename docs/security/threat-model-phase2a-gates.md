@@ -1,10 +1,10 @@
 # Threat model: Phase 2a gate lines, numbered, with the ticket that proves each
 
 - **Status:** Draft for review (ticket PV-R4). Companion to `threat-model-phase2a.md`.
-- **Date:** 2026-11-22. **Code baseline:** `origin/main` at `0addd58`.
+- **Date:** 2026-11-22. **Code baseline:** `origin/main` at `9e2b5ad5` for the status column; each partial line still needs the full gate review.
 - **What this is.** The 2a gate (`docs/ROADMAP.md`, Phase 2a) is "the gate lines in `inter-agent-communication.md` §11, `inter-agent-cli-endpoint.md` §7 and `extensibility.md` §9 (2a items) pass". ADR 0007 and ADR 0010 add validation criteria that are security gate lines too. This file numbers them all once as **2a/Ln**, so the threat rows and the register can cite them, and names the ticket whose tests must prove each line. The wording of a line is its source's; where this file shortens it, the source wins.
 - **Numbering.** L1 to L19 keep the numbers of the messaging design §11; L20 to L29 are the endpoint design §7 lines 1 to 10; L30 to L40 are ADR 0007's (validation criteria and the decisions they test); L41 to L49 are the pages and tasks lines of `extensibility.md` §9 and ADR 0010; L50 to L55 test the decisions of `threat-model-phase2a.md` §6. New lines are appended, never renumbered.
-- **State** is what exists on `0addd58`: **Evidence** (a merged test already covers the daemon half; the line still needs its full run), **Partial** or **Open**. PV-M8 collects the evidence for the whole gate.
+- **State** is what exists on `9e2b5ad5`: **Evidence** (a merged test already covers the daemon half; the line still needs its full run), **Partial** or **Open**. PV-M8 collects the evidence for the whole gate.
 
 ## 1. Messaging (messaging design §11)
 
@@ -20,7 +20,7 @@
 | 2a/L8 | Control and bidirectional characters are escaped in the thread view, in composer delivery and on the CLI read path | IAC-4, IAC-14 | PV-M5, PV-M6 | Partial: `toMessageText` and delivery [`contracts-messages-text.test.ts`] |
 | 2a/L9 | No message crosses a project, through a group id or thread id either; recipients spanning projects are refused | IAC-8 | PV-M3, PV-G3 | Partial: in the service [`messages-send.test.ts`] |
 | 2a/L10 | An agent and a CLI token of group 1 reading or posting into a group-2 thread get `not_found` identical to an unknown id, audited; `threads` lists only the caller's | IAC-13 | PV-M3 (built for the service), PV-M4, PV-M6 | Partial: structural identity [`messages-read.test.ts`] |
-| 2a/L11 | Taint, one line per source: `read_messages` then `write_file` in the same reply; `read_page` of an agent-revised page (also after a later user edit); a run started from an agent-edited or imported task; a task read; plugin output; integration data; an always-allow does not bypass it | IAC-2, PAG-2, TSK-2 | PV-M4, PV-Q1, PV-T1 (2a); PV-K4, PV-N1 (4a sources) | Partial: the core per source through `taintSources` |
+| 2a/L11 | Taint, one line per source: `read_messages` then `write_file` in the same reply; `read_page` of an agent-revised page (also after a later user edit); a run started from an agent-edited or imported task; a task read; plugin output; integration data; an always-allow does not bypass it | IAC-2, PAG-2, TSK-2 | PV-M4, PV-Q1, PV-T1 (2a); PV-K4, PV-N1 (4a sources) | Partial: the core has the closed source enum; `integration_data` has no producer or user hand-off, so the integration part stays open |
 | 2a/L12 | A flood from one sender is refused at its quota; the user's earlier message is still delivered; one user notice | IAC-16 | PV-M3 (notice later) | Partial: refuse at quota |
 | 2a/L13 | The transitive minter walk fails if a minter is reachable from the message binding | DMN-3 | PV-M3 later | Open |
 | 2a/L14 | A message accepted under a cross-group setting is not delivered after it is turned off; a send into an old thread is refused for the recipient no longer allowed; `accepts from: none` gets nothing | IAC-8, HOME-3 | PV-M3 slice 2, PV-G4 | Partial: delivery re-check |
@@ -34,30 +34,30 @@
 
 | Line | Gate line (short) | Threats | Proved by | State |
 |---|---|---|---|---|
-| 2a/L20 | A CLI run without messaging has neither endpoint variable (PTY-5 test extended) | IAC-19 | PV-M6 | Open (no variable exists) |
-| 2a/L21 | After run end an open shim connection and a new one with the old token are refused; Pause closes open connections at once (the listener stays) and a new connection's requests answer `paused` | IAC-12 | PV-M6 | Open |
-| 2a/L22 | A fifth connection is closed; no `auth` within 2 s or an oversized frame closes; a 64 KiB unframed write before auth does not grow memory past the frame cap | IAC-15 | PV-M6 | Open |
-| 2a/L23 | Reads limited to 60 a minute and replies to the caps; 1,000 bad tokens give at most one aggregated audit row a minute | IAC-15 | PV-M6 | Open |
-| 2a/L24 | A body with `ESC ] 52`, `ESC ] 8` and a bidi override comes back escaped through the endpoint and inside the label | IAC-14 | PV-M6, PV-M7 | Open |
-| 2a/L25 | The token appears in no journal, audit row, log or crash output (canary) | IAC-6 | PV-M6 | Open |
-| 2a/L26 | Unix: a socket directory with mode `0755`, another owner or a symlink is refused by the pty process and the shim. Windows: a pre-created pipe makes creation fail; another user's client is refused | IAC-10 | PV-M6, PV-M7 | Open |
+| 2a/L20 | A CLI run without messaging has neither endpoint variable (PTY-5 test extended) | IAC-19 | PV-M6 | Partial: absence and spawn environment covered by `pty-process/test/endpoint-host.test.ts`; full CLI gate pending |
+| 2a/L21 | After run end an open shim connection and a new one with the old token are refused; Pause closes open connections at once (the listener stays) and a new connection's requests answer `paused` | IAC-12 | PV-M6 | Partial: run-end, old-token and Pause behavior covered by `daemon-host/test/messages-endpoint.test.ts` and `messages-endpoint-listener.test.ts`; full gate pending |
+| 2a/L22 | A fifth connection is closed; no `auth` within 2 s or an oversized frame closes; a 64 KiB unframed write before auth does not grow memory past the frame cap | IAC-15 | PV-M6 | Partial: connection and frame bounds covered by `pty-process/test/endpoint-host.test.ts`; full gate pending |
+| 2a/L23 | Reads limited to 60 a minute and replies to the caps; 1,000 bad tokens give at most one aggregated audit row a minute | IAC-15 | PV-M6 | Partial: read rate and aggregated failure audit covered by `daemon-host/test/messages-endpoint.test.ts`; full gate pending |
+| 2a/L24 | A body with `ESC ] 52`, `ESC ] 8` and a bidi override comes back escaped through the endpoint and inside the label | IAC-14 | PV-M6, PV-M7 | Partial: endpoint escaping covered by `daemon-host/test/messages-endpoint.test.ts`; shim label remains to verify in the full gate |
+| 2a/L25 | The token appears in no journal, audit row, log or crash output (canary) | IAC-6 | PV-M6 | Partial: canary covered by `daemon-host/test/messages-endpoint-canary.test.ts`; full gate pending |
+| 2a/L26 | Unix: a socket directory with mode `0755`, another owner or a symlink is refused by the pty process and the shim. Windows: a pre-created pipe makes creation fail; another user's client is refused | IAC-10 | PV-M6, PV-M7 | Partial: Unix listener directory and socket covered by `pty-process/test/endpoint-host.test.ts`; shim check and Windows helper remain open |
 | 2a/L27 | A peer of another uid or outside the run's tree is refused where the check exists; skipped with a recorded reason otherwise | IAC-10 | PV-M6 | Open (no helper on Unix, ADR 0007 §7.2) |
-| 2a/L28 | Enabling messaging for a marked bypass entry is refused; with a known CLI project-configuration file, enabling needs a second confirmation | IAC-1 | PV-M7 | Partial: enabling is refused for every agent |
+| 2a/L28 | Enabling messaging for a marked bypass entry is refused; with a known CLI project-configuration file, enabling needs a second confirmation | IAC-1 | PV-M7 | Partial: bypass and project-file acknowledgement covered by `daemon-host/test/messages-enable-check.test.ts`; full UI gate pending |
 | 2a/L29 | The thread view and the audit show endpoint messages as unverified | IAC-6, IAC-18 | PV-M5, PV-M6 | Open |
 
 ## 3. ADR 0007
 
 | Line | Gate line (short) | Threats | Proved by | State |
 |---|---|---|---|---|
-| 2a/L30 | A CLI run with messaging shows no listening socket or port owned by the daemon; the endpoint belongs to the pty process and is removed at run end | TB14, TB15 | PV-M6 | Open |
-| 2a/L31 | A relayed frame with a wrong token, or naming another run, is refused by the daemon; the caller is never taken from a frame | IAC-6, IAC-17 | PV-M6 | Open |
+| 2a/L30 | A CLI run with messaging shows no listening socket or port owned by the daemon; the endpoint belongs to the pty process and is removed at run end | TB14, TB15 | PV-M6 | Partial: pty process owns the listener (`pty-process/test/endpoint-host.test.ts`); full desktop gate pending |
+| 2a/L31 | A relayed frame with a wrong token, or naming another run, is refused by the daemon; the caller is never taken from a frame | IAC-6, IAC-17 | PV-M6 | Partial: relay identity and token refusals covered by `daemon-host/test/messages-endpoint.test.ts`; full gate pending |
 | 2a/L32 | The shim's label has a per-response boundary and prefixes every body line (a line ends only at LF); a body line starting with `| ` or the boundary is prefixed again | IAC-4, IAC-14 | PV-M7 | Open |
-| 2a/L33 | A composer message at hop h read by a CLI run and relayed into a new thread carries h + 1; the CLI run's received hop is per run and never lowered; the chain stops at 8 | IAC-5 | PV-M6 | Open |
-| 2a/L34 | On Windows without the native helper, enabling messaging for a CLI agent is refused | IAC-10 | PV-M6 | Partial: refused everywhere today |
-| 2a/L35 | The enable dialog states that the CLI may act on messages without asking; a changed CLI project-configuration file suspends messaging for the run until confirmed again | IAC-1 | PV-M7 | Open |
+| 2a/L33 | A composer message at hop h read by a CLI run and relayed into a new thread carries h + 1; the CLI run's received hop is per run and never lowered; the chain stops at 8 | IAC-5 | PV-M6 | Partial: hop increase and stop at 8 covered by `daemon-host/test/messages-endpoint.test.ts`; full gate pending |
+| 2a/L34 | On Windows without the native helper, enabling messaging for a CLI agent is refused | IAC-10 | PV-M6 | Partial: Windows remains unsupported and refuses; full platform gate pending |
+| 2a/L35 | The enable dialog states that the CLI may act on messages without asking; a changed CLI project-configuration file suspends messaging for the run until confirmed again | IAC-1 | PV-M7 | Partial: file acknowledgement and mint re-check covered by `daemon-host/test/messages-enable-check.test.ts`; dialog copy and full gate pending |
 | 2a/L36 | An endpoint `send` is recorded with the endpoint's agent and run and `verified: false`, in the message and in `message.send` | IAC-6 | PV-M6 | Open |
-| 2a/L37 | The daemon refuses: a frame on an unauthenticated or closed relay connection id; a frame for a run not RUNNING or a revoked token; a relay from any other channel; the fifth relay in flight; a second auth after a failed one; an endpoint id it did not mint | IAC-17 | PV-M6 | Open |
-| 2a/L38 | A spawn environment carrying `AXIS_MESSAGES_ENDPOINT` or `AXIS_MESSAGES_TOKEN`, in any case, is refused; with the request exactly those two names are added | IAC-19 | PV-M6 | Partial: every `AXIS_*` name is refused [`env-scrub.test.ts`] |
+| 2a/L37 | The daemon refuses: a frame on an unauthenticated or closed relay connection id; a frame for a run not RUNNING or a revoked token; a relay from any other channel; the fifth relay in flight; a second auth after a failed one; an endpoint id it did not mint | IAC-17 | PV-M6 | Partial: relay refusals and in-flight cap covered by `daemon-host/test/messages-endpoint.test.ts`; full gate pending |
+| 2a/L38 | A spawn environment carrying `AXIS_MESSAGES_ENDPOINT` or `AXIS_MESSAGES_TOKEN`, in any case, is refused; with the request exactly those two names are added | IAC-19 | PV-M6 | Partial: exact two-name injection and hostile spawn environment refusal covered by `pty-process/test/endpoint-host.test.ts`; full gate pending |
 | 2a/L39 | An endpoint path over 100 bytes falls back to `/tmp/axis-<uid>/`, then refuses; no path is ever truncated | IAC-10 | PV-M6 | Open |
 | 2a/L40 | After the project is untrusted, the run is stopped and its endpoint refuses an open connection and the old token | IAC-20, TRU-2 | PV-M6 with trust design S1b | Open |
 
@@ -81,7 +81,7 @@
 |---|---|---|---|---|
 | 2a/L50 | The `bodyMac` key file is created `O_EXCL` and atomically with mode `0600` in a `0700` directory of the Axis data directory; the key is in no journal table, export or log (canary); with the file removed, new hashes use a new key and stored hashes stay in the audit (O-1) | IAC-7 | PV-M2 or PV-M3 follow-up | Open |
 | 2a/L51 | Archiving an agent: its queued deliveries are cancelled and its senders' quota slots released; a send naming it is `recipient_refused`; its endpoint is revoked and its live runs stop; the user still reads its threads and no agent can; its settings survive a restore (O-2) | IAC-9, IAC-16, HOME-1 | PV-G3, PV-M3 | Open |
-| 2a/L52 | Enabling messaging for a CLI entry the in-repository list does not know is refused; the list is one file with unit tests (O-3) | IAC-1 | PV-M7 | Partial: refused for every entry today |
+| 2a/L52 | Enabling messaging for a CLI entry the in-repository list does not know is refused; the list is one file with unit tests (O-3) | IAC-1 | PV-M7 | Partial: unknown entries and bypass checks covered by `daemon-host/test/messages-enable-check.test.ts`; full gate pending |
 | 2a/L53 | Marking a page version reviewed without main's native confirmation does not change its taint; a renderer request alone is refused (O-4) | PAG-2 | PV-Q1, PV-Q2 | Met: tier 4 with the page named in main's dialog; `daemon-host/test/pages-native.test.ts` (a renderer-only resolve releases nothing; a changed page refuses the approval) |
 | 2a/L54 | The 21st approval request (approved or denied) of any side-effecting call in one tainted run ends the run with a closed reason instead of asking; a setting can lower the cap and cannot raise it; the count is in the journal and survives a resume and a daemon restart (O-5) | IAC-2, IAC-3 | PV-M4 | Open |
 | 2a/L55 | A caller of kind `plugin` is refused by `send`, `thread`, `threads`, `read` and `markRead`, also when it addresses only the user (O-6) | IAC-6, PLG-3 | PV-M3 follow-up | Open (`mayAddress` lets a plugin address the user today; no plugin binding exists) |

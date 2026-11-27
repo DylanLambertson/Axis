@@ -11,6 +11,9 @@ import { registerForgeServing } from "./compose-forge.js";
 import { registerAttentionServing } from "./handlers/attention.js";
 import { registerUsageServing } from "./handlers/usage.js";
 import { usageServiceDeps } from "./usage/service.js";
+import { integrationsVault, type SecretBackend } from "./bindings/integrations.js";
+import { registerIntegrationsServing } from "./handlers/integrations.js";
+import { createIntegrationsService, type IntegrationsSender } from "./integrations/service.js";
 import { createCommitPreparer, createReviewService } from "./bindings/review.js";
 import { createTempIndexProvider } from "./bindings/review-tempindex.js";
 import { createSshResolver, unavailableSshResolver, type SshSpawn } from "./bindings/ssh-resolver.js";
@@ -33,7 +36,7 @@ import { registerComposerRunsHandlers, startComposerRun, type ComposerRunsHandle
 import { registerPluginsHandlers } from "./handlers/plugins.js";
 import { createGrantAction } from "./plugins/grant-action.js";
 import { createCliEndpointSwitchAction } from "./messages/cli-endpoint-action.js";
-import { ProjectMutex } from "./worktrees/project-mutex.js";
+import { hostCliSwitch, type CliEndpointLive } from "./compose-parts.js";
 import type { HandlerContext } from "@axis/daemon";
 import { PushedBases } from "./handlers/git-common.js";
 import { registerGitHandlers } from "./handlers/git.js";
@@ -72,6 +75,8 @@ export interface ServingParts {
   readonly composer?: ComposerService;
   readonly providers?: { readonly cachedModels: NonNullable<ProvidersHandlerDeps["cachedModels"]>; readonly credential: NonNullable<ProvidersHandlerDeps["credential"]> };
   readonly messaging?: MessagingBinding;
+  /** The live CLI endpoint wiring (PV-M7 slice 2): the switch handlers turn it on and off. */
+  readonly cliLive?: CliEndpointLive;
   readonly pages?: PagesService;
   readonly tasks?: TasksService;
 }
@@ -95,6 +100,8 @@ export interface ServingContext {
   readonly minter: RunTrustMinter;
   /** The host windows' lifetimes (PV-K2 K2-g4b): a plugin's run start is checked against the one pinned at issue. */
   readonly hostWindows: Pick<WindowLifetimes, "alive">;
+  /** The integrations' authorized sender (the egress client, which only the root may import) and secret backend, if any. */
+  readonly integrations: { readonly sender: IntegrationsSender; readonly backend: SecretBackend | undefined };
 }
 
 /** The services of a healthy host, each registered through the registrar and nothing else. */
@@ -144,20 +151,21 @@ export function registerServing(registrar: HandlerRegistrar, services: HostServi
     grantsEnabled: ctx.pluginGrants === true,
     onPreview: approvals.onPreview ?? (() => undefined),
   });
-  if (built.messaging === undefined) throw new AxisError("E_INTERNAL", "The host composition is incomplete", { reason: "not_built" });
+  if (built.messaging === undefined || built.cliLive === undefined) throw new AxisError("E_INTERNAL", "The host composition is incomplete", { reason: "not_built" });
   // PV-M7 slice 1: enabling a CLI worker's messaging checks its launch entry (from main, as a CLI start does) and workspace.
   registerMessagesHandlers(registrar, {
     ...built.messaging,
     checkEnable: hostEnableCheck({ journal, settingsGet: (k, o) => control.settingsGet(k, o), platform: config.platform }),
     // PV-M7 slice 2: the user's CLI endpoint switch. The journal's switch mint is taken here, once, at startup, straight into the
     // approved enable action (the writer rule checks it); anything that took it first makes this throw and the host not start.
-    cliSwitch: {
+    cliSwitch: hostCliSwitch({
       action: createCliEndpointSwitchAction(journal.cliEndpoint, journal.cliEndpoint.takeSwitchMint()),
       store: journal.cliEndpoint,
-      mutex: new ProjectMutex(),
+      live: built.cliLive,
+      onLiveError: () => logger?.warn("request.failed", { reason: "cli_endpoint_live" }),
       platform: config.platform,
       onPreview: approvals.onPreview ?? (() => undefined),
-    },
+    }),
   });
   if (built.pages === undefined) throw new AxisError("E_INTERNAL", "The host composition is incomplete", { reason: "not_built" });
   // axis.pages/1 (PV-Q1 slice 2): the user's own connection only; main's dialog for markReviewed and delete names the page.
@@ -222,4 +230,18 @@ export function registerServing(registrar: HandlerRegistrar, services: HostServi
     composerRun: (id) => composer.get(id),
   });
   registerUsageServing(registrar, usageServiceDeps(journal, composer));
+  // axis.integrations/1 list, status and read (PV-N1f read slice): with no backend nothing is revealed, sent or audited.
+  const { backend } = ctx.integrations;
+  registerIntegrationsServing(registrar, {
+    service: createIntegrationsService({
+      vault: integrationsVault(backend),
+      sender: ctx.integrations.sender,
+      redactor: services.redactor,
+      audit: { append: (e) => (audit.append(e), services.anchors.noteWrite()) },
+      now: () => ports.clock.monotonic(),
+    }),
+    journal,
+    gate,
+    now: () => ports.clock.monotonic(),
+  });
 }
