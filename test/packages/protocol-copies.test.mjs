@@ -175,6 +175,14 @@ test("the closed-set refusal reasons of axis.git/1 and axis.review/1 are what th
   for (const [reason, [file, pattern]] of Object.entries(HOST_RAISED)) assert.match(hostFile(file), pattern, `the host no longer raises "${reason}"`);
   // In the closed set but never produced: kept so an older client still parses every answer.
   const RETIRED = { index_changed: "DC-0: the real index is no longer part of a commit" };
+  // Nor does the host produce a retired reason: it may name one only in the reason-to-words table (review 1 S3).
+  const WORDS_TABLE = "handlers/git-errors.ts";
+  const walk = (dir) => readdirSync(new URL(`../../packages/daemon-host/src/${dir}`, import.meta.url), { withFileTypes: true })
+    .flatMap((d) => (d.isDirectory() ? walk(`${dir}${d.name}/`) : d.name.endsWith(".ts") ? [`${dir}${d.name}`] : []));
+  for (const reason of Object.keys(RETIRED)) {
+    const users = walk("").filter((f) => hostFile(f).includes(reason));
+    assert.deepEqual(users, [WORDS_TABLE], `"${reason}" is retired: only ${WORDS_TABLE} may name it in daemon-host`);
+  }
   // Wire to packages: every listed reason exists, and is raised under the code the contract lists it under.
   for (const [reason, codes] of wire) {
     if (Object.hasOwn(HOST_RAISED, reason)) {

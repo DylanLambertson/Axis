@@ -2,6 +2,7 @@
 // G3: the commit is made from the reviewed tree and the expected parent with `commit-tree`, and the branch is moved by
 // compare-and-swap, so it cannot land on a parent other than the reviewed one and cannot overwrite a racing commit.
 import { OBJECT_ID, type DaemonGit } from "./args.js";
+import { refreshIndex } from "./indexRefresh.js";
 import { GitOpsError, conflict, headMoved, internal } from "./errors.js";
 import { assertNoOperation } from "./operation.js";
 import type { CommitPlan, CommitResult } from "./commit.js";
@@ -56,5 +57,7 @@ export async function runBound(deps: GitOpsDeps, plan: CommitPlan, git: DaemonGi
   if (after.code !== 0 || line(after) !== commit) {
     throw internal(`the branch no longer points at the new commit ${commit}`, { updated: true, rolledBack: false });
   }
-  return { commit, tree: plan.reviewedTreeHash };
+  // DC-0 slice 2: only now that the branch moved, the narrow refresh of the real index (never throws; a skip leaves it as it was).
+  const indexRefresh = await refreshIndex(deps, plan.worktree, plan.parent, commit);
+  return { commit, tree: plan.reviewedTreeHash, indexRefresh };
 }

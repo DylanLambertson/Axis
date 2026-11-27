@@ -231,10 +231,10 @@ test("a git add between prepare and commit is neither committed nor overwritten"
     const prepared = await prepareCommit(f.deps, b);
     f.write("evil.txt", "x\n");
     f.git("add", "evil.txt");
-    const staged = f.git("write-tree").trim();
+    const evil = f.git("ls-files", "--stage", "evil.txt");
     const input = await prepared.handoff("m");
     assert.equal((await executeCommit(f.gitOps, input)).tree, b.reviewedTree, "the commit is the reviewed tree, without evil.txt");
-    assert.equal(f.git("write-tree").trim(), staged, "the user's staging is still there");
+    assert.equal(f.git("ls-files", "--stage", "evil.txt"), evil, "the user's staging is still there");
     assert.equal((await refusal2(planCommit(f.gitOps, input))).details?.["reason"], "head_moved", "and the spent review cannot be committed twice");
   } finally {
     f.cleanup();

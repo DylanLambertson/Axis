@@ -11,3 +11,4 @@ export { scanOutgoing, binaryRow, BINARY_ID, MAX_DIFF, MAX_COMMITS, MAX_TOTAL, t
 export * from "./compareUrl.js";
 export * from "./nodeRunner.js";
 export { resolveGit } from "./gitPath.js";
+export { refreshIndex, parseTaggedListing, type IndexRefreshOutcome, type IndexRefreshHooks } from "./indexRefresh.js";

@@ -6,7 +6,7 @@
 // refusal, git-ops comparing the real index with the reviewed tree (a commit over the user's own staging is then refused).
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { GitOpsError, executeCommit } from "@axis/git-ops";
 import { ReviewSession, prepareCommit, type ReviewBinding } from "../src/index.js";
@@ -14,6 +14,8 @@ import { fixture, refusal, type Fixture } from "./fixture.js";
 
 const BASE = Array.from({ length: 20 }, (_, i) => `l${i + 1}\n`).join("");
 const indexBytes = (f: Fixture): Buffer => readFileSync(join(f.repo, ".git", "index"));
+/** One path's stage-0 entry in the real index as `mode oid`, read without writing it. */
+const stagedOf = (f: Fixture, path: string): string => f.git("ls-files", "--stage", "--", path).replace(/^(\d+) (\S+) 0\t.*\n$/, "$1 $2");
 
 /** The user's own staging, different from HEAD and from what will be reviewed: a staged new file and a staged edit. */
 function userStaging(f: Fixture): Buffer {
@@ -39,10 +41,11 @@ async function gitOpsRefusal(p: Promise<unknown>): Promise<GitOpsError> {
   return assert.fail("expected a refusal");
 }
 
-test("a commit leaves the real index byte-identical, with the user's own staging in it, and holds exactly the reviewed tree", async () => {
+test("a commit keeps the user's own staging in the real index, refreshes only what equalled old HEAD, and holds exactly the reviewed tree", async () => {
   const f = fixture();
   try {
     const before = userStaging(f);
+    const stagedBefore = new Map(["staged.txt", "keep.txt"].map((p) => [p, stagedOf(f, p)]));
     const b = await reviewedA(f);
     const prepared = await prepareCommit(f.deps, b);
     assert.deepEqual(indexBytes(f), before, "prepare wrote nothing to the real index (kills staging into it)");
@@ -50,7 +53,11 @@ test("a commit leaves the real index byte-identical, with the user's own staging
     assert.equal(result.tree, b.reviewedTree);
     assert.equal(f.git("rev-parse", "HEAD^{tree}").trim(), b.reviewedTree);
     assert.equal(f.git("rev-parse", "HEAD~1").trim(), b.head);
-    assert.deepEqual(indexBytes(f), before, "the commit wrote nothing to the real index (kills git-ops comparing it: the commit would be refused)");
+    // After the commit only the narrow refresh writes the index (DC-0 slice 2): a.txt, still equal to old HEAD, becomes new
+    // HEAD's entry; the user's own staged entries are kept as they were.
+    assert.deepEqual(result.indexRefresh, { refreshed: 1 }, "kills git-ops comparing the real index: the commit would be refused");
+    for (const p of ["staged.txt", "keep.txt"]) assert.equal(stagedOf(f, p), stagedBefore.get(p), `${p}: the user's staging is kept`);
+    assert.equal(stagedOf(f, "a.txt"), f.git("ls-tree", "HEAD", "a.txt").replace(/^(\d+) blob (\S+)\t.*\n$/, "$1 $2"));
     assert.equal(f.git("cat-file", "-p", "HEAD:keep.txt"), "keep\n", "the user's staged keep.txt is not committed");
     assert.throws(() => f.git("cat-file", "-e", "HEAD:staged.txt"), "the user's staged new file is not committed");
     assert.ok(f.indexes.created > 0);
@@ -100,10 +107,9 @@ test("git-ops commits the reviewed tree object, not the index, and refuses an id
       const e = await gitOpsRefusal(executeCommit(f.gitOps, { worktree: f.wt, reviewedTreeHash: bad, message: "m", expectedParent: f.head(), expectedBranch: "axis/feat" }));
       assert.ok(e.code === "E_CONFLICT" || e.code === "E_INVALID_ARGUMENT", `${bad}: ${e.code}`);
     }
-    const before = indexBytes(f);
     const result = await executeCommit(f.gitOps, { worktree: f.wt, reviewedTreeHash: b.reviewedTree, message: "m", expectedParent: f.head(), expectedBranch: "axis/feat" });
     assert.equal(result.tree, b.reviewedTree, "the index (still HEAD's) was never asked");
-    assert.deepEqual(indexBytes(f), before);
+    assert.equal(f.git("write-tree").trim(), b.reviewedTree, "then the refresh made the index new HEAD's");
   } finally {
     f.cleanup();
   }
@@ -117,6 +123,20 @@ test("a sparse checkout is still refused, with the index untouched: its files ou
     const before = indexBytes(f);
     assert.equal((await refusal(prepareCommit(f.deps, b))).code, "E_UNAVAILABLE");
     assert.deepEqual(indexBytes(f), before);
+  } finally {
+    f.cleanup();
+  }
+});
+
+test("core.splitIndex=true: the private index writes no sharedindex file into the repository (review 1 S1)", async () => {
+  const f = fixture();
+  try {
+    f.git("config", "core.splitIndex", "true");
+    const shared = (): string[] => readdirSync(join(f.repo, ".git")).filter((n) => n.startsWith("sharedindex.")).sort();
+    const before = { shared: shared(), index: indexBytes(f) };
+    const b = await reviewedA(f);
+    await prepareCommit(f.deps, b);
+    assert.deepEqual({ shared: shared(), index: indexBytes(f) }, before, "kills a private-index call without the split-index pin");
   } finally {
     f.cleanup();
   }

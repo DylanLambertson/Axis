@@ -159,7 +159,7 @@ test("commit: staging the person did after prepare is kept, and the new file mak
   assert.equal(r.head(), req.expectedParent);
 });
 
-test("commit: a live run in the workspace refuses it and the person's staging is put back", { skip: SKIP ?? false }, async (t) => {
+test("commit: a live run in the workspace refuses it and leaves the branch where it was", { skip: SKIP ?? false }, async (t) => {
   const { r, c } = await setup(t, { runsActive: true });
   const req = await review(r, c);
   const res = await commit(c, r, req);

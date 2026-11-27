@@ -71,6 +71,7 @@ export function makeDeps(runner: FakeRunner, over: Partial<GitOpsDeps> = {}): Gi
     runHooks: true,
     isCliRunActive: () => false,
     assertNoDrift: async () => undefined,
+    assertReviewFresh: async () => undefined,
     platform: "linux",
     ...over,
   };

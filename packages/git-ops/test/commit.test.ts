@@ -201,7 +201,10 @@ async function failure(p: Promise<unknown>): Promise<GitOpsError> {
 
 test("execute: success returns the commit and tree, and the ref moves by compare-and-swap from the expected parent", async () => {
   const r = bound();
-  assert.deepEqual(await executeCommit(makeDeps(r), input), { commit: NEW, tree: TREE });
+  const res = await executeCommit(makeDeps(r), input);
+  assert.deepEqual([res.commit, res.tree], [NEW, TREE]);
+  // The fake repository has no index file: the post-commit refresh is a skip, and a skip never fails the commit.
+  assert.ok(res.indexRefresh !== undefined && "skipped" in res.indexRefresh, JSON.stringify(res.indexRefresh));
   const update = r.calls.find((c) => sub(c.argv)[0] === "update-ref");
   assert.ok(update);
   assert.deepEqual(sub(update.argv).slice(-3), ["refs/heads/axis/feat", NEW, HEAD]);
@@ -259,4 +262,14 @@ test("a failed commit-tree is a conflict with a fixed message: git's stderr (pat
   assert.equal(e.code, "E_CONFLICT");
   assert.equal(e.message, "git commit-tree failed (exit 128); the branch was not updated");
   assert.equal(r.calls.some((c) => sub(c.argv)[0] === "update-ref"), false);
+});
+
+test("DC-0 review 1 S2: without the review freshness check a commit is refused before any git call (the tree object is all git-ops gets)", async () => {
+  for (const run of [planCommit, executeCommit]) {
+    const r = new FakeRunner(healthy());
+    const { assertReviewFresh: _dropped, ...deps } = makeDeps(r);
+    void _dropped;
+    assert.equal(await code(run(deps, input)), "E_POLICY_DENIED");
+    assert.equal(r.calls.length, 0);
+  }
 });
