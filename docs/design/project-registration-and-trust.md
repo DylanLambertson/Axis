@@ -318,21 +318,21 @@ node:test only. The Electron-free cores live in `packages/daemon-host/src/main/`
 
 ## 10. Slices (one reviewable PR each, in order)
 
-1. **S1a, daemon records (Opus review):**
+1. **S1a, daemon records (security review):**
    - migration v11 (set once) and `setProjectTrust`;
    - the binding of §5.2 and the inspection of §5.3;
    - the control messages and the registration checks.
 
    Nothing grants yet: every row keeps its current trust mode.
-2. **S1b, daemon gate (Opus review):**
+2. **S1b, daemon gate (security review):**
    - trust mode `project`, `requireProjectTrust` with T4 re-read, and `ProjectTrustTicket` at the ports;
    - `projectGated()` marking of the gated handlers and `checkCoverage({ gated })` (not a separate `registerProjectGated`: the mixed contracts register in one call);
    - the rows, `identity.trusted` dropped from policy, and stopping runs on a revoke.
-3. **S2, main (Opus review):**
+3. **S2, main (security review):**
    - `vscode:axisProjectAction` and the dialogs on the shared queue, with the cooldown;
    - `trust.check` answered from `projectPath`, and `trustSource.projectPath` removed;
    - the overlay adapters and `main-seam.test.mjs`.
-4. **S3, shell (Sonnet review):** the actions, the palette command, the row glyphs, the banner action and the announcements.
+4. **S3, shell (standard review):** the actions, the palette command, the row glyphs, the banner action and the announcements.
 5. **S4, evidence:** the GUI driver run, closing the known gap in `pty-exec-node.md` §8. Docs and tests only.
 
 ## 11. Amendments made with this note
