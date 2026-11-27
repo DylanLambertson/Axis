@@ -134,6 +134,14 @@ test("only https matches, and a credential's origin is compared exactly, never a
   assert.throws(() => new Credential(SECRET, { integration: "gh", origin: "https://api.example.com/" }), isCode("credential_invalid"));
 });
 
+test("a body detached before the match is a closed refusal, not a throw (N1f nits review D)", () => {
+  const body = new Uint8Array([1, 2]);
+  const c = { ...composeRequest(NAMED, "gh", ORIGIN, { name: "x" }), method: "POST", body } as ComposedRequest;
+  (body.buffer as unknown as { transfer(): ArrayBuffer }).transfer(); // Node 24 has it; the lib target predates it
+  assert.equal(body.byteLength, 0, "detached");
+  assert.equal(matchTarget(c, parsed(c.url)), "target");
+});
+
 test("a composed request is matched once (review 1 nit a)", () => {
   const c = composed();
   assert.ok(isMatchedTarget(matchTarget(c, parsed(c.url))));

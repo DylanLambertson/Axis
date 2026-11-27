@@ -114,6 +114,14 @@ const DEFAULT_IGNORABLE = /\p{Default_Ignorable_Code_Point}/u;
  */
 const INVISIBLE = /(?! )[\p{Cf}\p{Zs}\u2800\u{1d159}\u{16fe4}]/u; // by property; the lookahead keeps the ASCII space
 
+/**
+ * Code points with no fixed meaning (N1f nits review B): private use (Co) and unassigned (Cn, the noncharacters such as
+ * U+FDD0 and U+FFFE included). A server or a later Unicode version may give them any reading, so a path value refuses them.
+ */
+const UNSETTLED = /[\p{Co}\p{Cn}]/u;
+/** True when the value is a dot segment once its combining marks are dropped: `.` + U+0301 + `.` is `..` to a server that strips marks. */
+const dotsWithMarks = (text: string): boolean => [text, text.normalize("NFKD")].some((t) => DOT_SEGMENT.test(t.replace(/\p{M}/gu, "")));
+
 export function normalisesToDanger(text: string): boolean {
   return [text.normalize("NFKC"), text.normalize("NFKD")].some((n) => SEPARATOR.test(n) || PERCENT.test(n) || CONTROL.test(n) || DOT_SEGMENT.test(n));
 }
@@ -170,7 +178,7 @@ export function placeholderText(value: ArgValue, type: ValueType, inPath: boolea
   }
   if (text.length === 0) throw new CompositionError("argument_refused");
   if (CONTROL.test(text) || SEPARATOR.test(text) || PERCENT.test(text)) throw new CompositionError("argument_refused");
-  if (inPath && (DOT_SEGMENT.test(text) || PATH_CONFUSABLE.test(text) || DEFAULT_IGNORABLE.test(text) || INVISIBLE.test(text) || normalisesToDanger(text))) throw new CompositionError("argument_refused");
+  if (inPath && (DOT_SEGMENT.test(text) || PATH_CONFUSABLE.test(text) || DEFAULT_IGNORABLE.test(text) || INVISIBLE.test(text) || UNSETTLED.test(text) || dotsWithMarks(text) || normalisesToDanger(text))) throw new CompositionError("argument_refused");
   if (type.kind !== "text" && /[^\x20-\x7e]/.test(text)) throw new CompositionError("non_ascii");
   if (/[\ud800-\udfff]/.test(text.replace(/[\ud800-\udbff][\udc00-\udfff]/g, ""))) throw new CompositionError("argument_refused"); // a lone surrogate
   if (new TextEncoder().encode(text).byteLength > MAX_VALUE_BYTES) throw new CompositionError("argument_too_long");

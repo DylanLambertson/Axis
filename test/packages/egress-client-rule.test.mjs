@@ -8,7 +8,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { importSpecifiers, unsafeForms } from "../../scripts/code-oss/stage-ast.mjs";
-import { EGRESS_CLIENT_TYPES, EGRESS_CLIENT_VALUES, namesEgressClient } from "../../scripts/code-oss/egress-client-imports.mjs";
+import { EGRESS_CLIENT_TYPES, EGRESS_CLIENT_VALUES, namesEgressClient, namesUrlPattern } from "../../scripts/code-oss/egress-client-imports.mjs";
 import { classifySpecifier } from "../../scripts/code-oss/stage-scan.mjs";
 import { STAGE_ROOT, checkStagedFile } from "../../scripts/code-oss/stage-verify.mjs";
 import { DEFAULT_ENTRY, checkMetafile } from "../../scripts/code-oss/check-daemon-graph.mjs";
@@ -158,4 +158,27 @@ test("an importer may take only the production factory and the client's types, b
   // The staged-tree check applies it: compose.ts may import the client, but not the test factory.
   const files = new Set([EGRESS_CLIENT_FILE, "daemon-host/compose.ts"]);
   assert.throws(() => checkStagedFile("daemon-host/compose.ts", 'import * as e from "./net/egress-client.js";\nexport const x = e;\n', files), /namespace import of the egress client/);
+});
+
+test("only the egress client may import takeAuthorization, the credential's one reader (N1f nits review A)", () => {
+  const shape = (text, file) => unsafeForms(text, file, { pkg: "daemon-host" }).filter((t) => /credential reader|url-pattern/.test(t));
+  // The egress client may; so may tests (not shipped).
+  assert.deepEqual(shape('import { takeAuthorization } from "./url-pattern.js";', EGRESS_CLIENT_FILE), []);
+  for (const [text, file] of [
+    ['import { takeAuthorization } from "./url-pattern.js";', "daemon-host/net/compose-request.ts"],
+    ['import { takeAuthorization as t } from "./net/url-pattern.js";', "daemon-host/compose.ts"],
+    ['import * as up from "./net/url-pattern.js"; up[["take", "Authorization"].join("")]({});', "daemon-host/compose.ts"],
+    ['export { takeAuthorization } from "./url-pattern.js";', "daemon-host/net/index.ts"],
+    ['export * from "./url-pattern.js";', "daemon-host/net/index.ts"],
+    ['const u = await import("./url-pattern.js");', "daemon-host/net/x.ts"],
+    ['const u = require("./url-pattern.js");', "daemon-host/net/x.ts"],
+    ['import u = require("./url-pattern.js");', "daemon-host/net/x.ts"],
+    ['import { takeAuthorization } from "./url-pattern.js?x";', "daemon-host/net/x.ts"],
+  ]) assert.ok(shape(text, file).length > 0, `${file}: ${text}`);
+  // Everything else url-pattern exports stays importable by name.
+  for (const name of ["matchTarget", "authorize", "Credential", "CredentialError", "isMatchedTarget", "type MatchedTarget", "type AuthorizedRequest"]) {
+    assert.deepEqual(shape(`import { ${name} } from "./net/url-pattern.js";`, "daemon-host/compose.ts"), [], name);
+  }
+  assert.ok(namesUrlPattern("daemon-host/net/x.ts", "./url-pattern.js"));
+  assert.ok(!namesUrlPattern("daemon-host/net/x.ts", "./url-pattern-x.js"));
 });
