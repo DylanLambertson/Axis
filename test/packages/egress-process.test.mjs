@@ -215,8 +215,9 @@ test("everywhere else, every way to reach a process or resolver is refused", () 
   assert.deepEqual(unsafeForms('import * as cp from "node:child_process";\nconst e = cp.exec;', "a.test.ts", { pkg: "git-ops", shipped: false, pkgRel: "test/a.test.ts" }), []);
 });
 
-test("real tree: the named files are exactly the shipped files that load node:child_process, and no shipped file loads node:dns", () => {
+test("real tree: the named files are exactly the shipped files that load node:child_process, and only the egress client loads node:dns", () => {
   const spawners = [];
+  const resolvers = [];
   for (const pkg of readdirSync(packagesDir).filter((n) => statSync(join(packagesDir, n)).isDirectory())) {
     const srcDir = join(packagesDir, pkg, "src");
     let present = true;
@@ -227,11 +228,12 @@ test("real tree: the named files are exactly the shipped files that load node:ch
       const rel = file.slice(srcDir.length + 1).split("\\").join("/");
       const specs = importSpecifiers(text, file).map((s) => s.replace(/\/.*$/, ""));
       if (specs.includes("node:child_process")) spawners.push(`${pkg}/${rel}`);
-      assert.ok(!specs.includes("node:dns"), `${pkg}/${rel} loads node:dns`);
+      if (specs.includes("node:dns")) resolvers.push(`${pkg}/${rel}`);
       assert.deepEqual(unsafeForms(text, file, { pkg, shipped: true, pkgRel: `src/${rel}` }), [], `${pkg}/${rel}`);
     }
   }
   assert.deepEqual(spawners.sort(), [...SPAWN_FILES.keys()].sort());
+  assert.deepEqual(resolvers, ["daemon-host/net/egress-client.ts"], "the egress client (web-rules.mjs rule 1b) is the one shipped file that resolves names");
   // Each named file calls what it names (the scan above passing means a fixed program is that literal).
   for (const [f, rule] of SPAWN_FILES) {
     const [pkg, rel] = split(f);
