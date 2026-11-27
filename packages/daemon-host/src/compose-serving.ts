@@ -33,7 +33,7 @@ import { registerComposerRunsHandlers, startComposerRun, type ComposerRunsHandle
 import { registerPluginsHandlers } from "./handlers/plugins.js";
 import { createGrantAction } from "./plugins/grant-action.js";
 import { createCliEndpointSwitchAction } from "./messages/cli-endpoint-action.js";
-import { ProjectMutex } from "./worktrees/project-mutex.js";
+import { hostCliSwitch, type CliEndpointLive } from "./compose-parts.js";
 import type { HandlerContext } from "@axis/daemon";
 import { PushedBases } from "./handlers/git-common.js";
 import { registerGitHandlers } from "./handlers/git.js";
@@ -72,6 +72,8 @@ export interface ServingParts {
   readonly composer?: ComposerService;
   readonly providers?: { readonly cachedModels: NonNullable<ProvidersHandlerDeps["cachedModels"]>; readonly credential: NonNullable<ProvidersHandlerDeps["credential"]> };
   readonly messaging?: MessagingBinding;
+  /** The live CLI endpoint wiring (PV-M7 slice 2): the switch handlers turn it on and off. */
+  readonly cliLive?: CliEndpointLive;
   readonly pages?: PagesService;
   readonly tasks?: TasksService;
 }
@@ -144,20 +146,20 @@ export function registerServing(registrar: HandlerRegistrar, services: HostServi
     grantsEnabled: ctx.pluginGrants === true,
     onPreview: approvals.onPreview ?? (() => undefined),
   });
-  if (built.messaging === undefined) throw new AxisError("E_INTERNAL", "The host composition is incomplete", { reason: "not_built" });
+  if (built.messaging === undefined || built.cliLive === undefined) throw new AxisError("E_INTERNAL", "The host composition is incomplete", { reason: "not_built" });
   // PV-M7 slice 1: enabling a CLI worker's messaging checks its launch entry (from main, as a CLI start does) and workspace.
   registerMessagesHandlers(registrar, {
     ...built.messaging,
     checkEnable: hostEnableCheck({ journal, settingsGet: (k, o) => control.settingsGet(k, o), platform: config.platform }),
     // PV-M7 slice 2: the user's CLI endpoint switch. The journal's switch mint is taken here, once, at startup, straight into the
     // approved enable action (the writer rule checks it); anything that took it first makes this throw and the host not start.
-    cliSwitch: {
+    cliSwitch: hostCliSwitch({
       action: createCliEndpointSwitchAction(journal.cliEndpoint, journal.cliEndpoint.takeSwitchMint()),
       store: journal.cliEndpoint,
-      mutex: new ProjectMutex(),
+      live: built.cliLive,
       platform: config.platform,
       onPreview: approvals.onPreview ?? (() => undefined),
-    },
+    }),
   });
   if (built.pages === undefined) throw new AxisError("E_INTERNAL", "The host composition is incomplete", { reason: "not_built" });
   // axis.pages/1 (PV-Q1 slice 2): the user's own connection only; main's dialog for markReviewed and delete names the page.

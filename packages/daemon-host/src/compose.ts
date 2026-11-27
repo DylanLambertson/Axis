@@ -12,7 +12,7 @@ import { selectPtyGitRunner } from "./bindings/pty-git.js";
 import { createRunsBinding, type RunsBinding } from "./bindings/runs.js";
 import { composerGuardDeps, createRunRepositoryGuard, type RunSnapshotterFactory } from "./bindings/snapshot.js";
 import { createWorktreesBinding, type WorktreesBinding } from "./bindings/worktrees.js";
-import { composerWriteLock, createActiveRunForwarder, createAuditSeal, createRunsClock, isPty, messageSecretCheck, cliEndpointPty, wireCliEndpoints, refuseComposition, settleComposer, daemonAuditSink, createProjectRunStopper, recordingRegistrar, registryOf, type ComposerOptions, type MessagingOptions } from "./compose-parts.js";
+import { composerWriteLock, createActiveRunForwarder, createAuditSeal, createRunsClock, isPty, messageSecretCheck, cliEndpointPty, cliEndpointLive, type CliEndpointLive, refuseComposition, settleComposer, daemonAuditSink, createProjectRunStopper, recordingRegistrar, registryOf, type ComposerOptions, type MessagingOptions } from "./compose-parts.js";
 import { hostCommandLimits, type CommandLimits } from "./bindings/agent-command.js";
 import type { HostConfig } from "./config.js";
 import { createAttestationVerifier } from "./control/attestation.js";
@@ -177,7 +177,7 @@ export function composeDaemonHost(options: ComposeOptions): ComposedHost {
   };
 
   // Built in `afterStorage`, used by `reconcile` and `beforeReady`.
-  const built: { worktrees?: WorktreesBinding; runs?: RunsBinding; approvals?: WorktreesApprovals; projectPaths?: () => string[]; agent?: AgentBinding; composer?: ComposerService; providers?: ProvidersBinding; messaging?: MessagingBinding; pages?: PagesService; tasks?: TasksService } = {};
+  const built: { worktrees?: WorktreesBinding; runs?: RunsBinding; approvals?: WorktreesApprovals; projectPaths?: () => string[]; agent?: AgentBinding; composer?: ComposerService; providers?: ProvidersBinding; messaging?: MessagingBinding; cliLive?: CliEndpointLive; pages?: PagesService; tasks?: TasksService } = {};
   let lifecycle: LifecycleHandle | undefined;
   let offConnect: (() => void) | undefined;
   let finish: () => void = () => undefined;
@@ -236,7 +236,7 @@ export function composeDaemonHost(options: ComposeOptions): ComposedHost {
           journal: parts.journal,
           audit: parts.audit,
           // PV-M6: a CLI run's endpoint at spawn, only with the messaging flags on; PV-M7: the enable rule is checked again first.
-          pty: cliEndpointPty(pty, () => cliEndpoints, hostMintRecheck({ journal: parts.journal, settingsGet: (k, o) => control.settingsGet(k, o), platform: config.platform, agentOfRun: (id) => parts.journal.agents.agentOfRun(id), acknowledged: (id) => parts.journal.messages.cliAcknowledged(id), audit: parts.audit })),
+          pty: cliEndpointPty(pty, () => cliLive.current(), hostMintRecheck({ journal: parts.journal, settingsGet: (k, o) => control.settingsGet(k, o), platform: config.platform, agentOfRun: (id) => parts.journal.agents.agentOfRun(id), acknowledged: (id) => parts.journal.messages.cliAcknowledged(id), audit: parts.audit })),
           clock: createRunsClock(ports.clock),
           locator: worktrees.locator,
           snapshotter,
@@ -256,9 +256,11 @@ export function composeDaemonHost(options: ComposeOptions): ComposedHost {
         // axis.messages/1 (PV-M3): service, settings and delivery into runs; its rows go through the sealed composer writer.
         const messagingDeps = hostMessagingDeps({ journal: parts.journal, audit: composerWriter, monotonic: () => ports.clock.monotonic(), scan: (text) => scanner.scan(text, { part: "message" }), logger, holdsSecret: messageSecretCheck(ports.redactor), enabled: options.messaging?.enabled === true });
         const messaging = createMessagingBinding(messagingDeps);
-        // The CLI endpoint: wired only when the user's switch is on at start (PV-M7 slice 2; read from the journal, never a flag).
-        const cliEndpoints = wireCliEndpoints(parts.journal.cliEndpoint.enabled(), pty, messaging.endpoints, cleanups);
-        options.observeMessaging?.({ agentOf: (id) => messagingDeps.agentOf?.(id), cliAgentOf: (id) => messagingDeps.cliAgentOf?.(id), cliWired: cliEndpoints !== undefined });
+        // The CLI endpoint, live (PV-M7 slice 2): wired at start when the user's switch is on (read from the journal, never a
+        // flag); the switch handlers turn it on and off in the running host.
+        const cliLive = cliEndpointLive(pty, messaging.endpoints, cleanups);
+        if (parts.journal.cliEndpoint.enabled()) cliLive.on();
+        options.observeMessaging?.({ agentOf: (id) => messagingDeps.agentOf?.(id), cliAgentOf: (id) => messagingDeps.cliAgentOf?.(id), cliWired: cliLive.current() !== undefined });
         // axis.pages/1 and the page tools (PV-Q1 slice 2): writes and their audit rows through the sealed composer writer.
         const pages = createPagesService({ journal: parts.journal, audit: composerWriter, random: { bytes: (n) => randomBytes(n) } });
         const tasks = createTasksService({ journal: parts.journal, audit: composerWriter, random: { bytes: (n) => randomBytes(n) } }); // axis.tasks/1 (PV-T1 slice 2a)
@@ -301,7 +303,7 @@ export function composeDaemonHost(options: ComposeOptions): ComposedHost {
           taintAtStart: (runId, receipt) => createRunTaint({ runId, store: parts.journal.composer, audit: composerWriter, now: () => ports.clock.now() }).receive(receipt),
         });
         cleanups.push(() => (composer.dispose(), agent.dispose()));
-        Object.assign(built, { worktrees, runs, approvals, projectPaths, agent, composer, providers, messaging, pages, tasks });
+        Object.assign(built, { worktrees, runs, approvals, projectPaths, agent, composer, providers, messaging, cliLive, pages, tasks });
       },
       async beforeReady(services, lock) {
         try {
