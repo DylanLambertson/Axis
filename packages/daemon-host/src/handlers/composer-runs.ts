@@ -14,7 +14,7 @@ import { composerFailure, toComposerError } from "../composer/errors.js";
 import type { ComposerRunsService, ComposerStartInput } from "../ports/composer.js";
 import type { ProjectMutex } from "../worktrees/project-mutex.js";
 import type { HandlerRegistrar } from "./anchor-guard.js";
-import { grantedGeneration, pluginOf, runStartContentHook, scopedWorkspace, type PluginRunStartJournal } from "../gate/plugin-run-start.js";
+import { approvedStartOf, grantedGeneration, pluginOf, runStartContentHook, scopedWorkspace, type PluginRunStartJournal } from "../gate/plugin-run-start.js";
 
 /**
  * `axis.runs/1` (docs/design/composer-runtime.md section 3) over the `ComposerRunsService` port. Who is calling comes
@@ -145,11 +145,16 @@ export async function startPluginComposerRun(deps: ComposerRunsHandlerDeps, req:
   const { identity } = context;
   const journal = deps.pluginStarts;
   const pluginId = pluginOf(identity);
-  if (journal === undefined || pluginId === undefined || identity.hostWindowId === undefined || context.approved === undefined) throw composerFailure("E_NOT_FOUND");
+  // What the user approved, as the gate handed it over (review K2 S2): only a start the gate's binding minted counts.
+  const approved = approvedStartOf(context.approved?.capability);
+  if (journal === undefined || pluginId === undefined || identity.hostWindowId === undefined || approved === undefined) throw composerFailure("E_NOT_FOUND");
   const scope = scopedWorkspace(journal, identity, req.workspaceId);
   if (scope === undefined) throw composerFailure("E_NOT_FOUND", "out_of_scope");
-  const generation = grantedGeneration(journal, pluginId, scope.projectId);
-  if (generation === undefined) throw composerFailure("E_NOT_FOUND");
+  if (approved.pluginId !== pluginId || approved.projectId !== scope.projectId || approved.workspaceId !== scope.workspaceId) throw composerFailure("E_NOT_FOUND");
+  // The generation is the one the user approved, never a fresh read: a revoke and re-grant after the spend would otherwise let a
+  // run start on the new generation with the old approval. The checks below (under the mutex, and the service's) compare the
+  // live grant with it.
+  const { generation } = approved;
   if (deps.needsAttention?.(scope.workspaceId, "start") === true) throw composerFailure("E_UNAVAILABLE", "needs_attention");
   const holds = (): boolean => scopedWorkspace(journal, identity, scope.workspaceId) !== undefined && grantedGeneration(journal, pluginId, scope.projectId) === generation;
   const hostWindowId = identity.hostWindowId;

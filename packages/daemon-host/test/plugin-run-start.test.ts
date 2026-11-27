@@ -36,7 +36,7 @@ const verifier: IdentityVerifier = {
   },
 };
 
-async function setup(t: TestContext, over: { admit?: () => Promise<void> } = {}) {
+async function setup(t: TestContext, over: { admit?: () => Promise<void>; onAudit?: (e: Row) => void } = {}) {
   const clock = fakeClock();
   const db = openDatabase(":memory:");
   const journal = Journal.open(db, { audit: new AuditLog(db) });
@@ -48,12 +48,13 @@ async function setup(t: TestContext, over: { admit?: () => Promise<void> } = {})
   };
   const ws1 = ws("p1");
   const ws2 = ws("p2");
+  const ws1b = ws("p1");
   journal.plugins.add("acme.board", "p1");
   journal.plugins.setEnabled("acme.board", "p1", true);
   journal.plugins.grant("acme.board", "p1", "runs.start");
   const control: NativeControl = { nativeConfirm: () => new Promise(() => undefined) };
   const approvals = createApprovals({ audit: { append() {} }, control, clock, plugins: pluginRunStartChallenges(journal, journal.pluginIssues, () => clock.now()) });
-  const daemon = new Daemon({ identity: verifier, audit: { append() {} }, registry: protocolRegistry, idempotency: new MemoryIdempotencyStore(), policy: new RuleTablePolicy(new InMemoryTrustRegistry(), RULES, journal.plugins), approvals: approvals.gate });
+  const daemon = new Daemon({ identity: verifier, audit: { append: (e) => over.onAudit?.(e as unknown as Row) }, registry: protocolRegistry, idempotency: new MemoryIdempotencyStore(), policy: new RuleTablePolicy(new InMemoryTrustRegistry(), RULES, journal.plugins), approvals: approvals.gate });
   daemon.register("axis.approvals", 1, createApprovalsHandlers({ approvals: approvals.port }));
   const starts: ComposerStartInput[] = [];
   const admitted: unknown[] = [];
@@ -92,7 +93,7 @@ async function setup(t: TestContext, over: { admit?: () => Promise<void> } = {})
     db.close();
   });
   const body = (workspaceId = ws1, over: Row = {}) => ({ workspaceId, mode: "edit", prompt: "Summarise the open tasks", providerId: "mock", modelId: "mock-model", ...over });
-  return { clock, journal, db, approvals, starts, admitted, connect, body, ws1, ws2 };
+  return { clock, journal, db, approvals, starts, admitted, connect, body, ws1, ws2, ws1b };
 }
 const reason = (m: { error?: { details?: Record<string, unknown> } }): unknown => m.error?.details?.["reason"];
 
@@ -305,8 +306,11 @@ function handlerRig(s: Awaited<ReturnType<typeof setup>>, mutex = new ProjectMut
     mutex,
     pluginStarts: s.journal,
   });
-  const ctx = (identity: Identity, approved = true): HandlerContext => ({ identity, requestId: "r", correlationId: "x", signal: new AbortController().signal, ...(approved ? { approved: { target: "x" } } : {}) }) as unknown as HandlerContext;
-  return { handlers, seen, ctx, mutex };
+  // What the gate hands the handler on a spend: the capability the binding minted at issue (here, for the rig's own workspace).
+  const asPlugin = verifier.verify(PLUGIN_ATT) as Identity;
+  const mint = () => pluginRunStartChallenges(s.journal, s.journal.pluginIssues, () => 1).bind({ identity: asPlugin, actor: asPlugin.actor, contract: "axis.runs", method: "start", args: s.body() } as never, { target: "x", contentDigest: "e".repeat(64) })?.approved;
+  const ctx = (identity: Identity, approved: unknown = mint()): HandlerContext => ({ identity, requestId: "r", correlationId: "x", signal: new AbortController().signal, ...(approved === false ? {} : { approved: { target: "x", capability: approved } }) }) as unknown as HandlerContext;
+  return { handlers, seen, ctx, mutex, mint };
 }
 
 test("layer: the handler refuses a plugin's out-of-scope start, an unapproved one, every other method, and any other actor", async (t) => {
@@ -316,6 +320,7 @@ test("layer: the handler refuses a plugin's out-of-scope start, an unapproved on
   const code = async (p: Promise<unknown>) => p.then(() => "ok", (e: { code?: string; details?: Row }) => `${e.code}${e.details?.["reason"] === undefined ? "" : `:${String(e.details["reason"])}`}`);
   assert.equal(await code(Promise.resolve(h.handlers.start(h.ctx(asPlugin), s.body(s.ws2) as never))), "E_NOT_FOUND:out_of_scope");
   assert.equal(await code(Promise.resolve(h.handlers.start(h.ctx(asPlugin, false), s.body() as never))), "E_NOT_FOUND", "no spent approval");
+  assert.equal(await code(Promise.resolve(h.handlers.start(h.ctx(asPlugin, { pluginId: "acme.board", projectId: "p1", workspaceId: s.ws1, generation: 1 }), s.body() as never))), "E_NOT_FOUND", "a look-alike the gate did not mint");
   for (const m of ["get", "list", "cancel", "events"] as const) assert.equal(await code(Promise.resolve(h.handlers[m](h.ctx(asPlugin), { runId: s.ws1 } as never))), "E_NOT_FOUND", m);
   const worker = { ...asPlugin, actor: "agent:composer.r1", actorId: "agent:composer.r1", clientKind: "desktop", hostWindowId: undefined } as unknown as Identity;
   assert.equal(await code(Promise.resolve(h.handlers.start(h.ctx(worker), s.body() as never))), "E_NOT_FOUND");
@@ -336,5 +341,52 @@ test("layer: a grant change while the start waits for the project mutex is refus
   release();
   await held;
   await assert.rejects(started, (e: unknown) => (e as { code?: string; details?: Row }).code === "E_CONFLICT" && (e as { details?: Row }).details?.["reason"] === "grant_changed");
+  assert.equal(h.seen.length, 0);
+});
+
+test("review K2 S2: a revoke and re-grant after the spend, before the handler, refuses the start (the approved generation is carried)", async (t) => {
+  // The daemon awaits its execute audit row after the spend and before the handler: the grant changes exactly there.
+  let s: Awaited<ReturnType<typeof setup>> | undefined;
+  let bumped = false;
+  s = await setup(t, {
+    onAudit: (e) => {
+      if (bumped || e["actor"] !== "plugin:acme.board" || e["outcome"] !== "success") return;
+      bumped = true;
+      const j = (s as Awaited<ReturnType<typeof setup>>).journal;
+      j.plugins.revoke("acme.board", "p1", "runs.start");
+      j.plugins.grant("acme.board", "p1", "runs.start"); // granted again: only the generation tells the two apart
+    },
+  });
+  const plugin = await s.connect(PLUGIN_ATT);
+  const user = await s.connect("user#Uone#w1");
+  const key = randomUUID();
+  const challengeId = ((await plugin.call("axis.runs", "start", s.body(), key)).error?.details?.["challenge"] as Row)["challengeId"] as string;
+  const listed = (await user.call("axis.approvals", "pending", {})).result?.["challenges"] as Row[];
+  await user.call("axis.approvals", "resolve", { challengeId, decision: "approve", digest: listed[0]?.["digest"] });
+  const done = await plugin.call("axis.runs", "start", s.body(s.ws1, { approval: { challengeId } }), key);
+  assert.equal(bumped, true, "the grant changed between the spend and the handler");
+  assert.equal(done.error?.code, "E_CONFLICT");
+  assert.equal(reason(done), "grant_changed");
+  assert.equal(s.starts.length, 0, "no run on the new generation with the old approval");
+});
+
+test("review K2 S2, the handler alone: an approval minted at one generation never starts a run at another", async (t) => {
+  const s = await setup(t);
+  const h = handlerRig(s);
+  const asPlugin = verifier.verify(PLUGIN_ATT) as Identity;
+  const approved = h.mint();
+  s.journal.plugins.revoke("acme.board", "p1", "runs.start");
+  s.journal.plugins.grant("acme.board", "p1", "runs.start");
+  await assert.rejects(Promise.resolve(h.handlers.start(h.ctx(asPlugin, approved), s.body() as never)), (e: unknown) => (e as { code?: string; details?: Row }).code === "E_CONFLICT" && (e as { details?: Row }).details?.["reason"] === "grant_changed");
+  assert.equal(h.seen.length, 0);
+  await h.handlers.start(h.ctx(asPlugin, h.mint()), s.body() as never);
+  assert.deepEqual(h.seen[0]?.initiator, { kind: "plugin", pluginId: "acme.board", generation: 2 }, "a fresh approval at the new generation starts");
+});
+
+test("layer: an approval for one workspace never starts a run in another workspace of the same project", async (t) => {
+  const s = await setup(t);
+  const h = handlerRig(s);
+  const asPlugin = verifier.verify(PLUGIN_ATT) as Identity;
+  await assert.rejects(Promise.resolve(h.handlers.start(h.ctx(asPlugin, h.mint()), s.body(s.ws1b) as never)), (e: unknown) => (e as { code?: string }).code === "E_NOT_FOUND");
   assert.equal(h.seen.length, 0);
 });

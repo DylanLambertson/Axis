@@ -46,6 +46,24 @@ export function scopedWorkspace(journal: PluginRunStartJournal, identity: Identi
   return scope.ok && scope.projectId !== undefined && scope.workspaceId !== undefined ? { projectId: scope.projectId, workspaceId: scope.workspaceId } : undefined;
 }
 
+/** What a plugin's run start was approved for: minted only by `bind` below, recognised only by `approvedStartOf`. */
+export interface ApprovedPluginStart {
+  readonly pluginId: string;
+  readonly projectId: string;
+  readonly workspaceId: string;
+  readonly generation: number;
+}
+const MINTED = new WeakSet<object>();
+function mintApprovedStart(facts: ApprovedPluginStart): ApprovedPluginStart {
+  const out = Object.freeze({ ...facts });
+  MINTED.add(out);
+  return out;
+}
+/** The approved facts of a spent plugin start (`ctx.approved.capability`), or undefined for anything the gate did not hand over. */
+export function approvedStartOf(capability: unknown): ApprovedPluginStart | undefined {
+  return typeof capability === "object" && capability !== null && MINTED.has(capability) ? (capability as ApprovedPluginStart) : undefined;
+}
+
 const OUT_OF_SCOPE = (): DaemonError => new DaemonError("E_NOT_FOUND", "Not found", { reason: "out_of_scope" });
 
 /**
@@ -104,7 +122,13 @@ export function pluginRunStartChallenges(journal: PluginRunStartJournal, issues:
         provider: req.data.providerId,
         model: req.data.modelId,
       } as ChallengeDetail;
-      return { pluginId, projectId: scope.projectId, detail, valid: () => grantedGeneration(journal, pluginId, scope.projectId) === generation };
+      return {
+        pluginId,
+        projectId: scope.projectId,
+        detail,
+        valid: () => grantedGeneration(journal, pluginId, scope.projectId) === generation,
+        approved: mintApprovedStart({ pluginId, projectId: scope.projectId, workspaceId: scope.workspaceId, generation }),
+      };
     },
     issues,
     now,

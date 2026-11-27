@@ -125,6 +125,12 @@ withdrawn challenge still holds its window's quota.
 - `axis.runs/1.start` takes an optional `approval` reference, as any method the policy can raise to tier 3 must; a user's
   tier-2 start never sends one.
 - The run's own approvals (its tool calls) go to the host window: the plugin view cannot answer one.
+- **The approved generation is carried, never re-read** (review of the PV-K2 note, S2). The binding mints an `ApprovedPluginStart`
+  (plugin, project, workspace and the generation at issue). The gate hands it to the handler as `ctx.approved.capability` when
+  the approval is spent, and the handler accepts only a value the binding minted for this plugin and workspace. The initiator and
+  every later check use that generation. A revoke and re-grant between the spend and the handler (the daemon awaits its execute
+  audit row there) therefore refuses the start with `grant_changed`, where a fresh read would have started the run on the new
+  generation with the old approval.
 - The service checks the grant once more in its synchronous creation step (`ComposerStartInput.grantHolds`), after every wait of
   the start (the trust gate, the provider's model list). A plugin start without that check is refused.
 

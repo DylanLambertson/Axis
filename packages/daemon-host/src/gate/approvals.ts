@@ -344,7 +344,9 @@ export function createApprovals(deps: ApprovalsDeps): Approvals {
             currentContentDigest: content.contentDigest,
           },
           (confirmed) => {
-            const capability = issuedAt === input.tier ? deps.capability?.(input, content) : undefined; // an unknown issue tier gets none
+            // An unknown issue tier gets none. A plugin challenge hands the handler what its binding recorded at issue (the approved
+            // grant generation, review K2 S2), so the handler compares the live grant with what the user approved.
+            const capability = issuedAt === input.tier ? (tracked?.approved ?? deps.capability?.(input, content)) : undefined;
             return action(capability === undefined ? confirmed : { ...confirmed, capability });
           },
         );

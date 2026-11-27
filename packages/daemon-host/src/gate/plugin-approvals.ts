@@ -29,6 +29,11 @@ export interface PluginChallengeBinding {
   readonly detail: ChallengeDetail;
   /** Whether the binding still holds now: the plugin's grant generation is unchanged and its host window is open. Synchronous. */
   valid(): boolean;
+  /**
+   * What the user approved, handed to the handler as `ctx.approved.capability` when the approval is spent (review K2 S2): the
+   * handler acts on these facts (the approved grant generation), never on a fresh read that a revoke and re-grant could move.
+   */
+  readonly approved?: object;
 }
 
 export interface PluginChallengeDeps {
@@ -47,6 +52,7 @@ interface Tracked {
   readonly requester: ChallengeRequester;
   readonly detail: ChallengeDetail;
   readonly valid: () => boolean;
+  readonly approved: object | undefined;
   /** Monotonic: past it the challenge and any approval of it have expired, so it no longer counts. */
   readonly deadline: number;
 }
@@ -116,7 +122,7 @@ export class PluginChallenges {
       throw new ApprovalError("E_BACKPRESSURE");
     }
     if (!counted.ok) throw new ApprovalError("E_BACKPRESSURE");
-    const entry = { actor: input.actor, connectionId: input.connectionId, hostWindowId: host, target: content.target, requester: { kind: "plugin" as const, pluginId }, detail: detail.data, valid };
+    const entry = { actor: input.actor, connectionId: input.connectionId, hostWindowId: host, target: content.target, requester: { kind: "plugin" as const, pluginId }, detail: detail.data, valid, approved: binding.approved };
     return {
       windowId: host,
       track: (challengeId) => void this.#live.set(challengeId, { ...entry, deadline: this.#monotonic() + this.#lifetimeMs }),
@@ -161,10 +167,10 @@ export class PluginChallenges {
   }
 
   /** The requester of a tracked plugin challenge, or undefined; nothing is ended or checked here. */
-  tracked(challengeId: string): { readonly actor: string; readonly connectionId: string } | undefined {
+  tracked(challengeId: string): { readonly actor: string; readonly connectionId: string; readonly approved: object | undefined } | undefined {
     this.#sweep();
     const t = this.#live.get(challengeId);
-    return t === undefined ? undefined : { actor: t.actor, connectionId: t.connectionId };
+    return t === undefined ? undefined : { actor: t.actor, connectionId: t.connectionId, approved: t.approved };
   }
 
   forget(challengeId: string): void {
