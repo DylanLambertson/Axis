@@ -255,3 +255,22 @@ test("review 5 N26: an environment assignment is judged as a bare NAME=value tok
   assert.equal(refusedBy(["docker", "run", "--env=CODEX_HOME=/x", "img"]), "unknown_flag");
   assert.equal(refusedBy(["env", "CODEX_HOME=/x", "codex"]), "config_home");
 });
+
+test("review 6 N28 and N30: inside a CLI-named directory only a version-number file is the CLI; a directory is matched as a whole segment, case-folded; codex too", () => {
+  const real = (argv: string[], executableReal: string) => decideCliMessaging({ argv, executableReal, bypassesPrompts: false, exists: none });
+  assert.deepEqual(real(["/r/claude", "--verbose"], "/home/u/claude/bin/taskset"), { allowed: false, rule: "wrapper_unparsed" }, "a copy of taskset under a claude directory");
+  assert.deepEqual(real(["/r/claude", "--verbose"], "/tmp/claude/evil"), { allowed: false, rule: "wrapper_unparsed" }, "any other file name under a claude directory");
+  assert.deepEqual(real(["/r/claude", "--verbose"], "/opt/claude-evil/2.1.332"), { allowed: false, rule: "wrapper_unparsed" }, "a segment, not a substring");
+  assert.deepEqual(real(["/r/codex", "-m", "o3"], "/usr/bin/taskset"), { allowed: false, rule: "wrapper_unparsed" }, "the check applies to codex as well");
+  assert.deepEqual(real(["/r/claude", "--verbose"], "/home/u/.local/share/Claude/versions/2.1.332"), { allowed: true, warnings: [] }, "a directory named in another case");
+  assert.deepEqual(real(["/r/claude", "--verbose"], "/home/u/.local/share/claude/versions/2.1.332"), { allowed: true, warnings: [] }, "the native installer's layout");
+});
+
+test("review 6 N29: the npm layout of Claude Code is accepted by its exact package path; anything near it is not", () => {
+  const real = (argv: string[], executableReal: string) => decideCliMessaging({ argv, executableReal, bypassesPrompts: false, exists: none });
+  assert.deepEqual(real(["/usr/local/bin/claude", "--verbose"], "/usr/local/lib/node_modules/@anthropic-ai/claude-code/cli.js"), { allowed: true, warnings: [] });
+  assert.deepEqual(real(["/usr/local/bin/claude", "--verbose"], "/usr/local/lib/node_modules/@evil/claude-code/cli.js"), { allowed: false, rule: "wrapper_unparsed" }, "another scope");
+  assert.deepEqual(real(["/usr/local/bin/claude", "--verbose"], "/x/@anthropic-ai/claude-code/other.js"), { allowed: false, rule: "wrapper_unparsed" }, "another file");
+  assert.deepEqual(real(["/usr/local/bin/codex", "-m", "o3"], "/usr/local/lib/node_modules/@anthropic-ai/claude-code/cli.js"), { allowed: false, rule: "wrapper_unparsed" }, "the Claude package is not codex");
+  assert.deepEqual(real(["/snap/bin/codex", "-m", "o3"], "/usr/lib/snapd/snapd"), { allowed: false, rule: "wrapper_unparsed" }, "snap: refused, documented");
+});
