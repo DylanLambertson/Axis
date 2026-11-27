@@ -142,6 +142,26 @@ test("every code point is judged by the normalisation RULE in a text path segmen
   assert.equal(reason(() => composeRequest(ISSUE, "gh", ORIGIN, { ...BASE, search: "\u2025" })), "composed", "a query value is not a path segment");
 });
 
+test("a default-ignorable character in a path value is refused, by the Unicode property (N1e review 3 nit 1)", () => {
+  for (const v of [".\u200b.", "a\u200bb", "\u00ad", "a\u200cb", "a\u200db", "a\u2060b", "a\ufe0fb", "a\u180eb", "a\u{e0020}b", "\u034f", "a\u3164b", "a\ufeffb"]) {
+    assert.equal(reason(() => composeRequest(NAMED, "gh", ORIGIN, { name: v })), "argument_refused", JSON.stringify(v));
+  }
+  let ignorable = 0;
+  for (let cp = 0; cp <= 0x10ffff; cp++) {
+    if (cp >= 0xd800 && cp <= 0xdfff) continue;
+    const v = `a${String.fromCodePoint(cp)}b`;
+    if (!/\p{Default_Ignorable_Code_Point}/u.test(v)) continue;
+    ignorable++;
+    assert.equal(reason(() => placeholderText(v, { kind: "text" }, true)), "argument_refused", `U+${cp.toString(16).toUpperCase()}`);
+  }
+  assert.ok(ignorable > 4000, `${ignorable} default-ignorable code points`);
+  assert.equal(reason(() => composeRequest(ISSUE, "gh", ORIGIN, { ...BASE, search: "a\u200bb" })), "composed", "a query value is not a path segment");
+});
+
+test("a multi-character path value is judged as a whole: a letter beside a character outside the look-alike list (N1e review 3 nit 2)", () => {
+  for (const v of ["a\uff05", "x\uff0fy", "\uff1fq", "a\uff03b", "a\uff3cb"]) assert.equal(reason(() => composeRequest(NAMED, "gh", ORIGIN, { name: v })), "argument_refused", JSON.stringify(v));
+});
+
 test("the integration is recorded on the composed request, and checked", () => {
   assert.equal(composeRequest(NAMED, "gh", ORIGIN, { name: "x" }).integration, "gh");
   assert.equal(composeRequest(NAMED, "gl", ORIGIN, { name: "x" }).integration, "gl");

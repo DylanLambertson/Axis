@@ -100,6 +100,9 @@ test("a hand-built target with userinfo is refused, though egressTarget never re
   const c = composed();
   const url = new URL(c.url.replace("https://", "https://u:p@"));
   assert.equal(matchTarget(c, { url, origin: ORIGIN, host: "api.example.com", port: 443 } as EgressTarget), "userinfo");
+  const passwordOnly = new URL(c.url.replace("https://", "https://:p@"));
+  assert.equal(passwordOnly.username, "");
+  assert.equal(matchTarget(composed(), { url: passwordOnly, origin: ORIGIN, host: "api.example.com", port: 443 } as EgressTarget), "userinfo", "a password with no user name (N1e review 3 nit 2)");
 });
 
 test("a URL subclass that lies through its getters cannot match or carry the credential elsewhere (review 2 SF2)", () => {
