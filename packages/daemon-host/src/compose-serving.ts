@@ -31,6 +31,7 @@ import { createApprovalsHandlers } from "./handlers/approvals.js";
 import { registerCliRunsHandlers, startCliRun, type CliStart } from "./handlers/cli-runs.js";
 import { registerComposerRunsHandlers, startComposerRun, type ComposerRunsHandlerDeps, type ComposerStart } from "./handlers/composer-runs.js";
 import { registerPluginsHandlers } from "./handlers/plugins.js";
+import { createGrantAction } from "./plugins/grant-action.js";
 import type { HandlerContext } from "@axis/daemon";
 import { PushedBases } from "./handlers/git-common.js";
 import { registerGitHandlers } from "./handlers/git.js";
@@ -131,6 +132,9 @@ export function registerServing(registrar: HandlerRegistrar, services: HostServi
     journal,
     mutex: worktrees.mutex,
     endPlugin: (pluginId, projectId) => approvals.endPlugin(pluginId, projectId),
+    // K2-g3: the journal's grant mint is taken here, once, at startup, and passed straight to the approved grant action. Anything
+    // that took it first makes this throw, and the host does not start.
+    grantAction: createGrantAction(journal.plugins, journal.plugins.takeGrantMint()),
     grantsEnabled: ctx.pluginGrants === true,
     onPreview: approvals.onPreview ?? (() => undefined),
   });
