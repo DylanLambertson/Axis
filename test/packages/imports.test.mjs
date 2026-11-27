@@ -11,6 +11,7 @@ import { isScriptFile } from "./loaders.mjs";
 import { projectTrustVerdict, ptyClientVerdict } from "./pty-client-rule.mjs";
 import { vaultVerdict } from "./vault-importers-rule.mjs";
 import { daemonTestingVerdict } from "./daemon-testing-rule.mjs";
+import { grantWriterProblems, grantWriterProgram } from "./plugin-grant-writer-rule.mjs";
 import { importSpecifiers, unsafeForms } from "../../scripts/code-oss/stage-ast.mjs";
 import { LOADER_BUILTINS } from "../../scripts/code-oss/stage-scan.mjs";
 import { egressClientEdgeRefusal, listenerBuiltinRefusal, webHostEdgeRefusal } from "../../scripts/code-oss/web-rules.mjs";
@@ -192,6 +193,24 @@ export function* sourceFiles(dir) {
 const packages = readdirSync(packagesDir).filter((n) => statSync(join(packagesDir, n)).isDirectory());
 
 test("there is at least one package", () => assert.ok(packages.length > 0));
+
+// PV-K2 K2-g3 (docs/design/plugin-grant-contract.md section 8.4): the plugin grant writer and construction rules, run with the
+// type checker over every package's product source (`src/`, the same walk), so a second writer of grants fails the gate.
+test("plugin grant writers: only the approved action mints and writes; the journal and the store are constructed where they are today", () => {
+  const files = [];
+  for (const pkg of packages) {
+    const src = join(packagesDir, pkg, "src");
+    try {
+      if (!statSync(src).isDirectory()) continue;
+    } catch {
+      continue;
+    }
+    for (const f of sourceFiles(src)) if (f.endsWith(".ts") && !f.endsWith(".d.ts")) files.push(f);
+  }
+  assert.ok(files.length > 100, "the walk found the product source");
+  const root = fileURLToPath(new URL("../../", import.meta.url));
+  assert.deepEqual(grantWriterProblems(grantWriterProgram(files), root, (rel) => /^packages\/[^/]+\/src\//.test(rel)), []);
+});
 
 for (const pkg of packages) {
   test(`${pkg}: imports stay inside the allowlist (whole package)`, () => {

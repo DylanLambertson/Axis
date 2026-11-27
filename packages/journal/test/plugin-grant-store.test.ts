@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { AuditLog, openDatabase } from "@axis/audit";
 import { Journal, PLUGIN_RECORD_ACTION } from "../src/index.js";
+import { grantForTests, enableForTests } from "./plugin-grants-for-tests.js";
 
 // The plugin grant store (ticket PV-K1b): user-only writes, ids-only audit, the state the daemon's policy reads.
 
@@ -20,9 +21,9 @@ test("add, grant, enable: the state the policy reads; every write is the user's 
   assert.equal(plugins.state("acme.board", "p1"), undefined);
   plugins.add("acme.board", "p1");
   assert.deepEqual(plugins.state("acme.board", "p1"), { enabled: false, generation: 1, permissions: [] });
-  plugins.grant("acme.board", "p1", "pages.read");
-  plugins.grant("acme.board", "p1", "messages.send");
-  plugins.setEnabled("acme.board", "p1", true);
+  grantForTests(plugins, "acme.board", "p1", "pages.read");
+  grantForTests(plugins, "acme.board", "p1", "messages.send");
+  enableForTests(plugins, "acme.board", "p1");
   assert.deepEqual(plugins.state("acme.board", "p1"), { enabled: true, generation: 1, permissions: ["messages.send", "pages.read"] });
   const rows = records(audit);
   assert.deepEqual(rows.map((e) => e.payload), [
@@ -37,9 +38,9 @@ test("add, grant, enable: the state the policy reads; every write is the user's 
 test("a disable and a revoke each bump the generation; an enable, a repeated switch and a missing revoke do not", () => {
   const { plugins } = setup();
   plugins.add("acme.board", "p1");
-  plugins.grant("acme.board", "p1", "pages.read");
-  plugins.setEnabled("acme.board", "p1", true);
-  plugins.setEnabled("acme.board", "p1", true);
+  grantForTests(plugins, "acme.board", "p1", "pages.read");
+  enableForTests(plugins, "acme.board", "p1");
+  enableForTests(plugins, "acme.board", "p1");
   assert.equal(plugins.state("acme.board", "p1")?.generation, 1);
   plugins.setEnabled("acme.board", "p1", false);
   assert.equal(plugins.state("acme.board", "p1")?.generation, 2);
@@ -54,10 +55,10 @@ test("a disable and a revoke each bump the generation; an enable, a repeated swi
 test("disabling keeps the grants; the policy refuses while disabled, and enabling again restores them", () => {
   const { plugins } = setup();
   plugins.add("acme.board", "p1");
-  plugins.grant("acme.board", "p1", "pages.read");
+  grantForTests(plugins, "acme.board", "p1", "pages.read");
   plugins.setEnabled("acme.board", "p1", false);
   assert.deepEqual(plugins.state("acme.board", "p1")?.permissions, ["pages.read"]);
-  plugins.setEnabled("acme.board", "p1", true);
+  enableForTests(plugins, "acme.board", "p1");
   assert.deepEqual(plugins.state("acme.board", "p1"), { enabled: true, generation: 1, permissions: ["pages.read"] });
 });
 
@@ -65,12 +66,12 @@ test("refusals: an unknown permission, a plugin never added, a grant twice; noth
   const { audit, plugins } = setup();
   plugins.add("acme.board", "p1");
   const before = records(audit).length;
-  assert.throws(() => plugins.grant("acme.board", "p1", "net:evil.example" as never));
-  assert.throws(() => plugins.grant("other.one", "p1", "pages.read"));
-  assert.throws(() => plugins.setEnabled("other.one", "p1", true));
+  assert.throws(() => grantForTests(plugins, "acme.board", "p1", "net:evil.example" as never));
+  assert.throws(() => grantForTests(plugins, "other.one", "p1", "pages.read"));
+  assert.throws(() => enableForTests(plugins, "other.one", "p1"));
   assert.throws(() => plugins.setEnabled("acme.board", "p1", "yes" as never));
-  plugins.grant("acme.board", "p1", "pages.read");
-  assert.throws(() => plugins.grant("acme.board", "p1", "pages.read"));
+  grantForTests(plugins, "acme.board", "p1", "pages.read");
+  assert.throws(() => grantForTests(plugins, "acme.board", "p1", "pages.read"));
   assert.throws(() => plugins.add("acme.board", "p1"));
   assert.equal(records(audit).length, before + 1, "only the one good grant was audited");
 });
@@ -81,9 +82,9 @@ test("list (PV-K2 K2-g1): the plugins of one project by id, each with its state;
   assert.deepEqual(journal.plugins.list("p9"), []);
   journal.plugins.add("zeta.tool", "p9");
   journal.plugins.add("alpha.tool", "p9");
-  journal.plugins.setEnabled("alpha.tool", "p9", true);
-  journal.plugins.grant("alpha.tool", "p9", "runs.start");
-  journal.plugins.grant("alpha.tool", "p9", "pages.read");
+  enableForTests(journal.plugins, "alpha.tool", "p9");
+  grantForTests(journal.plugins, "alpha.tool", "p9", "runs.start");
+  grantForTests(journal.plugins, "alpha.tool", "p9", "pages.read");
   assert.deepEqual(journal.plugins.list("p9"), [
     { pluginId: "alpha.tool", enabled: true, generation: 1, permissions: ["pages.read", "runs.start"] },
     { pluginId: "zeta.tool", enabled: false, generation: 1, permissions: [] },

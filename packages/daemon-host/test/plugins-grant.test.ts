@@ -17,6 +17,8 @@ import { DialogOverflow, grantLine, shortPluginId } from "../src/plugins/grant-l
 import { ProjectMutex } from "../src/worktrees/project-mutex.js";
 import { Client, type Msg } from "./approvals-rig.js";
 import { fakeClock } from "./helpers.js";
+import { grantForTests, enableForTests, mintOf } from "./plugin-grants-for-tests.js";
+import { createGrantAction } from "../src/plugins/grant-action.js";
 
 type Row = Record<string, unknown>;
 const verifier: IdentityVerifier = {
@@ -46,7 +48,7 @@ async function setup(t: TestContext, over: { grantsEnabled?: boolean; projectNam
   const view = { getProject: (id: string) => { const p = journal.getProject(id); return p === undefined ? undefined : { ...p, displayName: shown ?? p.displayName }; }, plugins: journal.plugins };
   const pluginId = over.pluginId ?? "acme.board";
   journal.plugins.add(pluginId, "p1");
-  journal.plugins.grant(pluginId, "p1", "pages.read");
+  grantForTests(journal.plugins, pluginId, "p1", "pages.read");
   // The native dialog: every request is recorded and answered when the test says so.
   const dialogs: Array<{ request: NativeConfirmRequest; answer: (confirmed: boolean) => void }> = [];
   const control: NativeControl = {
@@ -63,7 +65,7 @@ async function setup(t: TestContext, over: { grantsEnabled?: boolean; projectNam
     approvals: approvals.gate,
   });
   daemon.register("axis.approvals", 1, createApprovalsHandlers({ approvals: approvals.port }));
-  registerPluginsHandlers({ register: (c, v, h, o) => (o === undefined ? daemon.register(c, v, h) : daemon.register(c, v, h, o)) }, { journal: view, mutex, endPlugin: (p, j) => approvals.endPlugin(p, j), grantsEnabled: over.grantsEnabled ?? true, onPreview: approvals.onPreview });
+  registerPluginsHandlers({ register: (c, v, h, o) => (o === undefined ? daemon.register(c, v, h) : daemon.register(c, v, h, o)) }, { journal: view, mutex, endPlugin: (p, j) => approvals.endPlugin(p, j), grantAction: createGrantAction(journal.plugins, mintOf(journal.plugins)), grantsEnabled: over.grantsEnabled ?? true, onPreview: approvals.onPreview });
   const ports: MessagePort[] = [];
   const connect = async (att: string): Promise<Client> => {
     const { client, server } = memoryPair();
@@ -192,7 +194,7 @@ test("TOCTOU: a change while the spend waits for the project mutex refuses the g
   const held = s.mutex.run("p1", () => new Promise<void>((r) => (release = r)));
   const retry = user.call("axis.plugins", "grant", { ...payload, approval: { challengeId: id } });
   for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r));
-  s.journal.plugins.grant("acme.board", "p1", "tasks.read"); // the state moves while the spend waits
+  grantForTests(s.journal.plugins, "acme.board", "p1", "tasks.read"); // the state moves while the spend waits
   release();
   await held;
   const res = await retry;
@@ -300,7 +302,11 @@ test("the handlers themselves refuse grant and enable when grants are off, and w
   const off = createPluginsHandlers({ journal: s.journal, mutex: s.mutex, endPlugin: () => 0, grantsEnabled: false });
   assert.equal(await code(off.grant(ctx(true), grantPayload)), "E_UNAVAILABLE:plugin_grants_off");
   assert.equal(await code(off.enable(ctx(true), enablePayload)), "E_UNAVAILABLE:plugin_grants_off");
-  const on = createPluginsHandlers({ journal: s.journal, mutex: s.mutex, endPlugin: () => 0, grantsEnabled: true });
+  // Review K2-g3 N2: grants switched on but no grant action wired is still off.
+  const noAction = createPluginsHandlers({ journal: s.journal, mutex: s.mutex, endPlugin: () => 0, grantsEnabled: true });
+  assert.equal(await code(noAction.grant(ctx(true), grantPayload)), "E_UNAVAILABLE:plugin_grants_off");
+  assert.equal(await code(noAction.enable(ctx(true), enablePayload)), "E_UNAVAILABLE:plugin_grants_off");
+  const on = createPluginsHandlers({ journal: s.journal, mutex: s.mutex, endPlugin: () => 0, grantsEnabled: true, grantAction: createGrantAction(s.journal.plugins, mintOf(s.journal.plugins)) });
   assert.equal(await code(on.grant(ctx(false), grantPayload)), "E_NOT_FOUND");
   assert.equal(await code(on.enable(ctx(false), enablePayload)), "E_NOT_FOUND");
   assert.deepEqual(s.journal.plugins.state("acme.board", "p1"), { enabled: false, generation: 1, permissions: ["pages.read"] });
@@ -323,11 +329,11 @@ test("review K2-g2 N3: the dialog line is built under the project mutex, from wh
 
 test("review K2-g2 N5: the handler re-checks already_granted and already_enabled itself, under the lock, writing nothing", async (t) => {
   const s = await setup(t);
-  const h = createPluginsHandlers({ journal: s.journal, mutex: s.mutex, endPlugin: () => 0, grantsEnabled: true });
+  const h = createPluginsHandlers({ journal: s.journal, mutex: s.mutex, endPlugin: () => 0, grantsEnabled: true, grantAction: createGrantAction(s.journal.plugins, mintOf(s.journal.plugins)) });
   const ctx = { identity: verifier.verify("user#Uone#w1"), requestId: "r", correlationId: "x", signal: new AbortController().signal, approved: { target: "plugin:p1/acme.board" } } as unknown as HandlerContext;
   const code = (p: unknown): Promise<string> => Promise.resolve(p).then(() => "ok", (e: { code?: string; details?: Row }) => `${e.code}:${String(e.details?.["reason"])}`);
   assert.equal(await code(h.grant(ctx, { projectId: "p1", pluginId: "acme.board", permission: "pages.read" } as never)), "E_CONFLICT:already_granted");
-  s.journal.plugins.setEnabled("acme.board", "p1", true);
+  enableForTests(s.journal.plugins, "acme.board", "p1");
   assert.equal(await code(h.enable(ctx, { projectId: "p1", pluginId: "acme.board" } as never)), "E_CONFLICT:already_enabled");
   assert.deepEqual(s.journal.plugins.state("acme.board", "p1"), { enabled: true, generation: 1, permissions: ["pages.read"] });
 });
