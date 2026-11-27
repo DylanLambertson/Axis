@@ -19,6 +19,8 @@ export function coalesceKey(body: EventBody): string {
       return `workspaces:${body.workspaceId}`;
     case "runs":
       return `runs:${body.runId}`;
+    case "tasks":
+      return `tasks:${body.projectId}`;
     default:
       return body.topic;
   }
