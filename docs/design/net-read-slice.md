@@ -1,6 +1,6 @@
 # The integrations read slice (PV-N1f, read path)
 
-- **Status:** design, for review before any code. Review round 1 folded in.
+- **Status:** Built on main as the PV-N1f read slice. `packages/daemon-host/test/integrations/handlers.test.ts`, `test/integrations/service.test.ts` and `test/slice/integrations-canary.test.ts` cover the served path; production still has no vault backend (§7).
 - **Date:** 2026-11-27.
 - **Inputs:**
   - ADR 0009 decisions 1, 2, 3, 4 and 8.
@@ -20,7 +20,7 @@ This slice serves `axis.integrations/1.list`, `.status` and `.read` for ONE buil
 
 ## 2. The connector registry
 
-- **Where:** `packages/daemon-host/src/integrations/registry.ts` (a future path), a frozen, daemon-only constant. Declared origins, scopes and operations live ONLY here, in daemon source. No request, reply, setting or renderer value can add or change them. Plugin-contributed connectors are PV-K, with their own design.
+- **Where:** `packages/daemon-host/src/integrations/registry.ts`, a frozen, daemon-only constant. Declared origins, scopes and operations live ONLY here, in daemon source. No request, reply, setting or renderer value can add or change them. Plugin-contributed connectors are PV-K, with their own design.
 - **Shape:** `Connector { id, label, origins, declaredScopes, auth: "bearer", tokenShape, operations }`.
   - `tokenShape` is the credential's shape, checked on every reveal before use (§4 step 4).
   - Each operation is `{ kind: "read", template: OperationTemplate, result: schema }`.

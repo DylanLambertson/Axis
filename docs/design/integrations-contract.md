@@ -1,6 +1,6 @@
 # Integrations and net: the contracts (PV-N1a)
 
-- **Status:** Planned contracts: the schemas and planned policy rows exist, nothing serves them. Served by PV-N1f (`axis.integrations/1`) and PV-N1f with PV-K1 (`axis.net/1`).
+- **Status:** `axis.integrations/1.list`, `.status` and `.read` are served for the built-in GitHub read connector (PV-N1f). `connect`, `disconnect`, `write` and both `axis.net/1` methods remain planned. Production has no integration vault backend yet, so a read answers `not_connected` until that wiring is built (`net-read-slice.md` §7).
 - **Date:** 2026-11-22.
 - **Inputs:** ADR 0009 decisions 1 to 4 (`docs/adr/0009-integrations-and-credential-proxy.md`), ADR 0008 decision 6, `docs/design/product-vision-v2-tickets.md` section 5.1 (PV-N1a).
 - **Code:** `packages/protocol/src/integrations.ts` and `integrations-wire.ts`; planned rows in `packages/daemon-host/src/policy/planned.ts`. Tests: `packages/protocol/test/contracts-integrations.test.ts` (with `samples-integrations.ts`), `packages/daemon-host/test/policy/integrations-policy.test.ts`.
