@@ -2,7 +2,9 @@
 import { trustCallOf } from "../gate/project-trust.js";
 import type { Handler, HandlerContext } from "@axis/daemon";
 import { gitCommitRequestSchema } from "@axis/protocol";
-import type { PreparedCommitPort } from "../ports/review.js";
+import type { AuditEventInput } from "@axis/audit";
+import type { IndexRefreshOutcome } from "@axis/git-ops";
+import { GIT_AUDIT } from "./git-common.js";
 import { gitFailure } from "./git-errors.js";
 import { locate, mapError, portContext, requireUser, workspaceFor, type GitHandlerDeps } from "./git-common.js";
 
@@ -16,9 +18,9 @@ import { locate, mapError, portContext, requireUser, workspaceFor, type GitHandl
  *     tree, a tree from before a restart or one forgotten for the bound is `stale`), and its parent and branch must be the
  *     request's. Only plain data of the stored entry is read here; the opaque `handle` is passed, unread, to
  *     `CommitPreparer.prepare`, whose `prepareCommit` is the real brand check (a forged handle is refused there);
- *  3. `prepare` re-checks HEAD, the branch, any operation in progress and every file, and stages the reviewed tree;
+ *  3. `prepare` re-checks HEAD, the branch, any operation in progress and every file, and checks the reviewed tree in a
+ *     private index: the person's own `.git/index` is never written (DC-0, ADR 0011 S1);
  *  4. `handoff` and `executeCommit` (the freshness check `assertReviewFresh` runs inside it, as its last step before git).
- * A refusal after step 3 puts the person's own staging back, unless the branch may already have moved.
  *
  * DECISION B2 (OPEN, ticket H9-hooks): the commit runs NO repository hook (`commit-tree` plus a compare-and-swap
  * `update-ref` run none, and the daemon never runs one). Nothing is audited as "made without hooks". See docs/packages.md.
@@ -48,7 +50,6 @@ export function createGitCommitHandler(deps: GitHandlerDeps): Handler {
           if (signal.aborted) throw gitFailure("E_CANCELLED");
 
           const prepared = await deps.review.prepare(entry.handle, portContext(context));
-          let landed = false;
           try {
             const input = await prepared.handoff(message, author);
             // What the binding hands over must be what was asked for: a hand-over of another tree or parent is refused.
@@ -59,12 +60,10 @@ export function createGitCommitHandler(deps: GitHandlerDeps): Handler {
             // The gate, right before git and inside the mutex (project-registration-and-trust.md §5.4).
             const ticket = await deps.gate.admit({ projectId: ws.projectId, caller: trustCallOf(context.identity), workspaceId, signal });
             const result = await deps.ops.executeCommit({ workspaceId, projectId: ws.projectId, assertFresh: () => deps.review.assertFresh(entry.handle) }, input, ticket);
-            landed = true;
-            return finish(deps, workspaceId, result);
+            return finish(deps, workspaceId, result, context.identity.actor);
           } catch (e) {
-            // The branch is moved only by the compare-and-swap at the very end; a failure that says it happened leaves the index alone.
-            if ((e as { updated?: unknown } | null)?.updated === true) forgetTrees(deps, workspaceId); // it did land: the reviewed tree is spent
-            else if (!landed) await restore(prepared);
+            // The branch is moved only by the compare-and-swap at the very end; a failure that says it happened spends the reviewed tree.
+            if ((e as { updated?: unknown } | null)?.updated === true) forgetTrees(deps, workspaceId);
             throw e;
           }
         },
@@ -76,22 +75,30 @@ export function createGitCommitHandler(deps: GitHandlerDeps): Handler {
   };
 }
 
-async function restore(prepared: PreparedCommitPort): Promise<void> {
-  try {
-    await prepared.restoreIndex();
-  } catch {
-    // restoreIndex never throws by contract; a port that does must not hide the refusal.
-  }
-}
-
 /**
  * After the branch moved: forget the trees of the workspace (HEAD is new, every one is stale) and answer. Never throws:
  * the reply is not re-validated here, because a throw would free the idempotency key of a commit that landed (the daemon
  * checks the reply against the contract itself, and marks the key unknown if it is wrong).
  */
-function finish(deps: GitHandlerDeps, workspaceId: string, result: { readonly commit: string; readonly tree: string }) {
+function finish(deps: GitHandlerDeps, workspaceId: string, result: { readonly commit: string; readonly tree: string; readonly indexRefresh?: IndexRefreshOutcome }, actor: AuditEventInput["actor"]) {
   forgetTrees(deps, workspaceId);
-  return { commit: result.commit, tree: result.tree };
+  const r = result.indexRefresh;
+  if (r !== undefined) {
+    // DC-0 review 2 S2: a skipped refresh is never silent. It is audited (a closed reason, no path) and carried in the reply,
+    // so the UI can say the committed paths show as staged reversions and offer the reset. A failed audit write is bookkeeping.
+    try {
+      deps.audit?.append({
+        actor,
+        action: GIT_AUDIT.indexRefresh,
+        target: `workspace:${workspaceId}`,
+        outcome: "success",
+        payload: "skipped" in r ? { workspaceId, result: "skipped", reason: r.skipped } : { workspaceId, result: "refreshed", count: r.refreshed },
+      });
+    } catch (e) {
+      deps.onBookkeepingError?.(e);
+    }
+  }
+  return { commit: result.commit, tree: result.tree, ...(r === undefined ? {} : { indexRefresh: r }) };
 }
 
 function forgetTrees(deps: GitHandlerDeps, workspaceId: string): void {

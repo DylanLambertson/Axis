@@ -1,8 +1,8 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { test, type TestContext } from "node:test";
 import type { Policy } from "@axis/daemon";
 import { gitCommitReasonSchema } from "@axis/protocol";
@@ -116,16 +116,16 @@ test("commit: a file changed after the review is refused stale, the branch does 
   noLeak(r, res);
 });
 
-test("commit: a refusal after the reviewed tree was staged puts the person's own index back", { skip: SKIP ?? false }, async (t) => {
+test("commit (DC-0): a refusal after prepare leaves the person's own index byte-identical: nothing was staged, nothing is put back", { skip: SKIP ?? false }, async (t) => {
   const { r, c } = await setup(t, { ops: (real) => ({ ...real, executeCommit: async () => { throw new GitRefusal("E_CONFLICT", "stale"); } }) });
   r.write("staged.txt", "mine\n");
   r.git("add", "staged.txt");
-  const before = r.git("write-tree").trim();
+  const index = r.git("rev-parse", "--path-format=absolute", "--git-path", "index").trim();
   const req = await review(r, c);
+  const before = readFileSync(index);
   const res = await commit(c, r, req);
   assert.equal(res.error?.details?.["reason"], "stale");
-  assert.equal(r.calls.restoreIndex, 1);
-  assert.equal(r.git("write-tree").trim(), before, "restored, not left holding the reviewed tree");
+  assert.deepEqual(readFileSync(index), before);
   assert.equal(r.head(), req.expectedParent);
 });
 
@@ -134,13 +134,12 @@ test("commit: after the branch already moved, nothing is rewound and the index i
   const req = await review(r, c);
   const res = await commit(c, r, req);
   assert.equal(res.error?.code, "E_INTERNAL");
-  assert.equal(r.calls.restoreIndex, 0, "updated: the index is not put back");
   // The branch moved, so the reviewed tree is spent: a retry says stale instead of pretending it can still be committed.
   const again = await commit(c, r, req);
   assert.equal(again.error?.details?.["reason"], "stale");
 });
 
-test("commit: staging the person did after prepare is not wiped by the put-back", { skip: SKIP ?? false }, async (t) => {
+test("commit: staging the person did after prepare is kept, and the new file makes the review stale", { skip: SKIP ?? false }, async (t) => {
   const { r, c } = await setup(t, {
     review: (real) => ({
       ...real,
@@ -155,39 +154,12 @@ test("commit: staging the person did after prepare is not wiped by the put-back"
   });
   const req = await review(r, c);
   const res = await commit(c, r, req);
-  assert.equal(res.error?.details?.["reason"], "index_changed");
-  assert.equal(r.calls.restoreIndex, 1);
+  assert.equal(res.error?.details?.["reason"], "stale", "the worktree holds a file the review did not see");
   assert.ok(r.git("diff", "--cached", "--name-only").split("\n").includes("mine.txt"), "the person's staging is still there");
   assert.equal(r.head(), req.expectedParent);
 });
 
-test("commit: restoreIndex does not touch the index when HEAD is no longer the reviewed commit", { skip: SKIP ?? false }, async (t) => {
-  let other = "";
-  const { r, c } = await setup(t, {
-    ops: (real) => ({
-      ...real,
-      executeCommit: async () => {
-        // A commit lands (by another tool) before the refusal: the person's staging must not be rewound over it.
-        r.git("update-ref", "refs/heads/axis/feat", other);
-        throw new GitRefusal("E_UNAVAILABLE");
-      },
-    }),
-  });
-  r.write("x.txt", "x\n");
-  r.git("add", "x.txt");
-  r.git("commit", "-q", "-m", "elsewhere");
-  other = r.head();
-  r.git("reset", "-q", "--hard", r.baseSha);
-  r.write("staged.txt", "mine\n");
-  r.git("add", "staged.txt");
-  const req = await review(r, c);
-  const before = r.git("write-tree").trim();
-  await commit(c, r, req);
-  assert.equal(r.calls.restoreIndex, 1);
-  assert.notEqual(r.git("write-tree").trim(), before, "HEAD moved, so the index was left as it was (holding the reviewed tree)");
-});
-
-test("commit: a live run in the workspace refuses it and the person's staging is put back", { skip: SKIP ?? false }, async (t) => {
+test("commit: a live run in the workspace refuses it and leaves the branch where it was", { skip: SKIP ?? false }, async (t) => {
   const { r, c } = await setup(t, { runsActive: true });
   const req = await review(r, c);
   const res = await commit(c, r, req);
@@ -221,7 +193,6 @@ test("commit: the hand-over must be the reviewed tree on the reviewed parent and
   const res = await commit(c, r, req);
   assert.equal(res.error?.details?.["reason"], "head_moved");
   assert.equal(r.calls.executeCommit, 0);
-  assert.equal(r.calls.restoreIndex, 1);
 });
 
 test("commit: a retry is one commit, not two (a replay returns the stored result, a new key is refused)", { skip: SKIP ?? false }, async (t) => {
@@ -286,4 +257,27 @@ test("review A SF2: an untrust while a commit waits for the project mutex refuse
   assert.deepEqual([res.error?.code, (res.error?.details as { reason?: string } | undefined)?.reason], ["E_CONFLICT", "untrusted"]);
   assert.equal(r.git("rev-parse", "HEAD").trim(), head, "no commit was made");
   assert.equal(r.calls.executeCommit, 0);
+});
+
+test("commit (DC-0 review 2 S2): the reply and the audit say what the index refresh did, a skip included", { skip: SKIP ?? false }, async (t) => {
+  const { r, c } = await setup(t);
+  const req = await review(r, c);
+  const res = await commit(c, r, req);
+  assert.equal(res.ok, true, JSON.stringify(res.error));
+  assert.deepEqual((res.result as { indexRefresh?: unknown }).indexRefresh, { refreshed: 1 });
+  const refresh = () => r.auditRows.filter((e) => e.action === "git.index_refresh").map((e) => e.payload);
+  assert.deepEqual(refresh(), [{ workspaceId: r.workspaceId, result: "refreshed", count: 1 }]);
+  // Another git holds the index lock through the one retry: the commit lands, and the skip is said, not swallowed.
+  const lock = `${resolve(r.repo, r.git("rev-parse", "--git-path", "index").trim())}.lock`;
+  const next = await review(r, c, "two\n");
+  writeFileSync(lock, "an IDE's background status\n");
+  try {
+    const res2 = await commit(c, r, next);
+    assert.equal(res2.ok, true, JSON.stringify(res2.error));
+    assert.deepEqual((res2.result as { indexRefresh?: unknown }).indexRefresh, { skipped: "locked" });
+    assert.deepEqual(refresh()[1], { workspaceId: r.workspaceId, result: "skipped", reason: "locked" });
+    assert.equal(r.head(), (res2.result as { commit: string }).commit);
+  } finally {
+    rmSync(lock, { force: true });
+  }
 });
