@@ -95,7 +95,7 @@ async function setup(t: TestContext, over: { grantsEnabled?: boolean; projectNam
     await new Promise((r) => setImmediate(r));
     return challenge["challengeId"] as string;
   };
-  return { journal, approvals, mutex, dialogs, connect, approve, pluginId };
+  return { journal, approvals, mutex, dialogs, connect, approve, pluginId, setShown: (name: string) => void (shown = name) };
 }
 const reasonOf = (m: Msg): unknown => m.error?.details?.["reason"];
 
@@ -173,6 +173,12 @@ test("the native line for the longest plugin id and project name, and for every 
 
 test("the dialog line never drops its wording: a line whose fixed parts cannot fit is refused, never cut", () => {
   assert.throws(() => grantLine({ wording: "w".repeat(60), dangerous: true, pluginId: "acme.board", projectName: "One" }), DialogOverflow);
+  // The boundary: the longest wording that still leaves the project 8 units is accepted, whole; one unit more is refused.
+  // head = wording + ": " + "acme.board" + " in " = wording + 16 units, so the room is 64 - wording.
+  const fits = grantLine({ wording: "w".repeat(56), dangerous: false, pluginId: "acme.board", projectName: "A long project name" });
+  assert.equal(fits, `${"w".repeat(56)}: acme.board in A long …`);
+  assert.equal(fits.length, 80);
+  assert.throws(() => grantLine({ wording: "w".repeat(57), dangerous: false, pluginId: "acme.board", projectName: "One" }), DialogOverflow);
   const dangerous = grantLine({ wording: "may read project files", dangerous: true, pluginId: "acme.board", projectName: "One" });
   assert.equal(dangerous, "SENDS DATA OUT: may read project files: acme.board in One");
 });
@@ -273,6 +279,8 @@ test("the digest: a versioned tuple over the whole state, injective where a join
   assert.equal(grantDigest("grant", "acme.board", "p1", "runs.start", st({ permissions: ["tasks.read", "pages.read"] })), grantDigest("grant", "acme.board", "p1", "runs.start", st({ permissions: ["pages.read", "tasks.read"] })), "sorted");
   assert.notEqual(grantDigest("enable", "acme.board", "p1", null, st()), grantDigest("grant", "acme.board", "p1", null, st()), "the method is bound");
   assert.throws(() => grantDigest("grant", "acme.board", "p1", "runs.start", st({ generation: 1.5 })), TypeError);
+  assert.notEqual(grantDigest("grant", "acme.board", "p1", "files.read", st()), base, "the permission is bound");
+  assert.notEqual(grantDigest("grant", "acme.board", "p2", "runs.start", st()), base, "the project is bound");
 });
 
 test("a plugin's tier-3 run-start challenge is never native; a grant always is", async (t) => {
@@ -296,4 +304,30 @@ test("the handlers themselves refuse grant and enable when grants are off, and w
   assert.equal(await code(on.grant(ctx(false), grantPayload)), "E_NOT_FOUND");
   assert.equal(await code(on.enable(ctx(false), enablePayload)), "E_NOT_FOUND");
   assert.deepEqual(s.journal.plugins.state("acme.board", "p1"), { enabled: false, generation: 1, permissions: ["pages.read"] });
+});
+
+test("review K2-g2 N3: the dialog line is built under the project mutex, from what is read there", async (t) => {
+  const s = await setup(t);
+  const user = await s.connect("user#Uone#w1");
+  let release!: () => void;
+  const held = s.mutex.run("p1", () => new Promise<void>((r) => (release = r)));
+  const asked = user.call("axis.plugins", "grant", { projectId: "p1", pluginId: "acme.board", permission: "runs.start" });
+  for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r));
+  s.setShown("Renamed"); // the name the user sees changes while the issue waits for the mutex
+  release();
+  await held;
+  assert.equal((await asked).error?.code, "E_APPROVAL_REQUIRED");
+  for (let i = 0; i < 50 && s.dialogs.length === 0; i++) await new Promise((r) => setImmediate(r));
+  assert.equal(s.dialogs[0]?.request.summary, "axis.plugins/1.grant: may ask to start AI runs: acme.board in Renamed");
+});
+
+test("review K2-g2 N5: the handler re-checks already_granted and already_enabled itself, under the lock, writing nothing", async (t) => {
+  const s = await setup(t);
+  const h = createPluginsHandlers({ journal: s.journal, mutex: s.mutex, endPlugin: () => 0, grantsEnabled: true });
+  const ctx = { identity: verifier.verify("user#Uone#w1"), requestId: "r", correlationId: "x", signal: new AbortController().signal, approved: { target: "plugin:p1/acme.board" } } as unknown as HandlerContext;
+  const code = (p: unknown): Promise<string> => Promise.resolve(p).then(() => "ok", (e: { code?: string; details?: Row }) => `${e.code}:${String(e.details?.["reason"])}`);
+  assert.equal(await code(h.grant(ctx, { projectId: "p1", pluginId: "acme.board", permission: "pages.read" } as never)), "E_CONFLICT:already_granted");
+  s.journal.plugins.setEnabled("acme.board", "p1", true);
+  assert.equal(await code(h.enable(ctx, { projectId: "p1", pluginId: "acme.board" } as never)), "E_CONFLICT:already_enabled");
+  assert.deepEqual(s.journal.plugins.state("acme.board", "p1"), { enabled: true, generation: 1, permissions: ["pages.read"] });
 });

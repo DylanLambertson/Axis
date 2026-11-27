@@ -18,7 +18,8 @@ import { DialogOverflow, ENABLE_WORDING, GRANT_WORDING, grantLine, isDangerous }
  *   At issue that step only checks the digest, so the mutex is released before the user answers. At the spend it is the whole
  *   approval action: the comparison, the spend, the daemon's audit hand-off and the handler's write, under one hold that every
  *   writer of the plugin rows also takes.
- * - **The dialog line** is section 3.1's (`grant-line.ts`): the wording first, never cut; a line that cannot fit is refused here.
+ * - **The dialog line** is section 3.1's (`grant-line.ts`), built under the mutex from the state read there: the wording first,
+ *   never cut; a line that cannot fit is refused at issue.
  */
 export interface GrantContentDeps {
   readonly journal: {
@@ -63,23 +64,10 @@ export function createGrantContentHooks(deps: GrantContentDeps): { readonly gran
       if (!req.success) return refuse("E_INVALID_ARGUMENT");
       const { projectId, pluginId } = req.data;
       const permission = method === "grant" ? (req.data as unknown as { permission: PluginPermission }).permission : null;
-      const project = deps.journal.getProject(projectId);
       const now = deps.journal.plugins.state(pluginId, projectId);
-      if (project === undefined || now === undefined) return refuse("E_NOT_FOUND");
+      if (deps.journal.getProject(projectId) === undefined || now === undefined) return refuse("E_NOT_FOUND");
       if (permission !== null && now.permissions.includes(permission)) refuse("E_CONFLICT", "already_granted");
       if (method === "enable" && now.enabled) refuse("E_CONFLICT", "already_enabled");
-      let line: string;
-      try {
-        line = grantLine({
-          wording: permission === null ? ENABLE_WORDING : GRANT_WORDING[permission],
-          dangerous: permission !== null && isDangerous([...now.permissions, permission]),
-          pluginId,
-          projectName: project.displayName,
-        });
-      } catch (e) {
-        if (e instanceof DialogOverflow) return refuse("E_INVALID_ARGUMENT", "dialog_overflow");
-        throw e;
-      }
       const target = `plugin:${projectId}/${pluginId}`;
       return {
         target,
@@ -89,8 +77,22 @@ export function createGrantContentHooks(deps: GrantContentDeps): { readonly gran
             projectId,
             async () => {
               const state = deps.journal.plugins.state(pluginId, projectId);
-              if (state === undefined) return refuse("E_NOT_FOUND");
+              const shown = deps.journal.getProject(projectId);
+              if (state === undefined || shown === undefined) return refuse("E_NOT_FOUND");
               const digest = grantDigest(method, pluginId, projectId, permission, state);
+              // The dialog line, the danger marker included, is built from the state read under the mutex (review K2-g2 N3).
+              let line: string;
+              try {
+                line = grantLine({
+                  wording: permission === null ? ENABLE_WORDING : GRANT_WORDING[permission],
+                  dangerous: permission !== null && isDangerous([...state.permissions, permission]),
+                  pluginId,
+                  projectName: shown.displayName,
+                });
+              } catch (e) {
+                if (e instanceof DialogOverflow) return refuse("E_INVALID_ARGUMENT", "dialog_overflow");
+                throw e;
+              }
               deps.onPreview(target, digest, line);
               return fn(digest);
             },
