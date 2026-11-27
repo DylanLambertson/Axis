@@ -30,7 +30,7 @@ import { join, posix, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { RESTRICTED_MODULES, mayImportRestricted } from "./stage-scan.mjs";
 import { metafileGaps, minterReachViolations, missingEntries } from "./graph-reach.mjs";
-import { listenerBuiltinRefusal, listenerReachViolations, webHostEdgeRefusal } from "./web-rules.mjs";
+import { egressClientEdgeRefusal, listenerBuiltinRefusal, listenerReachViolations, webHostEdgeRefusal } from "./web-rules.mjs";
 import { egressBuiltinRefusal } from "./egress-rules.mjs";
 import { MANIFEST_NAME, STAGE_ROOT, verifyStaged } from "./stage-verify.mjs";
 import { readFileSync } from "node:fs";
@@ -82,6 +82,8 @@ export function checkMetafile(metafile, manifest, { bundledText = null, treeZod 
         if (egress !== null) bad.push(`${input}: ${egress}`);
       }
       if (imp.external !== true) {
+        const client = egressClientEdgeRefusal(rel, stagedOf(imp.path));
+        if (client !== null) bad.push(`${input}: ${client}`);
         const why = webHostEdgeRefusal(rel, stagedOf(imp.path), rel === null ? input : null);
         if (why !== null) {
           flaggedWeb.add(`${rel ?? input}->${stagedOf(imp.path)}`);

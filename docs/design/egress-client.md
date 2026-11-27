@@ -1,9 +1,9 @@
 # The daemon's egress client (PV-N1d)
 
-- **Status:** slice A built (the target and address rules, and the pinning test); slice B (the client itself) follows.
+- **Status:** slice A built (the target and address rules, and the pinning test); slice B built (the client, its lint pin and import rules).
 - **Date:** 2026-11-22.
 - **Inputs:** ADR 0009 decision 4 (network egress, INT-2, INT-3, D-14), `docs/security/threat-model-phase4a.md` TB24, `docs/design/integrations-contract.md` (the caps), `docs/design/net-gate.md`.
-- **Code:** `packages/daemon-host/src/net/host.ts`, `packages/daemon-host/src/net/address.ts`; tests in `packages/daemon-host/test/net/`.
+- **Code:** `packages/daemon-host/src/net/` (`host.ts`, `address.ts`, `egress-client.ts`, `egress-limits.ts`, `egress-errors.ts`); tests in `packages/daemon-host/test/net/` and `test/packages/egress-client-rule.test.mjs`.
 
 ## 1. What it is for
 
@@ -35,10 +35,39 @@ The reasons are internal (tests and the audit row of PV-N1f); the error a caller
 
 `test/net/agent-pinning.test.ts` pins the Node behaviour the client relies on, at Node 24.22.1: a dedicated `https.Agent` whose `lookup` answers with checked addresses connects to those and to nothing else (a decoy listening on `::1` at the server's own port, proven to accept by a control connection, receives nothing; a `.invalid` host proves the system resolver is never asked), asks for every address when `autoSelectFamily` is on, and keeps SNI and the certificate check on the original host (a certificate for another name fails at the checked address). It passed; the design stands. It needs `openssl` to make a test certificate: without it the test FAILS under the gate (`scripts/gate.mjs` sets `AXIS_REQUIRE_PINNING_TEST=1`) and in CI (`CI` set), and only a dev run skips it, with a reason that says the gate requires it.
 
-## 4. Slice B (next, its own review)
+## 4. Slice B: the client
 
-- `src/net/egress-client.ts`: the ONE file in the daemon that loads `node:https`, pinned like the CLI endpoint template (an exact-import rule and a reach rule in `scripts/code-oss/web-rules.mjs`: no other daemon or host file may load `node:https`, `node:http`, `node:tls`, `node:net` or `node:dns`, statically or dynamically). The NET-GATE stays a TCP-listener check, and `net-gate.md` will state what it does and does not observe about outbound traffic.
-- A dedicated agent: the `lookup` resolves once and returns only addresses `resolvedRefusal` accepts; `rejectUnauthorized: true`; no proxy; SNI and the certificate on the original host. A test-only CA seam that production wiring never sets (tested), never `NODE_EXTRA_CA_CERTS`.
-- `3xx` is `redirect_refused` (its `Location` never read out); no `Accept-Encoding`, only `identity` accepted; the caps (request 1 MiB before sending, response 4 MiB, headers 16 KiB, JSON depth 64, 10 s to the first byte, 30 s in all), never a truncated result.
-- At most 4 requests in flight per integration; `Retry-After` integer seconds only, backoff capped at 15 minutes, on an injected clock.
-- Errors are closed: fixed text and the status only, never URL, header or body text (a canary test over errors and logs).
+`src/net/egress-client.ts` is the ONE daemon file that may load node:https and node:dns, and it opens no listener.
+
+- **Lint:**
+  - It is pinned by its SHA-256 (`scripts/code-oss/web-rules.mjs` rule 1b, `EGRESS_CLIENT_SHA256`), checked wherever a source is scanned: the import lint, the staging hook and the staged-tree check. Any edit fails until the pin changes in the same reviewed change.
+  - Its node:dns use must be exactly `import { lookup } from "node:dns"` (one line names node:dns, as a string). `node:dns/promises`, a default or namespace import, `Resolver` and the `resolve*` functions are therefore refused.
+  - Every other daemon file is refused `node:https`, `node:http`, `node:tls`, `node:net` and `node:dns`, whether loaded statically, by `import()` or by `require` (a computed specifier is refused by the scanner itself).
+  - Only the composition root may import the client (`EGRESS_CLIENT_IMPORTERS`, `egressClientEdgeRefusal`), and none does until PV-N1f. Whatever imports it may take only `createEgressClient`, `EGRESS_METHODS` and the client's types, by a static named import (`scripts/code-oss/egress-client-imports.mjs`). A namespace import (whose computed element access could reach the test factory), a default or side-effect import, a re-export, `import()`, `require()` and an `import()` type of the client are refused, so the test factory cannot be reached from src by any spelling (review 1 S1).
+  - The NET-GATE stays a listener check (`net-gate.md`).
+- **Resolution:**
+  - The agent's `lookup` resolves with `{ all: true, order: "verbatim" }`. `order` is Node 24's name for the deprecated `verbatim: true`.
+  - EVERY returned address passes through `resolvedRefusal` before the agent sees any. One reserved address among public ones refuses the request, as does none at all; nothing is filtered and continued.
+  - The agent then connects only to those addresses (§3), with SNI and the certificate on the original host.
+- **TLS:** `rejectUnauthorized: true` and `minVersion: "TLSv1.2"` on the agent (and the request), with Node's default CA store (its bundled list, plus `NODE_EXTRA_CA_CERTS` when set: RR-76). There is no proxy option, so no proxy applies; the entry refuses `NODE_USE_ENV_PROXY` and `NODE_TLS_REJECT_UNAUTHORIZED`, and a test runs a child with `NODE_USE_ENV_PROXY=1` and the proxy variables set: the target gets the request, the proxy nothing.
+- **Path:** the path and query sent are `target.url`'s, never the raw input. A test sends `/v1/a/%2e%2e/items` and the server sees `/v1/items`.
+- **Responses:**
+  - A `3xx` is `redirect_refused` with its status, and `Location` is never read.
+  - No `Accept-Encoding` is sent, and a caller may not set it or any other client-owned header (`header_refused`). Only `identity` is accepted (`encoding_refused`).
+  - The caps:
+    - request 1 MiB, refused before resolving (`request_too_large`);
+    - response 4 MiB, and nothing is kept past it (`response_too_large`);
+    - response headers 16 KiB (`maxHeaderSize`);
+    - JSON depth 64, checked before parsing (`parseJsonBody`);
+    - 10 s to the response headers and 30 s in all, on an injected clock.
+  - Never a truncated result.
+- **Rate:** at most 4 requests in flight per integration (`busy`). A `429` or `503` backs off for `Retry-After` when it is whole seconds, otherwise for 2, 4, 8 … seconds; a success resets the doubling. The cap is 15 minutes, and nothing is sent to that integration meanwhile (`rate_limited`).
+- **Run-time checks (review 1 B1):** every field a caller passes is checked at run time before a slot is taken, whatever the types say: the method against `GET`, `HEAD` and `POST` (`method_refused`); the integration, the origins, the URL, the body (a `Uint8Array`, never on a read) and the signal (`request_refused`); the headers (`header_refused`). Any throw, before the request or inside it (a Node `TypeError` that would echo the input), becomes a closed error, and the slot is released on every path: a throw, an abort, a timeout, an error or an answer. A throw inside the lookup is `connect_failed`, never a hung request.
+- **Errors:** `EgressError` carries a closed code, a fixed text and an integer status only. A Node error's message, which can name the host, is never read; only its code is mapped. The tests check that no URL, header or body text reaches an error.
+- **Test seam:** `createEgressClientForTest` takes a CA, a dial map and either a resolver or a stand-in for the node:dns lookup on the system resolver path (so a test sees the options `{ all: true, order: "verbatim" }` and the order kept). Tests run against a local server while the address rule judges the resolver's public answer. `createEgressClient` passes none, and the pin freezes that. The production client is tested on `localhost` only (`address_refused`; the hosts file answers, so no DNS query leaves the machine in CI), and its `systemTrustOnly` is read from the agent's own options. `NODE_EXTRA_CA_CERTS` is never used by Axis code.
+
+## 5. Residuals
+
+- **RR-91 (new):** the system resolver is the trust anchor for names. A malicious resolver cannot reach a private range, but it can substitute another public address. TLS against the declared host is the control there.
+- RR-76 (no certificate pinning) and RR-77 (operator-specific NAT64 prefixes) stand.
+- RR-80 is closed by §3.
