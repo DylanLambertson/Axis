@@ -4,6 +4,13 @@ import { test } from "node:test";
 import { COMPOSE_REFUSALS, composeNetRequest, composeRequest, CompositionError, encodeValue, MAX_VALUE_BYTES, normalisesToDanger, type OperationTemplate, placeholderText, templateProblem } from "../../src/net/compose-request.js";
 import { ISSUE, NAMED } from "./templates.js";
 
+/** The dot look-alikes of the audit C fix review (N2): refused in a path value, allowed in a query value. */
+const DOT_LOOKALIKES_REVIEWED = [
+  0x0702, 0xa60e, 0x10a50, 0x1d16d, 0x0660, 0x06f0,
+  0x2027, 0x2219, 0x22c5, 0x30fb, 0xff65, 0x2022, 0x2e31, 0x16eb, 0x1427, 0xa78f, 0x10101,
+  0x0589, 0x1362, 0x166e, 0x1803, 0x1809, 0x2cf9, 0x2cfe, 0x2e3c, 0xa4ff, 0xa6f3, 0xfe12,
+];
+
 // PV-N1e: request composition (ADR 0009 decision 3). Every refusal runs BEFORE encoding and has its own case.
 
 const ORIGIN = "https://api.example.com";
@@ -65,6 +72,15 @@ test("a value with a separator, a control character or an encoded separator is r
   for (const v of ["\u00b7\u00b7", "\u0387\u0387", "\u06d4\u06d4", "\u0701\u0701", "\ua4f8\ua4f8", "a\u00b7b"]) {
     assert.equal(reason(() => composeRequest(NAMED, "gh", ORIGIN, { name: v })), "argument_refused", `path ${JSON.stringify(v)}`);
     assert.equal(reason(() => composeRequest(ISSUE, "gh", ORIGIN, { ...BASE, search: v })), "composed", `query ${JSON.stringify(v)}`);
+  }
+  // Audit C fix review 1 N2: the reviewer's sweep. The UTS #39 confusables of "." (U+0702, U+A60E, U+10A50, U+1D16D, U+0660,
+  // U+06F0), the middle-dot group and other script full stops. This is that list, not a confusable-skeleton check.
+  for (const cp of DOT_LOOKALIKES_REVIEWED) {
+    const c = String.fromCodePoint(cp);
+    for (const v of [c, `${c}${c}`, `a${c}b`]) {
+      assert.equal(reason(() => composeRequest(NAMED, "gh", ORIGIN, { name: v })), "argument_refused", `path U+${cp.toString(16)} ${JSON.stringify(v)}`);
+    }
+    assert.equal(reason(() => composeRequest(ISSUE, "gh", ORIGIN, { ...BASE, search: `a${c}b` })), "composed", `query U+${cp.toString(16)}`);
   }
 });
 

@@ -91,7 +91,9 @@ const CONTROL = /[\u0000-\u001f\u007f-\u009f\u2028\u2029\u202a-\u202e\u2066-\u20
 const SEPARATOR = /[/?#\\;]/;
 const PERCENT = /%/;
 // Audit C I1: the middle dot, Greek ano teleia, Arabic and Syriac full stops and the Lisu tone mark look like `.` and no
-// normalisation maps them to it, so normalisesToDanger cannot see them.
+// normalisation maps them to it, so normalisesToDanger cannot see them. DOT_LOOKALIKE adds the audit fix review's sweep (N2):
+// the UTS #39 confusables of `.`, the middle-dot group and other script full stops. Both are named lists, not a skeleton check.
+const DOT_LOOKALIKE = /[\u{702}\u{a60e}\u{10a50}\u{1d16d}\u{660}\u{6f0}\u{2027}\u{2219}\u{22c5}\u{30fb}\u{ff65}\u{2022}\u{2e31}\u{16eb}\u{1427}\u{a78f}\u{10101}\u{589}\u{1362}\u{166e}\u{1803}\u{1809}\u{2cf9}\u{2cfe}\u{2e3c}\u{a4ff}\u{a6f3}\u{fe12}]/u;
 const PATH_CONFUSABLE = /[\u00b7\u0387\u06d4\u0701\ua4f8\u2024\u2044\u2215\u2216\u29f5\u29f8\u3002\ufe52\ufe68\uff0e\uff0f\uff3c\uff61]/;
 const INTEGRATION = /^[a-z][a-z0-9:._-]{0,63}$/;
 
@@ -180,7 +182,7 @@ export function placeholderText(value: ArgValue, type: ValueType, inPath: boolea
   }
   if (text.length === 0) throw new CompositionError("argument_refused");
   if (CONTROL.test(text) || SEPARATOR.test(text) || PERCENT.test(text)) throw new CompositionError("argument_refused");
-  if (inPath && (DOT_SEGMENT.test(text) || PATH_CONFUSABLE.test(text) || DEFAULT_IGNORABLE.test(text) || INVISIBLE.test(text) || UNSETTLED.test(text) || dotsWithMarks(text) || normalisesToDanger(text))) throw new CompositionError("argument_refused");
+  if (inPath && (DOT_SEGMENT.test(text) || PATH_CONFUSABLE.test(text) || DOT_LOOKALIKE.test(text) || DEFAULT_IGNORABLE.test(text) || INVISIBLE.test(text) || UNSETTLED.test(text) || dotsWithMarks(text) || normalisesToDanger(text))) throw new CompositionError("argument_refused");
   if (type.kind !== "text" && /[^\x20-\x7e]/.test(text)) throw new CompositionError("non_ascii");
   if (/[\ud800-\udfff]/.test(text.replace(/[\ud800-\udbff][\udc00-\udfff]/g, ""))) throw new CompositionError("argument_refused"); // a lone surrogate
   if (new TextEncoder().encode(text).byteLength > MAX_VALUE_BYTES) throw new CompositionError("argument_too_long");

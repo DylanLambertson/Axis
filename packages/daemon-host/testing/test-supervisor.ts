@@ -83,8 +83,19 @@ export class TestSupervisor {
   trustAnswer: (m: Extract<OutboundMessage, { type: "trust.check" }>) => boolean | undefined = () => true;
   settings: Record<string, unknown> = {};
   stderr = "";
-  /** Everything the child wrote to stdout and stderr, uncapped (only with `fullOutput`). */
-  output = "";
+  #output: string | undefined;
+  /** Everything the child wrote to stdout and stderr, uncapped. Only with `fullOutput`: otherwise reading it throws. */
+  get output(): string {
+    if (this.#output === undefined) throw new Error("TestSupervisor.output needs the fullOutput option");
+    return this.#output;
+  }
+
+  /** Start keeping every byte of the child's stdout and stderr (`fullOutput`). */
+  captureOutput(child: ChildProcess): void {
+    this.#output = "";
+    child.stdout?.on("data", (d: Buffer) => void (this.#output += d.toString("utf8")));
+    child.stderr?.on("data", (d: Buffer) => void (this.#output += d.toString("utf8")));
+  }
 
   readonly #channel: DisposableChannel & Partial<ChannelFlow>;
   readonly #root: string;
@@ -131,6 +142,7 @@ export class TestSupervisor {
     // Whatever was started is killed again if anything below throws, so a failed start leaves no child behind.
     let killStarted: () => void = () => undefined;
     try {
+      if (options.mode === "worker" && options.fullOutput === true) throw new Error("fullOutput is for a process host only (a worker has no stdout to capture)");
       if (options.mode === "worker") {
         const worker = new Worker(entry, { stderr: true });
         killStarted = () => void worker.terminate();
@@ -151,11 +163,7 @@ export class TestSupervisor {
         });
         const channel = adaptNodeIpc(child);
         sup = new TestSupervisor(root, channel, (sig) => void child.kill(sig ?? "SIGKILL"), exited, options, (hook) => child.stderr?.on("data", (d: Buffer) => hook(d.toString("utf8"))));
-        if (full) {
-          const s = sup;
-          child.stdout?.on("data", (d: Buffer) => void (s.output += d.toString("utf8")));
-          child.stderr?.on("data", (d: Buffer) => void (s.output += d.toString("utf8")));
-        }
+        if (full) sup.captureOutput(child);
       }
       if (options.skipInit !== true) sup.sendInit(options.config);
     } catch (e) {

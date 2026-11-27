@@ -176,7 +176,7 @@ test("dispose kills every terminal, closes every served port and removes every l
   try {
     await until(() => !alive(pgid));
     assert.equal(h.listeners(), 0);
-    assert.equal(h.usr1(), 1, "dispose keeps the SIGUSR1 listener: removing it would restore Node's inspector default");
+    assert.equal(h.usr1(), 1, "dispose keeps the SIGUSR1 listener: with none, the signal's default applies again");
   } finally {
     host.dispose();
     data.close();
@@ -252,6 +252,8 @@ test("the entry refuses to start without a parent port, with debugger flags, exe
     [{ execArgv: ["--inspect=0"] }, "debug_flag_refused"],
     [{ execArgv: ["--remote-debugging-port=1"] }, "debug_flag_refused"],
     [{ execArgv: ["--require", "x.js"] }, "exec_args_refused"],
+    [{ execArgv: ["--disable-sigusr1", "--disable-sigusr1"] }, "exec_args_refused"],
+    [{ execArgv: ["--disable-sigusr1", "--require", "x.js"] }, "exec_args_refused"],
     [{ env: { NODE_OPTIONS: "--require x" } }, "node_options_refused"],
   ];
   for (const [over, reason] of cases) {
@@ -266,4 +268,5 @@ test("the entry refuses to start without a parent port, with debugger flags, exe
     assert.deepEqual(h.lines.slice(1), [DEBUG_SIGNAL_LINE], "one closed line, however often the signal comes");
   }
   assert.deepEqual(harness({ env: { NODE_OPTIONS: "" } }).exits, []);
+  assert.deepEqual(harness({ execArgv: ["--disable-sigusr1"] }).exits, [], "the flag that keeps the inspector closed is accepted alone (audit C M1)");
 });
