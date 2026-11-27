@@ -6,6 +6,7 @@ import { FORGE_PINS_MIGRATION } from "./schema-forge-pins.js";
 import { PAGES_MIGRATION } from "./schema-pages.js";
 import { TASKS_MIGRATION } from "./schema-tasks.js";
 import { PLUGIN_GRANTS_MIGRATION } from "./schema-plugins.js";
+import { CLI_ACK_MIGRATION } from "./schema-cli-ack.js";
 
 /**
  * Journal schema, versioned in `axis_schema` under component `journal`.
@@ -485,6 +486,7 @@ export const JOURNAL_MIGRATIONS: readonly Migration[] = [
   PAGES_MIGRATION,
   TASKS_MIGRATION,
   PLUGIN_GRANTS_MIGRATION,
+  CLI_ACK_MIGRATION,
 ];
 
 export const JOURNAL_SCHEMA_VERSION = JOURNAL_MIGRATIONS.length;

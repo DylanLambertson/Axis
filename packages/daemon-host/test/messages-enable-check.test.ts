@@ -20,7 +20,7 @@ test("settings: enabling without a decision, or with a refusal, is bypass_entry 
   assert.deepEqual(endpointRows(r).filter((p) => p["event"] === "enable_refused").map((p) => p["rule"]), ["no_check", "claude.dangerously-skip-permissions"], "audited by rule id, even though the write was refused");
   assert.equal(r.c.journal.messages.agentSettings("c1")?.cliMessaging ?? false, false, "nothing written");
   const warning = { code: "repo_config", path: ".claude/settings.json", cli: "claude" } as const;
-  const ok = r.m.settings.updateSettings(USER, on, { allowed: true, warnings: [warning] });
+  const ok = r.m.settings.updateSettings(USER, { ...on, acknowledged: [{ path: warning.path, cli: warning.cli }] }, { allowed: true, warnings: [warning] });
   assert.deepEqual([ok.changed, ok.warnings], [true, [warning]]);
   assert.equal(r.c.journal.messages.agentSettings("c1")?.cliMessaging, true);
   assert.ok(endpointRows(r).some((p) => p["event"] === "enable_allowed" && p["warnings"] === 1));
@@ -62,13 +62,13 @@ test("host check: any gap refuses no_entry; a marked entry, a flag, or a sourced
 
 test("mint re-check: the argv that runs decides (an entry edited after enabling gets no endpoint), audited mint_refused; a run of no worker passes", async () => {
   const rows: unknown[] = [];
-  const recheck = hostMintRecheck({ ...fakeDeps(), agentOfRun: (id) => (id === "worker-run" ? "w1" : undefined), audit: { append: (e) => void rows.push(e.payload) } });
+  const recheck = hostMintRecheck({ ...fakeDeps(), acknowledged: () => [], agentOfRun: (id) => (id === "worker-run" ? "w1" : undefined), audit: { append: (e) => void rows.push(e.payload) } });
   assert.equal(await recheck({ runId: "plain-run", argv: ["claude", "--dangerously-skip-permissions"] }), true, "no worker: the mint decides (and refuses)");
   assert.equal(await recheck({ runId: "worker-run", argv: ["/usr/bin/claude", "--model", "x"] }), true);
   assert.equal(await recheck({ runId: "worker-run", argv: ["/usr/bin/claude", "--permission-mode", "auto"] }), false, "the spawned argv, not the entry read at enable");
   assert.deepEqual(rows, [{ runId: "worker-run", agentId: "w1", event: "mint_refused", rule: "claude.permission-mode.auto" }]);
   const later: unknown[] = [];
-  const gone = hostMintRecheck({ ...fakeDeps({ settingsThrows: true }), agentOfRun: () => "w1", audit: { append: (e) => void later.push(e.payload) } });
+  const gone = hostMintRecheck({ ...fakeDeps({ settingsThrows: true }), acknowledged: () => [], agentOfRun: () => "w1", audit: { append: (e) => void later.push(e.payload) } });
   assert.equal(await gone({ runId: "worker-run", argv: ["claude"] }), false, "no answer from main: no endpoint");
   assert.deepEqual(later, [{ runId: "worker-run", agentId: "w1", event: "mint_refused", rule: "no_entry" }]);
 });
@@ -100,8 +100,44 @@ test("handler: enabling asks the check first and passes its decision; other sett
 
 test("review 1 SF5: an entry the user marks as bypassing prompts after enabling gets no endpoint at the next mint", async () => {
   const rows: unknown[] = [];
-  const marked = hostMintRecheck({ ...fakeDeps({ value: [{ id: "e1", label: "E", command: ["claude"], args: [], bypassesPrompts: true }] }), agentOfRun: () => "w1", audit: { append: (e) => void rows.push(e.payload) } });
+  const marked = hostMintRecheck({ ...fakeDeps({ value: [{ id: "e1", label: "E", command: ["claude"], args: [], bypassesPrompts: true }] }), acknowledged: () => [], agentOfRun: () => "w1", audit: { append: (e) => void rows.push(e.payload) } });
   assert.equal(await marked({ runId: "r", argv: ["/usr/bin/claude"] }), false);
   assert.deepEqual(rows, [{ runId: "r", agentId: "w1", event: "mint_refused", rule: "user_marked" }]);
+});
+
+test("review 1 SF4: an enable with warnings is two steps: the first answer writes nothing and names the files; the second, naming them all, writes and keeps them", async (t) => {
+  const r = await deliveryRig(t, { noDelivery: true });
+  const w1 = { code: "repo_config", path: ".claude/settings.json", cli: "claude" } as const;
+  const w2 = { code: "repo_config", path: ".mcp.json", cli: "claude" } as const;
+  const decision = { allowed: true, warnings: [w1, w2] } as const;
+  const on = { setting: "cliMessaging", agentId: "c1", value: true } as const;
+  const first = r.m.settings.updateSettings(USER, on, decision);
+  assert.deepEqual([first.changed, first.warnings], [false, [w1, w2]]);
+  assert.equal(r.c.journal.messages.agentSettings("c1")?.cliMessaging ?? false, false, "nothing written by the first step");
+  const partial = r.m.settings.updateSettings(USER, { ...on, acknowledged: [{ path: w1.path, cli: "claude" }] }, decision);
+  assert.equal(partial.changed, false, "naming only some of the files is not the second step");
+  const wrongCli = r.m.settings.updateSettings(USER, { ...on, acknowledged: [{ path: w1.path, cli: "codex" }, { path: w2.path, cli: "claude" }] }, decision);
+  assert.equal(wrongCli.changed, false, "a path with the wrong CLI does not count");
+  const second = r.m.settings.updateSettings(USER, { ...on, acknowledged: [{ path: w2.path, cli: "claude" }, { path: w1.path, cli: "claude" }] }, decision);
+  assert.equal(second.changed, true);
+  assert.deepEqual(r.c.journal.messages.cliAcknowledged("c1"), [".claude/settings.json", ".mcp.json"], "the acknowledged files are kept, paths only");
+  assert.deepEqual(endpointRows(r).filter((p) => p["event"] === "enable_needs_confirmation").map((p) => p["warnings"]), [2, 2, 2]);
+  r.m.settings.updateSettings(USER, { ...on, value: false });
+  assert.deepEqual(r.c.journal.messages.cliAcknowledged("c1"), [], "turning it off clears them");
+  const plain = r.m.settings.updateSettings(USER, on, { allowed: true, warnings: [] });
+  assert.equal(plain.changed, true, "no warnings: one step");
+});
+
+test("review 1 SF3: at mint, a project-configuration file present now that was not acknowledged gets no endpoint (audited with a count, no path); acknowledged ones pass", async () => {
+  const rows: unknown[] = [];
+  const deps = fakeDeps({ files: ["/wt/.claude/settings.json", "/wt/.claude/settings.local.json"] });
+  const recheck = (acked: string[]) => hostMintRecheck({ ...deps, acknowledged: () => acked, agentOfRun: () => "w1", audit: { append: (e) => void rows.push(e.payload) } });
+  assert.equal(await recheck([".claude/settings.json", ".claude/settings.local.json"])({ runId: "r", argv: ["claude"] }), true, "both acknowledged");
+  assert.equal(await recheck([".claude/settings.json"])({ runId: "r", argv: ["claude"] }), false, "the local settings file appeared since");
+  assert.equal(await recheck([])({ runId: "r", argv: ["claude"] }), false);
+  assert.deepEqual(rows, [
+    { runId: "r", agentId: "w1", event: "mint_refused", rule: "repo_config_unacknowledged", warnings: 1 },
+    { runId: "r", agentId: "w1", event: "mint_refused", rule: "repo_config_unacknowledged", warnings: 2 },
+  ]);
 });
 

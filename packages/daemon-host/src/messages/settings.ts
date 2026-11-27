@@ -131,6 +131,14 @@ export function createMessagingSettings(deps: MessagingSettingsDeps): MessagingS
           refuse("E_CONFLICT", "bypass_entry");
         }
         warnings = enable !== undefined && enable.allowed ? enable.warnings : [];
+        // The second step (review 1 SF4, M-3): with warnings, nothing is written until the request names every file warned
+        // about; the first answer is the warnings alone. The confirmation is the shell's, resolved in the renderer (tier 2).
+        const ack = req.acknowledged ?? [];
+        if (!warnings.every((w) => ack.some((a) => a.path === w.path && a.cli === w.cli))) {
+          deps.audit.append({ actor: "user", action: MESSAGE_AUDIT.endpoint, target: `agent:${req.agentId}`, outcome: "success", payload: { agentId: req.agentId, event: "enable_needs_confirmation", warnings: warnings.length } });
+          deps.noteWrite?.();
+          return { settings: view(deps.context(agentSettingsOf(req.agentId).projectId)), changed: false, warnings: [...warnings] };
+        }
       }
       let off: string | undefined;
       const result = store.transact(() => {
@@ -145,6 +153,8 @@ export function createMessagingSettings(deps: MessagingSettingsDeps): MessagingS
           const changed = before !== req.value;
           if (changed) {
             store.setAgentSettings(req.agentId, next);
+            // The files acknowledged are what every mint compares against (review 1 SF3); off clears them.
+            if (req.setting === "cliMessaging") store.setCliAcknowledged(req.agentId, req.value ? warnings.map((w) => w.path) : []);
             audit(MESSAGE_AUDIT.settings, `agent:${req.agentId}`, { projectId, agentId: req.agentId, setting: req.setting, before, after: req.value });
             if (req.setting === "cliMessaging" && before === true && req.value === false) off = req.agentId;
           }

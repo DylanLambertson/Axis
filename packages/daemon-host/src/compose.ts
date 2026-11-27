@@ -220,7 +220,7 @@ export function composeDaemonHost(options: ComposeOptions): ComposedHost {
           journal: parts.journal,
           audit: parts.audit,
           // PV-M6: a CLI run's endpoint at spawn, only with the messaging flags on; PV-M7: the enable rule is checked again first.
-          pty: cliEndpointPty(pty, () => cliEndpoints, hostMintRecheck({ journal: parts.journal, settingsGet: (k, o) => control.settingsGet(k, o), platform: config.platform, agentOfRun: (id) => parts.journal.agents.agentOfRun(id), audit: parts.audit })),
+          pty: cliEndpointPty(pty, () => cliEndpoints, hostMintRecheck({ journal: parts.journal, settingsGet: (k, o) => control.settingsGet(k, o), platform: config.platform, agentOfRun: (id) => parts.journal.agents.agentOfRun(id), acknowledged: (id) => parts.journal.messages.cliAcknowledged(id), audit: parts.audit })),
           clock: createRunsClock(ports.clock),
           locator: worktrees.locator,
           snapshotter,

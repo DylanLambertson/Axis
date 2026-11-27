@@ -148,10 +148,40 @@ PV-M1 put the policy refusals under `E_POLICY_DENIED`. A handler cannot raise th
 
 ## 14. Enabling CLI messaging for a worker (PV-M7 slice 1)
 
-- **Where.** `packages/daemon-host/src/messages/enable-rule.ts` (the pure rule), `enable-check.ts` (the host's facts), the `updateSettings` handler (asks first) and `cliEndpointPty` (asks again at mint). Endpoint design section 6, M-3; ADR 0007 §6.
-- **Tier (unchanged).** Enabling is `axis.messages/1.updateSettings`, a user-only tier 2 write, as before: the rule can only refuse an enable, never approve anything, and no method's tier or side effect changes. The enable dialog (with its second confirmation for a repository configuration warning, M-3) is the shell's.
-- **The facts.** The worker's `axis.cliAgents` entry as main returns it (user, application or machine scope only, the CLI start's own path), its home's worktree, and which CLI project-configuration files exist there (`CLI_PROJECT_CONFIG` of `@axis/pty-policy`, the same list as the protected set). Any gap refuses (`no_entry`): an unknown, archived or composer worker, no live home, no answer from main, no such entry.
-- **The rule, in order.** (1) The entry's `bypassesPrompts` marking (a closed boolean the user sets in user-scope settings): `user_marked`. (2) A frozen table of bypass flags, each verified in the CLI's own `--help` (Claude Code 2.1.330: `--dangerously-skip-permissions`, `--allow-dangerously-skip-permissions`, `--permission-mode bypassPermissions | auto | acceptEdits`; codex-cli 0.166.0: `--dangerously-bypass-approvals-and-sandbox`, `-a/--ask-for-approval never`, `-s/--sandbox danger-full-access`, `--approve-for-me`, `-c approval_policy=never`, `-c sandbox_mode=danger-full-access`), matched in `--flag value`, `--flag=value` and `-c key=value` forms, for the CLI named by the executable's base name; every row refuses. (3) A fail-closed pattern rule for any argument of any CLI (`dangerously`, `yolo`, `bypass`, `skip-permissions`, `no-confirm`, `auto-approve`, `full-auto`, `approval-mode`, `danger-full-access`, `no-sandbox`, `sandbox=false`): `bypass_pattern`. No Gemini rows: it is not installed here, so only the pattern rule covers it. (4) Each project-configuration file present (of that CLI, or of every CLI for an unknown executable): a structured warning `{ code: "repo_config", path, cli }` in the response (at most 8), or a refusal when its row's `severity` is `refuse` (none in slice 1).
-- **At mint.** The same rule over the argv that actually runs (the spawn spec's) and the entry's marking read again: an entry edited after enabling gets no endpoint (`mint_refused`, audited), bounded at 2 s (no answer: no endpoint), inside the supervisor's 10 s start bound.
-- **Audit.** `message.endpoint` with `enable_refused` (the rule's id), `enable_allowed` (the warning count) and `mint_refused` (the rule's id); never an argument.
-- **Residuals.** The flag table is incomplete by nature (the user's marking is the primary signal); environment variables passed through (`envPassthrough`) and user-level CLI configuration (`~/.claude`, `~/.codex/config.toml`) can also auto-approve and are not inspected; a newer CLI may add flags (the pattern rule is the backstop). The open question of messaging while BLOCKED stays for slice 2.
+- **Where.** `packages/daemon-host/src/messages/enable-rule.ts` (the pure rule), `enable-check.ts` (the host's facts), the `updateSettings` handler (asks first), and `cliEndpointPty`, which asks again at mint. Endpoint design section 6, M-3; ADR 0007 §6.
+- **Tier (unchanged).** Enabling is `axis.messages/1.updateSettings`, a user-only tier 2 write. The rule can only refuse an enable or ask for its second step; it never approves anything, and no method's tier or side effect changes.
+- **The second confirmation (M-3).** It is the shell's own dialog, resolved in the renderer as a tier 2 user action. It is NOT a native or main-drawn confirmation, and the daemon contract carries only codes, no wording.
+- **The facts.** The worker's `axis.cliAgents` entry as main returns it (user, application or machine scope only, the CLI start's own path), the real path of an absolute executable, the worker's home worktree, and which CLI project-configuration files exist there (`CLI_PROJECT_CONFIG` of `@axis/pty-policy`, the same list as the protected set).
+  - Any gap refuses (`no_entry`): an unknown, archived or composer worker, no live home, no answer from main, or no such entry.
+- **The rule, in order.**
+  1. **User marking.** The entry's `bypassesPrompts` marking, a closed boolean set in user-scope settings: `user_marked`.
+  2. **Empty argv.** An empty argv: `empty_argv`.
+  3. **Inline code.** A shell or interpreter given inline code (`sh`, `bash`, `zsh`, `dash`, `ksh`, `fish` and similar with `-c`; `cmd /c`; `powershell` and `pwsh -Command` or `-EncodedCommand`; `python -c`; `node -e` or `--eval`; `perl` and `ruby -e`; `env -S`) is `wrapper_unparsed`, since its command is a string the rule cannot parse.
+  4. **Flag table.** A frozen table of bypass flags, each verified in the CLI's own `--help`:
+     - Claude Code 2.1.330: `--dangerously-skip-permissions`, `--allow-dangerously-skip-permissions`, `--permission-mode bypassPermissions | auto | acceptEdits`, `--settings` (any value).
+     - codex-cli 0.166.0: `--dangerously-bypass-approvals-and-sandbox`, `-a/--ask-for-approval never`, `-s/--sandbox danger-full-access`, `--approve-for-me`, `-c approval_policy=never`, `-c sandbox_mode=danger-full-access`, `-p/--profile` (any value; Codex only, because in Claude Code `-p` is print).
+     - Rows match `--flag value`, `--flag=value`, and for a short flag also the value attached (`-anever`, `-capproval_policy=never`).
+     - The rows of the CLI named by the executable's base name or its real path apply. Any other executable (a wrapper such as `env`, `npx` or `node cli.js`) gets every CLI's rows over all of its arguments.
+     - Every row refuses.
+     - There are no Gemini rows: Gemini is not installed here, so only the pattern rule covers it.
+  5. **Pattern rule.** A fail-closed rule over any argument (`dangerously`, `yolo`, `bypass`, `skip-permissions`, `no-confirm`, `auto-approve`, `full-auto`, `approval-mode`, `danger-full-access`, `no-sandbox`, `sandbox=false`): `bypass_pattern`.
+  6. **Project-configuration files.** Each file present (of that CLI, or of every CLI for an unknown executable) is a structured warning `{ code: "repo_config", path, cli }`, at most 8. A row whose `severity` is `refuse` refuses instead (`repo_config`; none in slice 1).
+- **Two steps.** With warnings, the first `updateSettings` writes nothing and answers `changed: false` with the warnings. The request that names every warned file in `acknowledged` (closed, at most 8, path and CLI bound by regular expressions) writes the setting and keeps the acknowledged paths (`messaging_cli_acknowledged`, ids and paths only). Turning messaging off clears them.
+- **At mint.** The same rule runs over the argv that actually spawns and the entry's marking read again.
+  - A file present now that was not acknowledged (it appeared since) gets no endpoint until the user confirms again: `repo_config_unacknowledged`.
+  - An entry edited or marked after enabling gets no endpoint either.
+  - The check is bounded at 2 s (no answer: no endpoint), inside the supervisor's 10 s start bound.
+- **Audit.** `message.endpoint` rows, never an argument or a path:
+  - `enable_refused`, with the rule's id;
+  - `enable_needs_confirmation` and `enable_allowed`, with the warning count;
+  - `mint_refused`, with the rule's id and, for unacknowledged files, their count.
+- **Known evasions (residuals; the user's own entry is the trust anchor, so these are ways it can still auto-approve):**
+  - **Abbreviated or combined flags.** An abbreviated long flag the CLI's parser might accept (`--permission-m auto`) is not matched, and `auto` is not a pattern word. Combined short flags (`-xa never`) are not split. A value containing `danger-full-access` is still caught.
+  - **Unlisted config keys.** Codex `-c` keys other than the two listed are not checked.
+  - **Environment and user-level files.** `envPassthrough` variables and the CLI's environment-driven settings are not inspected. User-level CLI configuration (`~/.claude`, `~/.codex/config.toml`) is not inspected either.
+  - **File contents.** Project-configuration content is never read, only its presence. A script file run by a shell (`bash run.sh`) is not read either.
+  - **Argument files.** Arguments read from a file (an `@argfile` form, if a CLI has one) are not inspected.
+  - **Marking a live endpoint.** Marking an entry as bypassing prompts, or adding a flag to it, after enabling does not revoke a run's live endpoint; the next mint refuses.
+  - **Content changes.** A project file whose content changes between enable and mint is not detected.
+  - **Closed, for comparison.** A later overriding flag never re-allows, because any listed occurrence refuses (stricter than the CLI). Between the mint check and the spawn, the spec is the same object, so the argv cannot change.
+  - **Not here.** The open question of messaging while BLOCKED stays for slice 2.

@@ -74,15 +74,20 @@ export function hostEnableCheck(deps: EnableCheckDeps): (agentId: string, signal
  * inside the supervisor's 10 s start bound), the run starts without an endpoint and `mint_refused` is audited with the rule.
  * A run of no worker passes: the mint refuses it anyway.
  */
-export function hostMintRecheck(deps: EnableCheckDeps & { readonly agentOfRun: (runId: string) => string | undefined; readonly audit: { append(e: { actor: "daemon"; action: string; target: string; outcome: "denied"; payload: Record<string, unknown> }): unknown }; readonly noteWrite?: () => void }): (spec: { readonly runId: string; readonly argv: readonly string[] }) => Promise<boolean> {
+export function hostMintRecheck(deps: EnableCheckDeps & { readonly agentOfRun: (runId: string) => string | undefined; readonly acknowledged: (agentId: string) => readonly string[]; readonly audit: { append(e: { actor: "daemon"; action: string; target: string; outcome: "denied"; payload: Record<string, unknown> }): unknown }; readonly noteWrite?: () => void }): (spec: { readonly runId: string; readonly argv: readonly string[] }) => Promise<boolean> {
   const exists = deps.exists ?? present;
   return async (spec) => {
     const worker = deps.agentOfRun(spec.runId);
     if (worker === undefined) return true;
     const launch = await cliWorkerLaunch(deps, worker, AbortSignal.timeout(2_000));
     const decision = launch === undefined ? { allowed: false as const, rule: "no_entry" } : decideCliMessaging({ argv: spec.argv, ...((r) => (r === undefined ? {} : { executableReal: r }))(realOf(spec.argv[0] ?? "")), bypassesPrompts: launch.bypassesPrompts, exists: (segments) => exists(join(launch.root, ...segments)) });
-    if (decision.allowed) return true;
-    deps.audit.append({ actor: "daemon", action: MESSAGE_AUDIT.endpoint, target: `run:${spec.runId}`, outcome: "denied", payload: { runId: spec.runId, agentId: worker, event: "mint_refused", rule: decision.rule } });
+    // A project-configuration file present now that the user did not acknowledge at enable (it appeared since): messaging
+    // is suspended for this run until the user confirms again (endpoint design section 6; review 1 SF3).
+    const acked = decision.allowed ? deps.acknowledged(worker) : [];
+    const unacked = decision.allowed ? decision.warnings.filter((w) => !acked.includes(w.path)).length : 0;
+    if (decision.allowed && unacked === 0) return true;
+    const rule = decision.allowed ? "repo_config_unacknowledged" : decision.rule;
+    deps.audit.append({ actor: "daemon", action: MESSAGE_AUDIT.endpoint, target: `run:${spec.runId}`, outcome: "denied", payload: { runId: spec.runId, agentId: worker, event: "mint_refused", rule, ...(unacked === 0 ? {} : { warnings: unacked }) } });
     deps.noteWrite?.();
     return false;
   };
