@@ -10,5 +10,5 @@
     "exactOptionalPropertyTypes": false
   },
   "include": ["src", "test"],
-  "references": [{ "path": "../ui" }]
+  "references": [{ "path": "../protocol" }, { "path": "../ui" }]
 }
