@@ -159,3 +159,41 @@ project and the permission's wording. So the line follows the task Start pattern
 2. **A disable does not cancel live runs.** The plugin's open challenges are withdrawn at once (section 4).
 3. **PV-K1e-T4 is deferred** to the moment PV-K2 is about to be enabled, as condition 5 of section 1. The leaning for then: keep
    tier 3 while every side effect asks and the run is tainted, and revisit with real plugin usage.
+
+## 8. Implementation plan
+
+Five slices, each its own PR with a security-critical review. The first four can merge while the grant calls stay switched off;
+the fifth switches them on, and only once all six conditions of section 1 hold. Today nothing in production writes a grant: only
+tests call `journal.plugins.grant` and `setEnabled`.
+
+### 8.1 Slices
+
+| Slice | What | Depends on | Size |
+|---|---|---|---|
+| **K2-g1** | `axis.plugins/1` in the protocol with `list`, `revoke` and `disable` handlers; the policy rows (user only; outside `WEB_ALLOWED`; `axis.plugins/` added to `PLUGIN_DENY_CONTRACTS`); `approvals.endPlugin(pluginId, projectId)`. | PV-K1e-b (merged) | M |
+| **K2-g2** | `grant` and `enable` at tier 4: the content hook (the versioned tuple digest, the project mutex at the spend), the native line builder of section 3.1, and `already_granted`. Registered but switched off: the handler refuses with `E_UNAVAILABLE` unless the host option `pluginGrants` is on, and it is off in production. | K2-g1 | M-L |
+| **K2-g3** | **Condition 4, by construction.** `journal.plugins.grant` and `setEnabled(…, true)` take a write token that only K2-g2's approval action mints (a module-private brand, like PV-K1e-b's `ApprovedPluginStart`). No other code can raise a grant. A source pin lists every caller of the two writers. | K2-g2 | S |
+| **K2-g4** | **Condition 6.** The plugin's run start checks that the plugin's connection is still open in the service's synchronous creation step (next to `grantHolds`); the daemon session's live-connection set is the source. The same check is offered to user starts as an option. | PV-K1e-b | S |
+| **K2-enable** | Turns `pluginGrants` on in the production composition. Merges only when conditions 1, 2, 3 and 5 hold, and K2-g3 and K2-g4 are on `main`. | all above, the own-shell card (OS-30), PV-K3 | S (code), plus the evidence |
+
+Install, update, signatures and extraction (ADR 0008 decisions 7 and 8) are the other PV-K2 tickets. They propose grants and
+call `grant` once per permission (decision 1). They never write the store directly, because K2-g3's token makes that impossible.
+
+### 8.2 The six conditions mapped to their evidence
+
+| # | Condition | Evidence that closes it | Where |
+|---|---|---|---|
+| 1 | The card | Own-shell UI tests. The card shows the whole escaped prompt and the project, workspace, mode, provider and model from `axis.approvals/1.detail`, and resolves through `axis.approvals/1.resolve`. A screenshot review is attached to the PR. | OS-30 |
+| 2 | Every listing reader | Either the Code OSS shell is removed from the build, or a reader test feeds a listing with a `requester` and a `detail` read to every supported reader. | ADR 0011 plan, or an overlay PR |
+| 3 | A real-host test | A test on the composed host with a signed plugin attestation (after PV-K3). It sends a request to the host window's pending list, reads the detail, resolves, spends, and checks the run is created as `plugin:<id>` and tainted. It also covers out of scope, ungranted, a generation change, and a closed host window. | K2-enable |
+| 4 | Every grant path | K2-g3's write token, plus a test that a grant written without it is refused, and the caller pin. | K2-g3 |
+| 5 | The tier | The owner's recorded decision on PV-K1e-T4. If tier 4 is chosen, a slice before K2-enable raises `PLUGIN_MAX_TIER` and teaches `PluginChallenges.prepare` the native path, with tests. | decision row, maybe a slice |
+| 6 | The connection | K2-g4's test closes the host window at each step after the spend and asserts that nothing is created. | K2-g4 |
+
+### 8.3 What each slice's PR must show
+
+- A green gate on the PR's own head.
+- The tests and mutants that section 6 lists for its methods.
+- No change to the v16 or v17 migrations: their hashes stay pinned.
+- For K2-g2, the final `native.confirm` summary in a test, never an intermediate string.
+- For K2-enable, the evidence of all six rows above, linked in the PR body.
