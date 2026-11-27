@@ -1,6 +1,6 @@
 # Plugin grants and the plugin policy (ticket PV-K1b)
 
-- **Status:** built in PV-K1b (journal schema version 16, the policy's plugin branch). No contract or handler writes grants yet.
+- **Status:** The PV-K1b store and policy are built (journal schema version 16). PV-K2 K2-g1 to K2-g4b add served revoke, disable, grant and enable handlers; grant and enable remain switched off in production (`plugin-grant-contract.md` §8.1).
 - **Date:** 2026-11-22. Decides the data and policy half of ADR 0008 decisions 4 and 6.
 
 ## 1. What is stored
@@ -12,7 +12,7 @@
 
 ## 2. Who may write
 
-Only the user. **PV-K1b adds no contract or handler for these writes**: the store is called by tests only. The contract methods PV-K2 adds for install, grant and enable must be tier 4 (native confirmation, ADR 0003 D4) or main-owned (a dialog main draws), so neither a renderer nor a plugin can grant. *Superseded in part (2026-11-27):* revoke and disable are tier 2, because a decrease applies at once (ADR 0008 decision 8); the accepted availability risk and the rest are in `plugin-grant-contract.md`.
+Only the user. PV-K2 serves revoke and disable at tier 2, and registers grant and enable at tier 4 behind a production-off switch. Install and update remain unbuilt; any future grant path must use the native flow or a main-owned dialog (ADR 0003 D4). The accepted availability risk and the enable conditions are in `plugin-grant-contract.md`.
 
 ## 3. The plugin policy
 
