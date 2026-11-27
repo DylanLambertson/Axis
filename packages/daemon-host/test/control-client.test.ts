@@ -128,6 +128,7 @@ test("inbound events: init once, connect, trust.set, the project messages, shutd
   client.onProjects((m) => seen.push(`${m.type}:${m.path}`));
   client.onShutdown(() => seen.push("shutdown"));
   client.onAnchorAck((s) => seen.push(`ack:${s}`));
+  client.onWindowGone((m) => seen.push(`gone:${m.windowId}`));
   const att = { identity: { actor: "user" }, issuedAt: 1, mac: "m".repeat(43) };
   b.send({ type: "init", config: { dataDir: "/d" } });
   b.send({ type: "init", config: { dataDir: "/other" } });
@@ -137,13 +138,15 @@ test("inbound events: init once, connect, trust.set, the project messages, shutd
   b.send({ type: "projects.register", requestId: "r1", path: "/p", commonDir: "/p/.git", trusted: false });
   b.send({ type: "projects.trust", requestId: "r2", projectId: "p-1", path: "/p", trusted: false });
   b.send({ type: "anchor.ack", seq: 4 });
+  b.send({ type: "window.gone", windowId: "w3" });
+  b.send({ type: "window.gone", windowId: "p3" });
   b.send({ type: "shutdown" });
   b.send({ type: "shutdown", extra: 1 });
   b.send({ type: "mystery" });
   await wait(0);
-  assert.deepEqual(seen, ["init:dataDir", "connect:conn-0001", "trust:true", "projects.inspect:/p", "projects.register:/p", "projects.trust:/p", "ack:4", "shutdown"]);
+  assert.deepEqual(seen, ["init:dataDir", "connect:conn-0001", "trust:true", "projects.inspect:/p", "projects.register:/p", "projects.trust:/p", "ack:4", "gone:w3", "shutdown"]);
   assert.equal(client.stats().duplicateInits, 1);
-  assert.equal(client.stats().invalidMessages, 2);
+  assert.equal(client.stats().invalidMessages, 3);
 });
 
 test("a handler that throws does not stop the others", async () => {
