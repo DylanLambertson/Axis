@@ -1,0 +1,163 @@
+// Copyright (c) 2026 Dylan Lambertson. All rights reserved.
+
+/**
+ * The shapes of the Axis pty process. `PtySpawn`, `PtyHandle` and `PtyPort` repeat `@axis/runs` field for field (a compile-time
+ * test in `test/types.test.ts` asserts both directions), because the host's binding is the only place that imports that package.
+ */
+export interface Disposable {
+  dispose(): void;
+}
+
+export type PtySignal = "SIGINT" | "SIGTERM" | "SIGKILL";
+
+export interface PtySpawn {
+  readonly runId: string;
+  readonly argv: readonly string[];
+  readonly cwd: string;
+  readonly env: Readonly<Record<string, string>>;
+  readonly cols: number;
+  readonly rows: number;
+  /** PV-M6: the run's messaging endpoint (the daemon's id and token); the pty process opens it and adds its two names. */
+  readonly messagesEndpoint?: { readonly endpoint: string; readonly token: string };
+}
+
+export interface PtyExit {
+  readonly exitCode: number | null;
+  readonly signal: string | null;
+}
+
+export interface PtyHandle {
+  write(data: string): void;
+  resize(cols: number, rows: number): void;
+  kill(signal: PtySignal): void;
+  groupAlive(): boolean;
+  onData(listener: (chunk: string) => void): Disposable;
+  onExit(listener: (exit: PtyExit) => void): Disposable;
+}
+
+export interface PtyPort {
+  spawn(spec: PtySpawn): Promise<PtyHandle>;
+}
+
+/** What the pty process asks its spawn function for. Nothing else reaches the child: the env is used as given. */
+export interface SpawnRequest {
+  readonly argv: readonly string[];
+  readonly cwd: string;
+  readonly env: Readonly<Record<string, string>>;
+  readonly cols: number;
+  readonly rows: number;
+}
+
+/**
+ * How the group of one child is observed. POSIX: the child leads a new session or group, so `pgid` equals its pid and
+ * `kill(-pgid, 0)` answers. Windows: the child is in a job object that disallows breakaway; the child reports when the job's
+ * active count reaches 0 through `onGroupEmpty`.
+ */
+export type ChildGroup = { readonly kind: "pgid"; readonly pgid: number } | { readonly kind: "job" };
+
+/** One running child, as the injected spawn function returns it (a native pty binding in the shipped entry, a pipe fake in tests). */
+export interface PtyChild {
+  readonly pid: number;
+  readonly group: ChildGroup;
+  write(data: string): void;
+  resize(cols: number, rows: number): void;
+  /** Signals the leader; for a `job` group it must end the whole job. A `pgid` group is signalled by the service itself. */
+  kill(signal: PtySignal): void;
+  onData(listener: (chunk: string) => void): Disposable;
+  onExit(listener: (exit: PtyExit) => void): Disposable;
+  /** Stops and restarts reading the child's output, so the child blocks on a full pty buffer (backpressure). Absent: output over the hard bound is dropped. */
+  pause?(): void;
+  resume?(): void;
+  /** Bytes of input written to the child and not yet taken by it. The service refuses more input past a bound (PTY-4); absent: unbounded. */
+  pendingWrite?(): number;
+  /** Writes queued and not yet taken, in O(1). The service bounds this too: a queue entry costs memory and scan time whatever its size. */
+  pendingEntries?(): number;
+  /** `job` groups only: called once when the job has no active process left. */
+  onGroupEmpty?(listener: () => void): Disposable;
+}
+
+/** Synchronous like a native pty binding. A throw is a failed spawn. The function must start the child in its own session or job. */
+export type SpawnFn = (request: SpawnRequest) => PtyChild;
+
+/** `process.kill` as a seam. It throws an error whose `code` is `ESRCH`, `EPERM` or another errno string, as Node does. */
+export interface ProcessOps {
+  signal(pid: number, signal: number | NodeJS.Signals): void;
+}
+
+export const systemProcessOps: ProcessOps = {
+  signal: (pid, signal) => void process.kill(pid, signal),
+};
+
+export interface Clock {
+  setTimeout(fn: () => void, ms: number): unknown;
+  clearTimeout(id: unknown): void;
+}
+
+export const systemClock: Clock = {
+  setTimeout: (fn, ms) => {
+    const t = setTimeout(fn, ms) as unknown as NodeJS.Timeout;
+    t.unref();
+    return t;
+  },
+  clearTimeout: (id) => clearTimeout(id as NodeJS.Timeout),
+};
+
+/** A bidirectional message pipe (a MessagePort or a pipe in production). Messages are untrusted on both ends. */
+export interface Channel {
+  send(message: unknown): void;
+  onMessage(listener: (message: unknown) => void): Disposable;
+  onClose(listener: () => void): Disposable;
+  close(): void;
+}
+
+/** What the pty process asks its exec function for: a bounded, non-interactive command with pipes, no terminal. */
+export interface ExecRequest {
+  readonly argv: readonly string[];
+  readonly cwd: string;
+  readonly env: Readonly<Record<string, string>>;
+  readonly stdin?: Uint8Array;
+  /** Bytes of stdout kept (and of stderr when `maxStderr` is absent); the function stops holding past it and reports the cut. */
+  readonly maxOutput: number;
+  /** Bytes of stderr kept; default `maxOutput`. Each stream stops being held at its own cap (PV-X1a). */
+  readonly maxStderr?: number;
+}
+
+export interface ExecOutcome {
+  readonly code: number | null;
+  readonly signal: string | null;
+  readonly stdout: Uint8Array;
+  readonly stderr: Uint8Array;
+  /** Either stream was cut. */
+  readonly truncated: boolean;
+  readonly stdoutTruncated: boolean;
+  readonly stderrTruncated: boolean;
+}
+
+/**
+ * Why an exec did not start. `program_refused`, `unsupported_platform` and a `start_failed` for a malformed request (caps, cwd, env, an
+ * argument Node or the OS refuses) are thrown before anything starts; `not_found`, `not_permitted` and other failures of the start
+ * itself reject `done`.
+ */
+export type ExecStartFailure = "program_refused" | "unsupported_platform" | "not_found" | "not_permitted" | "start_failed";
+
+/** A failed start. Carries a closed code only: never a path, an argv or OS text. */
+export class ExecStartError extends Error {
+  readonly code: ExecStartFailure;
+  constructor(code: ExecStartFailure) {
+    super(`The command did not start (${code}).`);
+    this.name = "ExecStartError";
+    this.code = code;
+  }
+}
+
+/** One running exec. `kill` must end its whole process group (the service calls it on a timeout, a channel close and dispose). */
+export interface ExecChild {
+  readonly done: Promise<ExecOutcome>;
+  kill(): void;
+}
+
+/**
+ * Starts a command in its own process group. A throw is a failed start (`ExecStartError` from the production function). Injected:
+ * only `exec-node.ts` of this package loads node:child_process (PV-X1a), and the service takes the function as a parameter.
+ */
+export type ExecFn = (request: ExecRequest) => ExecChild;

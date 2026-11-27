@@ -1,19 +1,23 @@
-// Copyright (c) 2026 Dylan Lambertson. All rights reserved.
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) 2026 Dylan Lambertson. All rights reserved.
+ *--------------------------------------------------------------------------------------------*/
 
-// Daemon utility-process entry (ADR 0003 D1, ADR 0005 D3). This is a stub that
-// proves the staged @axis/protocol package bundles and runs; the RPC server,
-// the policy pipeline and the main-process handshake come later.
-import { PROTOCOL_VERSION, SUPPORTED_PROTOCOL_VERSIONS, ZOD_VERSION, contracts } from '../../packages/protocol/index.js';
+// The Axis daemon, started by the Axis main seam as an Electron utility process (ADR 0003 D1, ADR 0005 D3, ticket X1,
+// docs/design/daemon-host-entry.md). This file only hands the real process objects to the entry logic, which lives in
+// packages/daemon-host/src/entry.ts and is tested without Electron. It opens no socket and no port: the only way in is
+// `process.parentPort`, which only the main process can write.
+import { runDaemonEntry } from '../../packages/daemon-host/entry.js';
 
-export function describeDaemonContracts(): { protocolVersion: number; supported: readonly number[]; contracts: string[]; zod: string } {
-	return {
-		protocolVersion: PROTOCOL_VERSION,
-		supported: SUPPORTED_PROTOCOL_VERSIONS,
-		contracts: Object.keys(contracts).sort(),
-		zod: ZOD_VERSION,
-	};
-}
-
-if (process.env['AXIS_DAEMON_PRINT_CONTRACTS'] === '1') {
-	console.log(JSON.stringify(describeDaemonContracts()));
-}
+// The pty port and the pty git runner are not passed here: main starts the Axis pty process and hands this process one end of their
+// control channel on `parentPort` (`{ type: "pty-control" }`, ticket PV-X1b, docs/design/pty-exec-node.md §5a and §6.3); the entry
+// builds both from it. Until that port arrives within the start bound the entry refuses with `pty_required` (exit 78). The run
+// snapshotter is wired inside the entry (ticket H13), not here.
+runDaemonEntry({
+	parentPort: (process as unknown as { parentPort?: Parameters<typeof runDaemonEntry>[0]['parentPort'] }).parentPort,
+	process: process as unknown as Parameters<typeof runDaemonEntry>[0]['process'],
+	env: { ...process.env },
+	cwd: process.cwd(),
+	platform: process.platform,
+	execArgv: process.execArgv,
+	stderr: line => process.stderr.write(`${line}\n`),
+});

@@ -8,15 +8,20 @@ import { parseWorktreeList, type RepoLocation } from './discovery.js';
 import { WorktreeError } from './errors.js';
 import type { HardenedGit } from './hardenedGit.js';
 import type { WorkspaceMeta } from './meta.js';
-import { createRefOnce } from './snapshotRef.js';
+import { assertHistoryClean, createRefOnce } from './snapshotRef.js';
+import type { SnapshotScanner } from './snapshotScan.js';
 import type { RemoveResult } from './types.js';
 
 export interface RemoveHost {
   readonly git: HardenedGit;
   readonly maxFile: number;
   guardExecutionDrift(repo: RepoLocation, workTree: string): Promise<void>;
-  writeBackup(workTree: string, id: string, why: string): Promise<string>;
+  writeBackup(workTree: string, meta: WorkspaceMeta, why: string): Promise<string>;
+  /** REF-1 scanner for what the branch backup pins; undefined means the default (refuse mode). */
+  readonly snapshotScanner: SnapshotScanner | undefined;
   now(): Date;
+  /** Throws unless the directory at `workTree` still belongs to `repo` (checked right before the destructive step). */
+  assertStillExpected(repo: RepoLocation, workTree: string): Promise<void>;
 }
 
 export interface RemoveParams {
@@ -56,15 +61,18 @@ export async function removeWorkspace(host: RemoveHost, p: RemoveParams): Promis
   }
   const scan = await scanDiscard(git, workTree, host.maxFile);
   const { needsBackup } = requireDiscardConfirmation('remove', meta.id, scan, p.token);
-  const backupRef = needsBackup ? await host.writeBackup(workTree, meta.id, 'remove') : null;
+  // REF-1: what the branch backup would pin beyond the base is scanned before anything is written.
+  const tip = p.deleteBranch ? await git.text(['rev-parse', '--verify', '--end-of-options', `refs/heads/${meta.branch}`], { cwd: workTree }) : null;
+  if (tip !== null) await assertHistoryClean(git, workTree, meta.baseSha, tip, host.snapshotScanner);
+  const backupRef = needsBackup ? await host.writeBackup(workTree, meta, 'remove') : null;
   // The branch tip is recorded before anything is deleted, so a wrong record can never orphan commits.
   let branchBackupRef: string | null = null;
-  if (p.deleteBranch) {
-    const tip = await git.text(['rev-parse', '--verify', '--end-of-options', `refs/heads/${meta.branch}`], { cwd: workTree });
+  if (tip !== null) {
     const ts = host.now().toISOString().replace(/[-:]/g, '').replace(/\.\d+Z$/, 'Z');
     branchBackupRef = `refs/axis/backup/${meta.id}/branch-${ts}-${randomBytes(16).toString('hex')}`;
     await createRefOnce(git, workTree, branchBackupRef, tip);
   }
+  await host.assertStillExpected(repo, workTree);
   await git.run(['worktree', 'unlock', '--', workTree], { cwd, allowFailure: true });
   // Always --force: Axis's own filter-free check and confirmation above replace git's, which would run `git status`.
   await git.run(['worktree', 'remove', '--force', '--', workTree], { cwd });

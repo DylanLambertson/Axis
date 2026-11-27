@@ -9,6 +9,7 @@ import {
   resolveRepo,
   type DiscardConfirmation,
   type GitRunner,
+  verifyMerged,
 } from "@axis/worktrees";
 import type { RandomSource } from "../ports/random.js";
 import type { RunsService } from "../ports/runs.js";
@@ -29,6 +30,8 @@ export interface WorktreesBindingDeps {
   readonly transact: <T>(fn: () => T) => T;
   readonly random: RandomSource;
   readonly runs: Pick<RunsService, "hasActiveRun">;
+  /** Monotonic milliseconds for the project trust ticket: the SAME clock the gate mints on (`clock.monotonic`). */
+  readonly now: () => number;
   /** The ONE absolute git path of `HostServices.gitPath` (design step 5a, FU-GIT-RESOLVE): never looked up again. */
   readonly gitPath: string;
   /** A copy of the environment the git runner builds GIT-ENV-1 from. The host never reads `process.env` itself. */
@@ -92,17 +95,8 @@ function adapt(manager: WorktreeManager, runner: GitRunner): ManagerShape {
         if (out.code !== 0 || !/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/.test(sha)) throw worktreeFailure("E_NOT_FOUND", "base_ref");
         return sha;
       }),
-    isMerged: (repoPath, headSha, baseRef) =>
-      mapped(async () => {
-        if (!/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/.test(headSha) || !REF_NAME.test(baseRef) || baseRef.includes("..")) return false;
-        let base = baseRef;
-        if (baseRef === "HEAD") {
-          const head = await git(repoPath, ["symbolic-ref", "-q", "HEAD"]);
-          if (head.code !== 0) return false;
-          base = head.stdout.trim();
-        } else if (!baseRef.startsWith("refs/")) base = `refs/heads/${baseRef}`;
-        return (await git(repoPath, ["merge-base", "--is-ancestor", "--end-of-options", headSha, base])).code === 0;
-      }),
+    isMerged: (repoPath, headSha, baseBranch, baseTip) =>
+      mapped(async () => (await verifyMerged({ cwd: repoPath, run: (args, extraEnv) => runner.run(args, { cwd: repoPath, timeoutMs: 30_000, extraEnv }) }, headSha, baseBranch, baseTip)) === "merged"),
     listRefs: (repoPath, prefix) =>
       mapped(async () => {
         const out = await git(repoPath, ["for-each-ref", "--format=%(refname)", "--", prefix]);
@@ -110,14 +104,18 @@ function adapt(manager: WorktreeManager, runner: GitRunner): ManagerShape {
         return new Set(out.stdout.split("\n").filter((l) => l !== ""));
       }),
     list: (repoPath) => mapped(() => manager.list(repoPath)),
-    create: ({ repoPath, slug, baseRef, id }) => mapped(() => manager.create({ repoPath, slug, baseRef, id })),
-    status: (p) => mapped(() => manager.status(p)),
-    previewDiscard: (p) => mapped(() => manager.previewDiscard(p)),
-    assertNoDrift: (p) => mapped(() => manager.assertNoDrift(p)),
-    finalise: ({ path, outcome, discardConfirmation }) =>
-      mapped(() => manager.finalise({ path, outcome, ...(discardConfirmation === undefined ? {} : { discardConfirmation: cap(discardConfirmation) as DiscardConfirmation }) })),
-    remove: ({ path, deleteBranch, discardConfirmation }) =>
-      mapped(() => manager.remove({ path, deleteBranch, ...(discardConfirmation === undefined ? {} : { discardConfirmation: cap(discardConfirmation) as DiscardConfirmation }) })),
+    create: ({ repoPath, slug, baseRef, id }) =>
+      mapped(async () => {
+        const made = await manager.create({ repoPath, slug, baseRef, id });
+        return { id: made.id, branch: made.branch, path: made.path, baseSha: made.baseSha, baseBranch: made.baseBranch };
+      }),
+    status: (p, expected) => mapped(() => manager.status(p, expected)),
+    previewDiscard: (p, expected) => mapped(() => manager.previewDiscard(p, expected)),
+    assertNoDrift: (p, expected) => mapped(() => manager.assertNoDrift(p, expected)),
+    finalise: ({ path, expectedWorktree, outcome, discardConfirmation, trustedBaseBranch, trustedBaseTip }) =>
+      mapped(() => manager.finalise({ path, expectedWorktree, outcome, trustedBaseBranch, trustedBaseTip, ...(discardConfirmation === undefined ? {} : { discardConfirmation: cap(discardConfirmation) as DiscardConfirmation }) })),
+    remove: ({ path, expectedWorktree, deleteBranch, discardConfirmation }) =>
+      mapped(() => manager.remove({ path, expectedWorktree, deleteBranch, ...(discardConfirmation === undefined ? {} : { discardConfirmation: cap(discardConfirmation) as DiscardConfirmation }) })),
     restoreFromRunBase: ({ path, runId, expectedWorktree }) => mapped(() => manager.restoreFromRunBase({ path, runId, expectedWorktree })),
   };
 }
@@ -170,12 +168,19 @@ function build(deps: WorktreesBindingDeps, seams: WorktreesTestSeams): Worktrees
     locator,
     mutex,
     runs: deps.runs,
+    now: deps.now,
     random: deps.random,
     platform: deps.platform,
     restorePathCheck: seams.restorePathCheck ?? assertSafeRestorePath,
     ...(seams.maxReports === undefined ? {} : { maxReports: seams.maxReports }),
     caseInsensitiveFs: seams.caseInsensitiveFs ?? (deps.platform === "win32" || deps.platform === "darwin"),
   });
+  /** The git port knows a worktree by path only: the journal names the workspace that path was registered for. */
+  const driftFor = (workTree: string): Promise<void> => {
+    const owners = deps.journal.listWorkspaces().filter((w) => w.worktreePath === workTree);
+    const only = owners.length === 1 ? owners[0] : undefined;
+    return only === undefined ? Promise.reject(worktreeFailure("E_NOT_FOUND")) : shape.assertNoDrift(workTree, { path: workTree, id: only.id });
+  };
   const content = createWorktreeContentHooks({
     journal: deps.journal,
     runs: deps.runs,
@@ -185,5 +190,5 @@ function build(deps: WorktreesBindingDeps, seams: WorktreesTestSeams): Worktrees
     needsAttention: runtime.needsAttention,
     ...(deps.onPreview === undefined ? {} : { onPreview: deps.onPreview }),
   });
-  return { service: runtime.service, locator, content, needsAttention: runtime.needsAttention, mutex, assertNoDrift: (w) => shape.assertNoDrift(w.workTree) };
+  return { service: runtime.service, locator, content, needsAttention: runtime.needsAttention, mutex, assertNoDrift: (w) => driftFor(w.workTree) };
 }

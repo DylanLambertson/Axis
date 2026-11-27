@@ -47,8 +47,10 @@ export interface NativeConfirmResult {
 
 export interface TrustCheckRequest {
   readonly windowId: string;
-  readonly workspaceId: string;
+  readonly workspaceId?: string;
   readonly projectId: string;
+  /** The journal's canonical project path: main checks it against the Workspace Trust model. */
+  readonly projectPath: string;
 }
 
 export interface ControlStats {
@@ -84,8 +86,9 @@ export class ControlClient {
   readonly #unsubscribe: Unsubscribe[] = [];
   readonly #onConnect: Handlers<{ cid?: string; attestation: Attestation }> = [];
   readonly #onTrustSet: Handlers<Extract<InboundMessage, { type: "trust.set" }>> = [];
-  readonly #onProjects: Handlers<Extract<InboundMessage, { type: "projects.register" }>> = [];
+  readonly #onProjects: Handlers<Extract<InboundMessage, { type: "projects.inspect" | "projects.register" | "projects.trust" }>> = [];
   readonly #onShutdown: Handlers<void> = [];
+  readonly #onWindowGone: Handlers<Extract<InboundMessage, { type: "window.gone" }>> = [];
   readonly #onInit: Handlers<Record<string, unknown>> = [];
   readonly #onAck: Handlers<number> = [];
   #nextId = 1;
@@ -127,7 +130,12 @@ export class ControlClient {
   onTrustSet(handler: (message: Extract<InboundMessage, { type: "trust.set" }>) => void): Unsubscribe {
     return this.#add(this.#onTrustSet, handler);
   }
-  onProjectsRegister(handler: (message: Extract<InboundMessage, { type: "projects.register" }>) => void): Unsubscribe {
+  /** `window.gone` (main only, PV-K2 K2-g4a): a code window was destroyed or its renderer died. */
+  onWindowGone(handler: (message: Extract<InboundMessage, { type: "window.gone" }>) => void): Unsubscribe {
+    return this.#add(this.#onWindowGone, handler);
+  }
+  /** `projects.inspect`, `projects.register` and `projects.trust` (main only; see `projects/control.ts`). */
+  onProjects(handler: (message: Extract<InboundMessage, { type: "projects.inspect" | "projects.register" | "projects.trust" }>) => void): Unsubscribe {
     return this.#add(this.#onProjects, handler);
   }
   onShutdown(handler: () => void): Unsubscribe {
@@ -330,10 +338,14 @@ export class ControlClient {
         return this.#emit(this.#onConnect, m.cid === undefined ? { attestation: m.attestation } : { cid: m.cid, attestation: m.attestation });
       case "trust.set":
         return this.#emit(this.#onTrustSet, m);
+      case "projects.inspect":
       case "projects.register":
+      case "projects.trust":
         return this.#emit(this.#onProjects, m);
       case "shutdown":
         return this.#emit(this.#onShutdown, undefined);
+      case "window.gone":
+        return this.#emit(this.#onWindowGone, m);
       case "anchor.ack":
         return this.#emit(this.#onAck, m.seq);
       case "anchor.result":

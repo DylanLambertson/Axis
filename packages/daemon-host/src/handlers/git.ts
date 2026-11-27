@@ -1,9 +1,10 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
+import { projectGated } from "../gate/project-trust.js";
 import type { Handler, HandlerContext } from "@axis/daemon";
 import { GIT_CONTRACT, GIT_VERSION, gitCompareUrlRequestSchema, gitCompareUrlResponseSchema, gitPushPlanRequestSchema, type GitMethod } from "@axis/protocol";
 import type { HandlerRegistrar } from "./anchor-guard.js";
 import { createGitCommitHandler } from "./git-commit.js";
-import { locate, mapError, requireUser, workspaceFor, type GitHandlerDeps } from "./git-common.js";
+import { locate, mapError, requireUser, scanBase, workspaceFor, type GitHandlerDeps } from "./git-common.js";
 import { gitFailure } from "./git-errors.js";
 import { createGitPushContentHook, createGitPushHandler } from "./git-push.js";
 import { pushPlanReply } from "./git-wire.js";
@@ -26,7 +27,7 @@ function createPushPlanHandler(deps: GitHandlerDeps): Handler {
     requireUser(context);
     const request = gitPushPlanRequestSchema.safeParse(payload);
     if (!request.success) throw gitFailure("E_INVALID_ARGUMENT");
-    const { workspaceId, remote, allowedBinaryPaths } = request.data;
+    const { workspaceId, remote, allowedBinaryPaths, allowedBinaryIds } = request.data;
     try {
       const first = workspaceFor(deps, workspaceId, "pushPlan", true);
       return await deps.mutex.run(
@@ -40,8 +41,11 @@ function createPushPlanHandler(deps: GitHandlerDeps): Handler {
             worktree,
             remote,
             branch: ws.branch,
-            baseSha: deps.bases.baseFor(workspaceId, target, ws.baseSha),
+            baseSha: await scanBase(deps, ws, workspaceId, worktree, target),
+            // As in `push`: the digest the user confirms names where the push goes.
+            destination: target,
             ...(allowedBinaryPaths === undefined ? {} : { allowedBinaryPaths }),
+            ...(allowedBinaryIds === undefined ? {} : { allowedBinaryIds }),
           });
           // A plan the contract cannot carry is not shown: fail closed rather than cut it.
           const reply = pushPlanReply(facts, remote, ws.branch);
@@ -80,7 +84,7 @@ function createCompareUrlHandler(deps: GitHandlerDeps): Handler {
 
 /** The handlers by method name, as the registry assembly expects them. */
 export function createGitHandlers(deps: GitHandlerDeps): Readonly<Record<GitMethod, Handler>> {
-  return { pushPlan: createPushPlanHandler(deps), commit: createGitCommitHandler(deps), push: createGitPushHandler(deps), compareUrl: createCompareUrlHandler(deps) };
+  return { pushPlan: createPushPlanHandler(deps), commit: projectGated(createGitCommitHandler(deps)), push: projectGated(createGitPushHandler(deps)), compareUrl: createCompareUrlHandler(deps) };
 }
 
 /**

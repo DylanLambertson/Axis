@@ -38,7 +38,7 @@ async function startAgain(fix: HostFixture, options?: Parameters<typeof createDa
   return { host, services, ready: fix.sent.find((m) => m["type"] === "ready") };
 }
 
-const ident = { actor: "user", windowId: "w1", connectionId: "c".repeat(22), trusted: true, clientKind: "test" };
+const ident = { actor: "user", windowId: "w1", connectionId: "c".repeat(22), trusted: true, clientKind: "desktop" };
 const decide = (s: HostServices, contract: string, method: string): string =>
   s.policy.evaluate({ identity: { ...ident, workspaceId: "ws" }, contract, version: 1, method, tier: 0 } as never).effect;
 

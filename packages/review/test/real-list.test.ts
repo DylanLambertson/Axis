@@ -175,3 +175,58 @@ test("nothing leaks: ignored files stay out of the review, and a clean worktree 
     f.cleanup();
   }
 });
+
+const underGithub = { match: (p: string) => (p.startsWith(".github/") ? [{ rule: "ci-workflow" }] : []) };
+
+test("a rename into a protected path is flagged through its new path", { skip: !posix }, async () => {
+  const f = fixture({ base: ({ write }) => write("docs/ci.yml", LONG), deps: { protectedPaths: underGithub } });
+  try {
+    rmSync(join(f.repo, "docs"), { recursive: true });
+    f.write(".github/workflows/ci.yml", LONG.replace("number 1 ", "number ONE "));
+    const s = await ReviewSession.start(f.deps, { worktree: f.wt, against: f.head() });
+    const moved = s.files.find((x) => x.path === ".github/workflows/ci.yml");
+    assert.equal(moved?.status, "R");
+    assert.deepEqual(moved?.protectedRules, ["ci-workflow"]);
+  } finally {
+    f.cleanup();
+  }
+});
+
+test("a symlink at an ordinary path is flagged when its target is protected; an outside or ordinary target is not", { skip: !posix }, async () => {
+  const f = fixture({ base: ({ write }) => write(".github/workflows/ci.yml", LONG), deps: { protectedPaths: underGithub } });
+  try {
+    mkdirSync(join(f.repo, "docs"));
+    symlinkSync("../.github/workflows/ci.yml", join(f.repo, "docs", "to-ci"));
+    symlinkSync("./../.github//workflows/./ci.yml", join(f.repo, "docs", "messy"));
+    symlinkSync("a.txt", join(f.repo, "plain"));
+    symlinkSync("../../.github/workflows/ci.yml", join(f.repo, "docs", "escapes"));
+    const s = await ReviewSession.start(f.deps, { worktree: f.wt, against: f.head() });
+    const rules = (p: string): readonly string[] | undefined => s.files.find((x) => x.path === p)?.protectedRules;
+    assert.deepEqual(rules("docs/to-ci"), ["ci-workflow"]);
+    assert.deepEqual(rules("docs/messy"), ["ci-workflow"]);
+    assert.deepEqual(rules("plain"), []);
+    assert.deepEqual(rules("docs/escapes"), [], "a target above the repository root is the symlink-outside warning, not a rule");
+    assert.ok(s.files.find((x) => x.path === "docs/escapes")?.warnings.includes("symlink-outside"));
+  } finally {
+    f.cleanup();
+  }
+});
+
+test("a symlink whose target was not read (read budget spent) is highlighted with its own rule, and only when a matcher is present", { skip: !posix }, async () => {
+  for (const withMatcher of [true, false]) {
+    const f = fixture({ deps: { ...(withMatcher ? { protectedPaths: underGithub } : {}), limits: { maxSymlinkReads: 1 } } });
+    try {
+      symlinkSync("a.txt", join(f.repo, "far1"));
+      symlinkSync("a.txt", join(f.repo, "far2"));
+      const s = await ReviewSession.start(f.deps, { worktree: f.wt, against: f.head() });
+      const links = s.files.filter((x) => x.kind === "symlink");
+      assert.equal(links.length, 2);
+      const far = links.find((x) => x.protectedRules.length > 0 || x.warnings.includes("symlink-outside"));
+      assert.equal(links.filter((x) => x.warnings.includes("symlink-outside")).length, 1, "only the link past the read budget is unread");
+      assert.deepEqual(far?.protectedRules, withMatcher ? ["symlink-target-unread"] : []);
+      assert.deepEqual(links.filter((x) => x !== far).map((x) => x.protectedRules), [[]]);
+    } finally {
+      f.cleanup();
+    }
+  }
+});

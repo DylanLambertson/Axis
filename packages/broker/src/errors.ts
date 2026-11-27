@@ -5,12 +5,12 @@ import type { ErrorCode } from "@axis/protocol";
 export type Reason =
   | "invalid-path" | "dotdot" | "backslash" | "drive-prefix" | "unc-or-device" | "win-name" | "outside-root"
   | "unregistered" | "root-moved" | "root-in-repository" | "symlink-escape" | "symlink-dangling" | "swapped"
-  | "not-regular" | "hardlink" | "exists" | "not-found" | "too-large" | "fs-error"
+  | "not-regular" | "hardlink" | "exists" | "not-found" | "too-large" | "fs-error" | "stale" | "not-text"
   | "unknown-tool" | "invalid-tier" | "invalid-args" | "invalid-call" | "protected-path" | "no-approval-hook"
   | "approval-declined" | "approval-malformed" | "approval-expired" | "approval-mismatch" | "approval-replayed"
-  | "approval-timeout" | "approval-error" | "bad-approver" | "audit-failed"
+  | "approval-timeout" | "approval-error" | "bad-approver" | "audit-failed" | "decision-hook"
   | "invalid-command" | "invalid-env" | "unresolved-command" | "too-many-processes"
-  | "undeclared-path" | "undeclared-command" | "undeclared-git" | "program-changed" | "path-changed" | "approval-limit" | "git-command" | "git-flag" | "git-rev" | "git-path" | "git-drift" | "git-unavailable" | "aborted";
+  | "undeclared-path" | "undeclared-command" | "undeclared-git" | "program-changed" | "path-changed" | "approval-limit" | "git-command" | "git-flag" | "git-rev" | "git-path" | "git-drift" | "git-unavailable" | "aborted" | "body-not-reviewable" | "content-not-reviewable";
 
 type Scalar = string | number | boolean;
 

@@ -17,7 +17,7 @@ import { mkdirSafe } from '../src/fsSafe.js';
 import { createRefOnce } from '../src/snapshotRef.js';
 import { HardenedGit } from '../src/hardenedGit.js';
 import { createHooksGuard } from '../src/hardenedGit.js';
-import { confirmFor, makeFixture, sh, write, type Fixture } from './helpers.js';
+import { confirmFor, makeFixture, sh, write, type Fixture, exp } from './helpers.js';
 
 const code = (c: string, reason?: string) => (e: unknown) =>
   e instanceof WorktreeError && e.code === c && (reason === undefined || e.details['reason'] === reason);
@@ -35,8 +35,8 @@ describe('review fixes', () => {
       for (const [a, b] of [[fx.manager, fx.manager], [fx.manager, other]] as const) {
         const w = await a.create({ repoPath: fx.repo, slug: `r${Math.random().toString(36).slice(2, 8)}` });
         const results = await Promise.allSettled([
-          a.finalise({ path: w.path, outcome: 'archived' }),
-          b.finalise({ path: w.path, outcome: 'abandoned' }),
+          a.finalise({ path: w.path, expectedWorktree: exp(w.path), outcome: 'archived' }),
+          b.finalise({ path: w.path, expectedWorktree: exp(w.path), outcome: 'abandoned' }),
         ]);
         assert.deepEqual(results.map((r) => r.status).sort(), ['fulfilled', 'rejected']);
         const rej = results.find((r) => r.status === 'rejected') as PromiseRejectedResult;
@@ -83,9 +83,9 @@ describe('review fixes', () => {
       await assert.rejects(createRefOnce(git, fx.repo, 'refs/axis/test/once', head), code('E_CONFLICT', 'ref-exists'));
       const ws = await fx.manager.create({ repoPath: fx.repo, slug: 'bk' });
       write(path.join(ws.path, 'a.txt'), 'x\n');
-      const r1 = await fx.manager.restoreFromRunBase({ path: path.join(ws.path, 'a.txt') });
+      const r1 = await fx.manager.restoreFromRunBase({ path: path.join(ws.path, 'a.txt') , expectedWorktree: exp(path.join(ws.path, 'a.txt'))});
       write(path.join(ws.path, 'a.txt'), 'y\n');
-      const r2 = await fx.manager.restoreFromRunBase({ path: path.join(ws.path, 'a.txt') });
+      const r2 = await fx.manager.restoreFromRunBase({ path: path.join(ws.path, 'a.txt') , expectedWorktree: exp(path.join(ws.path, 'a.txt'))});
       assert.match(r1.backupRef, /\/\d{8}T\d{6}Z-[0-9a-f]{32}$/);
       assert.notEqual(r1.backupRef, r2.backupRef);
     });
@@ -95,18 +95,18 @@ describe('review fixes', () => {
     it('rejects a record whose branch is not axis/<slug>', async () => {
       sh(fx.repo, 'branch', 'user-feature');
       const ws = await fx.manager.create({ repoPath: fx.repo, slug: 'meta' });
-      await fx.manager.finalise({ path: ws.path, outcome: 'archived' });
+      await fx.manager.finalise({ path: ws.path, expectedWorktree: exp(ws.path), outcome: 'archived' });
       const f = path.join(adminDir(ws.path), 'axis-workspace.json');
       writeFileSync(f, JSON.stringify({ ...JSON.parse(readFileSync(f, 'utf8')), branch: 'user-feature' }));
-      await assert.rejects(fx.manager.remove({ path: ws.path, deleteBranch: true }), code('E_INTERNAL', 'corrupt-record'));
+      await assert.rejects(fx.manager.remove({ path: ws.path, expectedWorktree: exp(ws.path), deleteBranch: true }), code('E_INTERNAL', 'corrupt-record'));
       assert.notEqual(sh(fx.repo, 'branch', '--list', 'user-feature').trim(), '');
     });
 
     it('refuses to delete a branch git does not list for the worktree', async () => {
       const ws = await fx.manager.create({ repoPath: fx.repo, slug: 'moved' });
       sh(ws.path, 'switch', '-q', '-c', 'something-else');
-      await fx.manager.finalise({ path: ws.path, outcome: 'archived' });
-      await assert.rejects(fx.manager.remove({ path: ws.path, deleteBranch: true }), code('E_POLICY_DENIED', 'branch-mismatch'));
+      await fx.manager.finalise({ path: ws.path, expectedWorktree: exp(ws.path), outcome: 'archived' });
+      await assert.rejects(fx.manager.remove({ path: ws.path, expectedWorktree: exp(ws.path), deleteBranch: true }), code('E_POLICY_DENIED', 'branch-mismatch'));
       assert.ok(existsSync(ws.path));
       assert.notEqual(sh(fx.repo, 'branch', '--list', 'axis/moved').trim(), '');
     });
@@ -114,7 +114,7 @@ describe('review fixes', () => {
     it('treats a malformed baseline as missing (fail closed)', async () => {
       const ws = await fx.manager.create({ repoPath: fx.repo, slug: 'base' });
       writeFileSync(path.join(adminDir(ws.path), 'axis-gitsnap.json'), '{"version":1,"files":{"x":{"sha256":1}},"config":[]}');
-      const st = await fx.manager.status(ws.path);
+      const st = await fx.manager.status(ws.path, exp(ws.path));
       assert.equal(st.baselineMissing, true);
       assert.equal(st.hasDrift, true);
     });
@@ -127,21 +127,21 @@ describe('review fixes', () => {
         const ws = await small.manager.create({ repoPath: small.repo, slug: 'big' });
         write(path.join(ws.path, 'big.bin'), 'x'.repeat(64));
         write(path.join(ws.path, 'ignored.log'), 'precious\n');
-        const fin = await small.manager.finalise({ path: ws.path, outcome: 'abandoned', discardConfirmation: await confirmFor(small.manager, ws.path, ws.id, 'finalise') });
+        const fin = await small.manager.finalise({ path: ws.path, expectedWorktree: exp(ws.path), outcome: 'abandoned', discardConfirmation: await confirmFor(small.manager, ws.path, ws.id, 'finalise') });
         assert.deepEqual([...fin.skippedLarge].sort(), ['big.bin', 'run.sh']);
         // wrong op, wrong workspace, then right
-        const scan = await small.manager.previewDiscard(ws.path);
+        const scan = await small.manager.previewDiscard(ws.path, exp(ws.path));
         assert.deepEqual(scan.ignored, ['ignored.log']);
         for (const bad of [
           markDiscardConfirmed({ workspaceId: ws.id, op: 'finalise', fingerprint: scan.fingerprint }),
           markDiscardConfirmed({ workspaceId: 'other', op: 'remove', fingerprint: scan.fingerprint }),
           markDiscardConfirmed({ workspaceId: ws.id, op: 'remove', fingerprint: 'stale' }),
         ]) {
-          await assert.rejects(small.manager.remove({ path: ws.path, discardConfirmation: bad }), code('E_CONFLICT', 'confirmation-stale'));
+          await assert.rejects(small.manager.remove({ path: ws.path, expectedWorktree: exp(ws.path), discardConfirmation: bad }), code('E_CONFLICT', 'confirmation-stale'));
         }
-        await assert.rejects(small.manager.remove({ path: ws.path }), code('E_CONFLICT', 'dirty'));
+        await assert.rejects(small.manager.remove({ path: ws.path , expectedWorktree: exp(ws.path)}), code('E_CONFLICT', 'dirty'));
         const good = markDiscardConfirmed({ workspaceId: ws.id, op: 'remove', fingerprint: scan.fingerprint });
-        const rm = await small.manager.remove({ path: ws.path, discardConfirmation: good });
+        const rm = await small.manager.remove({ path: ws.path, expectedWorktree: exp(ws.path), discardConfirmation: good });
         assert.deepEqual([[...rm.skippedLarge].sort(), rm.ignored], [['big.bin', 'run.sh'], ['ignored.log']]);
         assert.ok(rm.backupRef);
         assert.equal(existsSync(ws.path), false);
@@ -153,11 +153,11 @@ describe('review fixes', () => {
     it('needs a confirmation to remove a clean worktree that holds ignored files, and tokens are single use', async () => {
       const ws = await fx.manager.create({ repoPath: fx.repo, slug: 'ign' });
       write(path.join(ws.path, 'ignored.log'), 'local only\n');
-      await fx.manager.finalise({ path: ws.path, outcome: 'archived' });
-      await assert.rejects(fx.manager.remove({ path: ws.path }), code('E_CONFLICT', 'unbacked-data'));
+      await fx.manager.finalise({ path: ws.path, expectedWorktree: exp(ws.path), outcome: 'archived' });
+      await assert.rejects(fx.manager.remove({ path: ws.path , expectedWorktree: exp(ws.path)}), code('E_CONFLICT', 'unbacked-data'));
       const token = await confirmFor(fx.manager, ws.path, ws.id, 'remove');
       write(path.join(ws.path, 'ignored.log'), 'local only, edited\n'); // not a content change: ignored files are listed by name
-      const rm = await fx.manager.remove({ path: ws.path, discardConfirmation: token });
+      const rm = await fx.manager.remove({ path: ws.path, expectedWorktree: exp(ws.path), discardConfirmation: token });
       assert.equal(rm.backupRef, null);
       assert.deepEqual(rm.ignored, ['ignored.log']);
     });
@@ -192,7 +192,7 @@ describe('review fixes', () => {
       const ws = await m.create({ repoPath: fx.repo, slug: 'race' });
       rmSync(path.join(ws.path, 'new1'), { recursive: true });
       wtPath = ws.path;
-      await assert.rejects(m.restoreFromRunBase({ path: path.join(ws.path, 'new1', 'new2', 'f.txt') }), code('E_POLICY_DENIED'));
+      await assert.rejects(m.restoreFromRunBase({ path: path.join(ws.path, 'new1', 'new2', 'f.txt') , expectedWorktree: exp(path.join(ws.path, 'new1', 'new2', 'f.txt'))}), code('E_POLICY_DENIED'));
       assert.deepEqual(readdirSync(outside), []);
     });
 
@@ -210,15 +210,15 @@ describe('review fixes', () => {
       write(path.join(ws.path, 'a.txt'), 'new content\n');
       sh(ws.path, 'commit', '-qam', 'later');
       sh(fx.repo, 'update-ref', ws.runBaseRef, sh(ws.path, 'rev-parse', 'HEAD').trim());
-      await assert.rejects(fx.manager.restoreFromRunBase({ path: path.join(ws.path, 'a.txt') }), code('E_POLICY_DENIED', 'runbase-moved'));
+      await assert.rejects(fx.manager.restoreFromRunBase({ path: path.join(ws.path, 'a.txt') , expectedWorktree: exp(path.join(ws.path, 'a.txt'))}), code('E_POLICY_DENIED', 'runbase-moved'));
     });
 
     it('refuses finalise, remove and restore while a run is active', async () => {
       const m = new WorktreeManager({ runner: createExecGitRunner(), worktreeRoot: fx.root, refuseIfActiveRun: () => true });
       const ws = await m.create({ repoPath: fx.repo, slug: 'busy' });
-      await assert.rejects(m.finalise({ path: ws.path, outcome: 'archived' }), code('E_CONFLICT', 'active-run'));
-      await assert.rejects(m.remove({ path: ws.path }), code('E_CONFLICT', 'active-run'));
-      await assert.rejects(m.restoreFromRunBase({ path: path.join(ws.path, 'a.txt') }), code('E_CONFLICT', 'active-run'));
+      await assert.rejects(m.finalise({ path: ws.path, expectedWorktree: exp(ws.path), outcome: 'archived' }), code('E_CONFLICT', 'active-run'));
+      await assert.rejects(m.remove({ path: ws.path , expectedWorktree: exp(ws.path)}), code('E_CONFLICT', 'active-run'));
+      await assert.rejects(m.restoreFromRunBase({ path: path.join(ws.path, 'a.txt') , expectedWorktree: exp(path.join(ws.path, 'a.txt'))}), code('E_CONFLICT', 'active-run'));
     });
 
     it('rolls back a failed create completely, so the same slug can be retried', async () => {
@@ -261,10 +261,10 @@ describe('review fixes', () => {
           const f = path.join(adminDir(ws.path), name);
           mutate(f, readFileSync(f, 'utf8'));
           const ops: Array<(m: WorktreeManager) => Promise<unknown>> = [
-            (m) => m.status(ws.path), (m) => m.assertNoDrift(ws.path), (m) => m.acknowledgeDrift(ws.path),
-            (m) => m.previewDiscard(ws.path), (m) => m.restoreFromRunBase({ path: path.join(ws.path, 'a.txt') }),
+            (m) => m.status(ws.path, exp(ws.path)), (m) => m.assertNoDrift(ws.path, exp(ws.path)), (m) => m.acknowledgeDrift(ws.path),
+            (m) => m.previewDiscard(ws.path, exp(ws.path)), (m) => m.restoreFromRunBase({ path: path.join(ws.path, 'a.txt') , expectedWorktree: exp(path.join(ws.path, 'a.txt'))}),
             (m) => m.list(fx.repo),
-            (m) => m.finalise({ path: ws.path, outcome: 'archived' }), (m) => m.remove({ path: ws.path }),
+            (m) => m.finalise({ path: ws.path, expectedWorktree: exp(ws.path), outcome: 'archived' }), (m) => m.remove({ path: ws.path , expectedWorktree: exp(ws.path)}),
           ];
           for (const op of ops) {
             try {
@@ -283,9 +283,9 @@ describe('review fixes', () => {
         }
       }
       for (const op of [
-        (m: WorktreeManager) => m.status(path.join(fx.tmp, 'nope')), (m: WorktreeManager) => m.status(fx.repo),
+        (m: WorktreeManager) => m.status(path.join(fx.tmp, 'nope'), exp(path.join(fx.tmp, 'nope'))), (m: WorktreeManager) => m.status(fx.repo, exp(fx.repo)),
         (m: WorktreeManager) => m.create({ repoPath: fx.tmp, slug: 'x' }),
-        (m: WorktreeManager) => m.restoreFromRunBase({ path: '/definitely/not/here' }),
+        (m: WorktreeManager) => m.restoreFromRunBase({ path: '/definitely/not/here' , expectedWorktree: exp('/definitely/not/here')}),
         (m: WorktreeManager) => m.sweepSnapshotRefs(path.join(fx.tmp, 'nope')),
       ]) {
         await assert.rejects(op(fx.manager), (e) => e instanceof WorktreeError && (ERROR_CODES as readonly string[]).includes(e.code));
@@ -315,14 +315,14 @@ describe('review fixes', () => {
       for (const p of ['.gitignore', 'a/.github/x', 'git', 'x.git/y', '..foo']) assert.equal(hasGitComponent(p), false, p);
       const ws = await fx.manager.create({ repoPath: fx.repo, slug: 'git' });
       for (const p of ['.GIT/config', 'sub/.git/config']) {
-        await assert.rejects(fx.manager.restoreFromRunBase({ path: path.join(ws.path, p) }), code('E_POLICY_DENIED'));
+        await assert.rejects(fx.manager.restoreFromRunBase({ path: path.join(ws.path, p) , expectedWorktree: exp(path.join(ws.path, p))}), code('E_POLICY_DENIED'));
       }
     });
 
     it('N-2: pathspec magic in a file name is literal', async () => {
       const ws = await fx.manager.create({ repoPath: fx.repo, slug: 'magic' });
       write(path.join(ws.path, ':(top)a.txt'), 'x\n');
-      await assert.rejects(fx.manager.restoreFromRunBase({ path: path.join(ws.path, ':(top)a.txt') }), code('E_NOT_FOUND'));
+      await assert.rejects(fx.manager.restoreFromRunBase({ path: path.join(ws.path, ':(top)a.txt') , expectedWorktree: exp(path.join(ws.path, ':(top)a.txt'))}), code('E_NOT_FOUND'));
       assert.equal(readFileSync(path.join(ws.path, ':(top)a.txt'), 'utf8'), 'x\n');
     });
 
@@ -332,7 +332,7 @@ describe('review fixes', () => {
       sh(fx.repo, 'commit', '-qm', 'dots');
       const ws = await fx.manager.create({ repoPath: fx.repo, slug: 'dots' });
       write(path.join(ws.path, '..foo'), 'changed\n');
-      await fx.manager.restoreFromRunBase({ path: path.join(ws.path, '..foo') });
+      await fx.manager.restoreFromRunBase({ path: path.join(ws.path, '..foo') , expectedWorktree: exp(path.join(ws.path, '..foo'))});
       assert.equal(readFileSync(path.join(ws.path, '..foo'), 'utf8'), 'dots\n');
     });
 

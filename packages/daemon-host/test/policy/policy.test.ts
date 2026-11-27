@@ -90,16 +90,23 @@ test("the policy raises a tier above the contract minimum and never lowers it", 
   assert.deepEqual(new RuleTablePolicy(trustedRegistry()).evaluate(input("axis.worktrees/1.remove")), { effect: "allow" });
 });
 
-test("registry-trust methods need the attested flag AND the live registry; an unknown window is untrusted", () => {
-  const registry = trustedRegistry();
-  const policy = new RuleTablePolicy(registry);
-  for (const key of ["axis.worktrees/1.create", "axis.worktrees/1.restoreFromRunBase"]) {
+test("project-trust methods: policy needs no grant and never reads identity.trusted; only a recorded revoke refuses at dispatch", () => {
+  // The gate decides inside the handler (project-registration-and-trust.md §5.4); policy is only the early revoke check.
+  const empty = new InMemoryTrustRegistry();
+  const policy = new RuleTablePolicy(empty);
+  for (const key of ["axis.worktrees/1.create", "axis.worktrees/1.restoreFromRunBase", "axis.worktrees/1.discard", "axis.git/1.commit", "axis.git/1.push", "axis.runs/1.start", "axis.cli-runs/1.start"]) {
     assert.equal(policy.evaluate(input(key)).effect, "allow", key);
-    assert.equal(policy.evaluate(input(key, { trusted: false })).effect, "deny", `${key} attested false`);
-    assert.equal(policy.evaluate(input(key, { windowId: "w2", workspaceId: undefined as never })).effect, "deny", `${key} unknown window`);
+    assert.equal(policy.evaluate(input(key, { trusted: false })).effect, "allow", `${key}: the connect-time flag is not read (mutant: read again)`);
+    assert.equal(policy.evaluate(input(key, { windowId: "w2", workspaceId: undefined as never })).effect, "allow", `${key}: no grant is needed`);
   }
-  assert.equal(new RuleTablePolicy(new InMemoryTrustRegistry()).evaluate(input("axis.worktrees/1.create")).effect, "deny");
-  assert.equal(new RuleTablePolicy(new InMemoryTrustRegistry()).evaluate(input("axis.worktrees/1.list")).effect, "allow");
+  empty.set({ windowId: "w1" }, false);
+  for (const key of ["axis.worktrees/1.create", "axis.git/1.commit", "axis.git/1.push", "axis.runs/1.start", "axis.cli-runs/1.start"]) {
+    assert.equal(policy.evaluate(input(key)).effect, "deny", `${key}: a window revoke refuses`);
+  }
+  assert.equal(policy.evaluate(input("axis.worktrees/1.list")).effect, "allow");
+  // A mode the table does not know fails closed.
+  const odd = new RuleTablePolicy(new InMemoryTrustRegistry(), { ...RULES, "axis.worktrees/1.list": { tier: 0, actors: ["user"], trust: "registry" as never } });
+  assert.equal(odd.evaluate(input("axis.worktrees/1.list")).effect, "deny");
 });
 
 test("TRU-2: a workspace revoke refuses the next create and run start, and never stops a running run", () => {
@@ -153,10 +160,9 @@ test("S1 (documented deviation from design 6.2): a workspace decision holds in e
   assert.equal(r.isTrusted({ windowId: "w1", workspaceId: "ws1" }), false, "a revoke from any window revokes for all");
   assert.equal(r.isRevoked({ windowId: "w3", workspaceId: "ws1" }), true);
   assert.equal(r.size, 1, "one key per workspace, not per window");
-  // Through the policy: a connection attested trusted in a window main never named still needs the workspace grant.
-  const p = new RuleTablePolicy(trustedRegistry());
-  assert.equal(p.evaluate(input("axis.worktrees/1.create", { windowId: "w7" })).effect, "allow");
-  assert.equal(p.evaluate(input("axis.worktrees/1.create", { windowId: "w7", trusted: false })).effect, "deny");
+  // Through the policy: the workspace revoke recorded from w2 refuses a project-trust call from any window.
+  const p = new RuleTablePolicy(r);
+  assert.equal(p.evaluate(input("axis.worktrees/1.create", { windowId: "w7" })).effect, "deny");
 });
 
 test("registry: malformed subjects are untrusted and revoked, and set refuses them", () => {
@@ -240,4 +246,19 @@ test("policySurface filters registry, rules and planned together, so coverage ho
     assert.equal(p.evaluate(input("axis.providers/1.list")).effect, "deny");
   }
   assert.match(coverageProblems({ registry: policySurface(["axis.audit"]).registry }).join("\n"), /policy rule for no served method/);
+});
+
+test("coverage: gated rows (project and per-start) must be registered with gated handlers, and only they (exit 70 before ready)", () => {
+  const gatedRows = Object.entries(RULES).filter(([, r]) => r.trust === "project" || r.trust === "per-start").map(([k]) => k);
+  assert.deepEqual(gatedRows.sort(), [
+    "axis.agents/1.start", "axis.cli-runs/1.start", "axis.git/1.commit", "axis.git/1.push", "axis.integrations/1.read", "axis.runs/1.start", "axis.tasks/1.start",
+    "axis.worktrees/1.create", "axis.worktrees/1.discard", "axis.worktrees/1.restoreFromRunBase",
+  ]);
+  assert.deepEqual(coverageProblems({ gated: new Set(gatedRows) }), []);
+  const missing = new Set(gatedRows.filter((k) => k !== "axis.git/1.push"));
+  assert.deepEqual(coverageProblems({ gated: missing }), ["axis.git/1.push: a gated row registered without the project trust gate"], "mutant: coverage check removed");
+  const cli = new Set(gatedRows.filter((k) => k !== "axis.cli-runs/1.start"));
+  assert.deepEqual(coverageProblems({ gated: cli }), ["axis.cli-runs/1.start: a gated row registered without the project trust gate"], "per-start is gated too");
+  assert.deepEqual(coverageProblems({ gated: new Set([...gatedRows, "axis.worktrees/1.list"]) }), ["axis.worktrees/1.list: a gated handler on a row that is not gated"]);
+  assert.throws(() => checkCoverage({ gated: missing }), /registered without the project trust gate/);
 });

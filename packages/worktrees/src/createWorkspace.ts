@@ -11,6 +11,7 @@ import { readMeta, writeBaseline, writeMeta } from './meta.js';
 import { canonicalise, isSameOrInside, validateWorktreeRoot, type ProtectedLocation } from './paths.js';
 import { populateFilterFree } from './populate.js';
 import { deleteRefIf, writeSnapshotRef } from './snapshotRef.js';
+import type { SnapshotScanner } from './snapshotScan.js';
 import type { CreatedWorkspace } from './types.js';
 
 /** What `createWorkspace` needs from the manager. */
@@ -20,6 +21,8 @@ export interface CreateHost {
   readonly platform: NodeJS.Platform;
   readonly now: () => Date;
   readonly maxFile: number;
+  /** REF-1 scanner for the run base snapshot; undefined means the default (refuse mode). */
+  readonly snapshotScanner: SnapshotScanner | undefined;
   listRaw(repo: RepoLocation): Promise<WorktreeEntry[]>;
   protectedLocations(repo: RepoLocation, localCheckout: string | null): Promise<ProtectedLocation[]>;
   takeGitSnapshot(worktree: string, commonDir: string): Promise<GitSnapshot>;
@@ -100,6 +103,12 @@ export async function createWorkspace(host: CreateHost, repo: RepoLocation, p: C
     const full = p.baseRef.startsWith('refs/heads/') ? p.baseRef : `refs/heads/${p.baseRef}`;
     baseBranch = (await git.ok(['show-ref', '--verify', '--quiet', full], { cwd })) ? full : null;
   }
+  // FU-WT-BASE2: the base sha is also the base branch's recorded tip, so the branch is kept only when its exact ref holds
+  // that very commit now (not a moved branch, nor a tag or other ref the base name resolved to first); else not attestable.
+  if (baseBranch !== null) {
+    const tip = await git.run(['show-ref', '--verify', baseBranch], { cwd, allowFailure: true });
+    if (tip.code !== 0 || tip.stdout.trim() !== `${baseSha} ${baseBranch}`) baseBranch = null;
+  }
 
   const scratchDir = await privateDir(path.join(root, '.axis-tmp'));
   let runBaseSha: string | null = null;
@@ -108,7 +117,7 @@ export async function createWorkspace(host: CreateHost, repo: RepoLocation, p: C
     await git.run(['worktree', 'lock', '--reason', `axis:${p.id}`, '--', wtPath], { cwd });
     await populateFilterFree(git, wtPath);
     const wt = await resolveRepo(wtPath);
-    const snap = await writeSnapshotRef(git, wtPath, runBaseRef, `axis run base ${p.id}`, host.maxFile, scratchDir);
+    const snap = await writeSnapshotRef(git, wtPath, runBaseRef, `axis run base ${p.id}`, host.maxFile, scratchDir, baseSha, host.snapshotScanner);
     runBaseSha = snap.commit;
     await writeMeta(wt.gitDir, {
       version: 1, id: p.id, slug: p.slug, branch, baseRef: p.baseRef, baseSha, baseBranch, runBaseSha,
@@ -116,7 +125,7 @@ export async function createWorkspace(host: CreateHost, repo: RepoLocation, p: C
     });
     await writeBaseline(wt.gitDir, await host.takeGitSnapshot(wtPath, repo.commonDir));
     return {
-      id: p.id, slug: p.slug, branch, path: wtPath, baseRef: p.baseRef, baseSha, runBaseRef,
+      id: p.id, slug: p.slug, branch, path: wtPath, baseRef: p.baseRef, baseSha, baseBranch, runBaseRef,
       skippedLarge: snap.skippedLarge, localCheckout,
     };
   } catch (e) {

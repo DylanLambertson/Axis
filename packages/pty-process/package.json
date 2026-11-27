@@ -1,0 +1,35 @@
+{
+  "name": "@axis/pty-process",
+  "version": "0.0.0",
+  "private": true,
+  "license": "UNLICENSED",
+  "type": "module",
+  "engines": {
+    "node": "24.22.1"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/src/index.d.ts",
+      "default": "./dist/src/index.js"
+    },
+    "./client": {
+      "types": "./dist/src/client-entry.d.ts",
+      "default": "./dist/src/client-entry.js"
+    },
+    "./config": {
+      "types": "./dist/src/config.d.ts",
+      "default": "./dist/src/config.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc --noEmit -p .",
+    "test": "tsc -b && node --test \"dist/test/**/*.test.js\""
+  },
+  "dependencies": {
+    "@axis/protocol": "0.0.0",
+    "@axis/pty-policy": "0.0.0",
+    "@axis/runs": "0.0.0",
+    "zod": "4.6.6"
+  }
+}

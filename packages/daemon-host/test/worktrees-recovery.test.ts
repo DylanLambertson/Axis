@@ -4,11 +4,10 @@ import { readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { test, type TestContext } from "node:test";
 import * as path from "node:path";
 import { DaemonError } from "@axis/daemon";
-import { newKey, type Client } from "./approvals-rig.js";
-import { createWs as createWsRaw, gitSkipReason, worktreesRig, type Rig, type RigOptions } from "./worktrees-rig.js";
+import { type Client } from "./approvals-rig.js";
+import { finaliseApproved, createWs as createWsRaw, gitSkipReason, worktreesRig, type Rig, type RigOptions } from "./worktrees-rig.js";
 
 const skip = gitSkipReason();
-const WT = "axis.worktrees";
 const createWs = (user: Client, name?: string) => createWsRaw(user, (_m, x) => (assert.equal(x.ok, true, JSON.stringify(x.error)), x), name);
 const dirOf = (r: Rig, id: string): string => String(r.journal.getWorkspace(id)?.worktreePath);
 const svc = { caller: { actor: "user", connectionId: "c", windowId: "w" }, signal: new AbortController().signal };
@@ -21,7 +20,7 @@ async function interrupted(t: TestContext, outcome: "merged" | "archived" | "aba
   t.after(() => r.cleanup());
   const user = await r.connect();
   const { id } = await createWs(user);
-  assert.equal((await user.call(WT, "finalise", { id, outcome }, newKey())).ok, false);
+  assert.equal((await finaliseApproved(r, user, id, outcome)).ok, false);
   state.fail = false;
   return { r, user, id };
 }
@@ -50,16 +49,16 @@ test("recovery: a commit that is not in the base is refused as merged, the journ
   const { id } = await createWs(user);
   r.git(dirOf(r, id), "commit", "-q", "--allow-empty", "-m", "work not in main");
   state.fail = true;
-  assert.equal((await user.call(WT, "finalise", { id, outcome: "abandoned" }, newKey())).ok, false);
+  assert.equal((await finaliseApproved(r, user, id, "abandoned")).ok, false);
   state.fail = false;
   await r.binding.service.reconcile(live);
-  const res = await user.call(WT, "finalise", { id, outcome: "merged" }, newKey());
+  const res = await finaliseApproved(r, user, id, "merged");
   assert.equal(res.error?.code, "E_CONFLICT");
   assert.deepEqual(res.error?.details, { reason: "not_merged" });
   assert.equal(r.journal.getWorkspace(id)?.state, "READY");
   assert.equal(r.binding.needsAttention(id), true);
   // The honest outcome (no merge claimed) completes it, and it is what the journal records.
-  assert.equal((await user.call(WT, "finalise", { id, outcome: "abandoned" }, newKey())).ok, true);
+  assert.equal((await finaliseApproved(r, user, id, "abandoned")).ok, true);
   assert.equal(r.journal.getWorkspace(id)?.finaliseOutcome, "abandoned");
 });
 
@@ -94,7 +93,7 @@ test("audit: a refused finalise leaves an intent row and a denied result row, ne
   const user = await r.connect();
   const { id } = await createWs(user);
   r.git(dirOf(r, id), "commit", "-q", "--allow-empty", "-m", "not merged");
-  const res = await user.call(WT, "finalise", { id, outcome: "merged" }, newKey());
+  const res = await finaliseApproved(r, user, id, "merged");
   assert.equal(res.error?.code, "E_CONFLICT");
   const intent = rows(r, "worktree.finalise.intent");
   assert.equal(intent.length, 1);
@@ -104,7 +103,7 @@ test("audit: a refused finalise leaves an intent row and a denied result row, ne
   assert.equal(result[0]?.outcome, "denied");
   assert.match(result[0]?.payload ?? "", /refused/);
   // A success writes intent then a success row.
-  assert.equal((await user.call(WT, "finalise", { id, outcome: "abandoned" }, newKey())).ok, true);
+  assert.equal((await finaliseApproved(r, user, id, "abandoned")).ok, true);
   assert.deepEqual(rows(r, "worktree.finalise").map((x) => x.outcome), ["denied", "success"]);
   assert.equal(rows(r, "worktree.finalise.intent").length, 2);
 });

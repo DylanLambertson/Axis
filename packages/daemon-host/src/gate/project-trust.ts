@@ -1,0 +1,126 @@
+// Copyright (c) 2026 Dylan Lambertson. All rights reserved.
+import { AxisError } from "@axis/audit";
+import { isAttestedIdentity } from "@axis/daemon";
+import type { Journal } from "@axis/journal";
+import type { TrustCheckRequest } from "../control/client.js";
+import type { BindingResult } from "../projects/binding.js";
+import { spendTicket, type ProjectTrustTicket } from "./project-ticket.js";
+import type { TrustSubject } from "../ports/trust.js";
+
+/**
+ * The project trust gate (docs/design/project-registration-and-trust.md §5.4). A gated call is trusted only when ALL hold, read
+ * in this order at the call:
+ *   T1  the journal's run-trust record is `trusted` (set only by main's dialog, `projects.trust`);
+ *   T2  the project folder is still the repository it was bound to (`<path>/.git`, its `<dev>:<ino>`); a failure drops the record
+ *       (`binding_lost`, audited) and stops the project's live runs;
+ *   W   for a call on a workspace: its worktree's `.git` is a `gitdir:` file into `<common_dir>/worktrees/<name>`, whose
+ *       `commondir` resolves to the project's `common_dir` (a run cannot repoint its worktree at another repository);
+ *   T3  main answers `trust.check` true: the window is live and the path is inside a folder the Workspace Trust model trusts;
+ *   T4  no registry revoke for the window or workspace, re-read here (one recorded during a push's confirmation refuses).
+ * A refusal is `E_POLICY_DENIED` (`reason: "untrusted"`) INTERNALLY; handlers answer it `E_CONFLICT` `untrusted` on the wire
+ * (a handler cannot raise `E_POLICY_DENIED`: `packages/daemon/src/errors.ts`).
+ *
+ * The gate mints a `ProjectTrustTicket`: single use, bound to `{ projectId, workspaceId? }`, valid for 1 s on the monotonic clock.
+ * Every gated side-effect port takes one and `consume`s it at its entry, before any work of its own, so a handler cannot reach
+ * the side effect without calling the gate, and it calls the gate inside the project mutex after any confirmation.
+ */
+export const TICKET_TTL_MS = 1_000;
+
+/** The ticket type (its brand and state live in project-ticket.ts, which only the gate modules load). */
+export type { ProjectTrustTicket };
+
+export const untrusted = (): AxisError => new AxisError("E_POLICY_DENIED", "The project is not trusted", { reason: "untrusted" });
+
+export interface ProjectTrustGateDeps {
+  readonly journal: Pick<Journal, "getProject" | "getWorkspace" | "setProjectTrust">;
+  /** The repository binding of a project folder (`readRepositoryBinding` with the host's platform and uid). */
+  readonly binding: (path: string, signal: AbortSignal) => Promise<BindingResult>;
+  /** Main's half (T3): resolves when trusted, rejects otherwise (`ControlClient.trustCheck`). */
+  readonly trustCheck: (request: TrustCheckRequest, options: { readonly signal: AbortSignal }) => Promise<void>;
+  readonly registry: { isRevoked(subject: TrustSubject): boolean };
+  /** Monotonic milliseconds. */
+  readonly now: () => number;
+  /** Called after a lost binding dropped the record: stop the project's live runs. Never throws into the gate. */
+  readonly onRevoked?: (projectId: string) => void;
+  /** Test seam: the filesystem the workspace binding reads. */
+  readonly fs?: { lstat: typeof import("node:fs/promises").lstat; readFile: typeof import("node:fs/promises").readFile; realpath: typeof import("node:fs/promises").realpath };
+}
+
+declare const TRUST_CALL: unique symbol;
+
+/**
+ * Who a gated call acts for, as the gate needs it (ADR 0008 decision 4, ticket PV-K1c). Only `trustCallOf` makes one, and only
+ * from the identity object the connection layer attested (`isAttestedIdentity`: a session's own frozen identity, never a literal,
+ * a copy or a clone); for anything else it returns a call the gate refuses. The gate refuses every object `trustCallOf` did not
+ * make, so neither a hand-built call nor a made-up identity passes, however the gate is reached (an alias, a bracket, a
+ * destructured or bound `admit`: the source scan in test/plugin-trust.test.ts is only an early alarm for the usual spelling).
+ * For a plugin view it carries the host code window (`w<n>`, which main's `trust.check` knows) and the project the plugin is
+ * pinned to; it never widens a step: the plugin acts for that project only.
+ */
+export interface TrustCall {
+  readonly windowId: string;
+  readonly hostWindowId?: string;
+  readonly pinnedProjectId?: string;
+  readonly [TRUST_CALL]: true;
+}
+
+const TRUST_CALLS = new WeakSet<object>();
+
+/** A call the gate always refuses (for an identity the connection layer did not attest). */
+const REFUSED_CALL = Object.freeze({ windowId: "" }) as unknown as TrustCall;
+
+/**
+ * The one way to build a gated call: from the attested identity of the connection (`context.identity`). A plugin identity's
+ * `workspaceId` is the PROJECT it is enabled in (ADR 0008 decision 3), so it becomes `pinnedProjectId`.
+ */
+export function trustCallOf(identity: { readonly windowId: string; readonly clientKind: string; readonly hostWindowId?: string; readonly workspaceId?: string }): TrustCall {
+  if (!isAttestedIdentity(identity)) return REFUSED_CALL;
+  const plugin = identity.clientKind === "plugin";
+  // A plugin identity missing its host or project yields empty strings, which the gate refuses.
+  const call = Object.freeze({ windowId: identity.windowId, ...(plugin ? { hostWindowId: identity.hostWindowId ?? "", pinnedProjectId: identity.workspaceId ?? "" } : {}) });
+  TRUST_CALLS.add(call);
+  return call as unknown as TrustCall;
+}
+
+/** True only for an object `trustCallOf` made. */
+export const isTrustCall = (v: unknown): v is TrustCall => typeof v === "object" && v !== null && TRUST_CALLS.has(v);
+
+export interface ProjectTrustGate {
+  /** Every condition, in order; a fresh ticket, or `untrusted`. `caller` must come from `trustCallOf`. */
+  admit(call: { readonly projectId: string; readonly caller: TrustCall; readonly workspaceId?: string; readonly signal: AbortSignal }): Promise<ProjectTrustTicket>;
+}
+
+/** At a port's entry: the ticket is real, unspent, fresh and for this project and workspace; it is spent here. */
+export function consumeTicket(ticket: unknown, scope: { readonly projectId: string; readonly workspaceId?: string }, now: () => number): void {
+  if (!spendTicket(ticket, scope, now, TICKET_TTL_MS)) throw untrusted();
+}
+
+/**
+ * The composer's `start` as the `axis.runs/1` handler sees it: the ticket is spent first, for the workspace's project, then the
+ * service starts the run. The handler holds no other way to start one.
+ */
+export function ticketedStart<I extends { readonly workspaceId: string }, R>(
+  start: (input: I, signal: AbortSignal) => R,
+  projectOf: (workspaceId: string) => string | undefined,
+  now: () => number,
+): (input: I, signal: AbortSignal, ticket: unknown) => R {
+  return (input, signal, ticket) => {
+    consumeTicket(ticket, { projectId: projectOf(input.workspaceId) ?? "", workspaceId: input.workspaceId }, now);
+    return start(input, signal);
+  };
+}
+
+const GATED = new WeakSet<object>();
+
+/**
+ * Marks a handler of a gated row (`project` or `per-start`): it reaches its side effect only through the gate. The coverage
+ * check (`checkCoverage`'s `gated`) fails the start, exit 70, unless exactly the gated rows are registered with marked handlers.
+ */
+export function projectGated<H extends object>(handler: H): H {
+  GATED.add(handler);
+  return handler;
+}
+
+export function isProjectGated(handler: unknown): boolean {
+  return typeof handler === "object" || typeof handler === "function" ? GATED.has(handler as object) : false;
+}

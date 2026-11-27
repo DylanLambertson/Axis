@@ -28,7 +28,7 @@ test("@axis/protocol has no dependency on another @axis package (runtime, dev, p
   assert.deepEqual(Object.keys(pkg.dependencies ?? {}), ["zod"]);
 });
 
-test("the daemon's request digest reproduces the shared vectors (docs/packages.md 'Shared request digest')", () => {
+test("the daemon's request digest reproduces the shared vectors (docs/packages/challenge.md 'Shared request digest')", () => {
   assert.equal(requestDigest("axis.worktrees/1", 1, "remove", { id: "ws-1", deleteBranch: false }), "ccb3a71aa0bc5bd6db5ccfe6fe9a09abef12092dce13ba4f6d99e929a30e0fd7");
   assert.equal(requestDigest("c", 1, "m", { b: [1, { z: null, y: true }], a: "x" }), "de8399306f850ad7498d82c8f95ec94ca317181b2422480425c52ad8ed55e596");
 });
@@ -37,11 +37,27 @@ test("every registry method that needs approval has a pinned digest under its ow
   const pinned = new Map([
     // contract id, version, method -> digest of the payload below
     ["axis.worktrees/1#remove", "adb7a157e75395816cf74974fbdfa2b5bdf32831996a578ff80cdb46fe9d2735"],
+    ["axis.worktrees/1#finalise", "14241a246e41957535270af54e54f5de9eaa8bce5f816c44010664057f641878"],
     ["axis.git/1#push", "2ecb81c9079eaa3d3702f0cdb2b4c46e846306ac7cac7ad43938605541cf1747"],
+    ["axis.pages/1#delete", "aadcfc37ca00b03a71b40256b8f12d91b57e5061cff22d44851394e40b3de05c"],
+    ["axis.pages/1#markReviewed", "f92fbf1553a3ed1c3310d98f0d3d71b3226794170428ca605da2cb686112bb1b"],
+    ["axis.tasks/1#delete", "486956bdda06beef56f66bd34974a5966078c3e500711e4512598e4fa0f0d677"],
+    ["axis.tasks/1#start", "3dafc3a76159fcb23c98214eb41ef4d7032b028219c644c5561a8e5a14f3d404"],
+    ["axis.plugins/1#grant", "ccaa34c6eb3582714c9a1a212cb1ff832279a700c1fc195b84ca949c539bd9bd"],
+    ["axis.plugins/1#enable", "01d558ee185946b6e7beddabca735b93e7354dac7cdc4ea5cd667e626b38a616"],
+    ["axis.messages/1#enableCliEndpoint", "b7ba6e6eb3848c59847ea964324f5b6e29f4753c973442c25ff39e1ad03dbbeb"],
   ]);
   const payloads = new Map([
     ["axis.worktrees/1#remove", { id: "ws-1", deleteBranch: false }],
+    ["axis.worktrees/1#finalise", { id: "ws-1", outcome: "archived" }],
     ["axis.git/1#push", { workspaceId: "ws-1", remote: "origin", confirmedPlan: { tip: "a".repeat(40), digest: "d".repeat(64) }, allowedBinaryPaths: ["assets/logo.png"] }],
+    ["axis.pages/1#delete", { pageId: "page-1" }],
+    ["axis.pages/1#markReviewed", { pageId: "page-1", seq: 2 }],
+    ["axis.tasks/1#delete", { taskId: "task-1" }],
+    ["axis.tasks/1#start", { taskId: "task-1", worker: "agent-1", seq: 2, promptDigest: "d".repeat(64) }],
+    ["axis.plugins/1#grant", { projectId: "p1", pluginId: "acme.board", permission: "runs.start" }],
+    ["axis.plugins/1#enable", { projectId: "p1", pluginId: "acme.board" }],
+    ["axis.messages/1#enableCliEndpoint", {}],
   ]);
   const needing = [];
   for (const [key, methods] of Object.entries(contracts)) {
@@ -64,6 +80,18 @@ test("every registry method that needs approval has a pinned digest under its ow
     const retry = { ...payloads.get(key), approval: { challengeId: "A".repeat(22) } };
     assert.equal(requestDigest(contractVersion.slice(0, at), Number(contractVersion.slice(at + 1)), method, retry), digest);
   }
+});
+
+test("the push request digest covers allowedBinaryIds: another id set is another request", () => {
+  const body = { workspaceId: "ws-1", remote: "origin", confirmedPlan: { tip: "a".repeat(40), digest: "d".repeat(64) } };
+  const id = (n) => `bin_${String(n).repeat(32)}`;
+  const digest = (extra) => requestDigest("axis.git", 1, "push", { ...body, ...extra });
+  const none = digest({});
+  const one = digest({ allowedBinaryIds: [id(1)] });
+  assert.notEqual(one, none);
+  assert.notEqual(one, digest({ allowedBinaryIds: [id(2)] }));
+  assert.notEqual(one, digest({ allowedBinaryIds: [id(1), id(2)] }));
+  assert.equal(one, digest({ allowedBinaryIds: [id(1)], approval: { challengeId: "A".repeat(22) } }), "the approval stays out of the digest");
 });
 
 /** The top-level arguments of the call whose `(` is just before `start`, string literals and nested brackets respected. */
@@ -137,10 +165,14 @@ test("the closed-set refusal reasons of axis.git/1 and axis.review/1 are what th
   }
   // Raised by the packages as E_POLICY_DENIED, which a handler cannot answer: the host serves them as E_CONFLICT (`toGitError`).
   const SERVED_AS_CONFLICT = new Set(["secrets_found", "scan_incomplete", "binary_unscanned", "message_unscannable"]);
-  // Raised by the host itself, not by a package: the drift check of the git port (`driftAsRefusal` in bindings/git.ts).
-  const host = readFileSync(new URL("../../packages/daemon-host/src/bindings/git.ts", import.meta.url), "utf8");
-  const HOST_RAISED = { git_drift: /new GitOpsError\("E_CONFLICT",[^)]*\{ reason: "git_drift" \}\)/ };
-  for (const [reason, pattern] of Object.entries(HOST_RAISED)) assert.match(host, pattern, `the host no longer raises "${reason}"`);
+  // Raised by the host itself, not by a package: the drift check of the git port (`driftAsRefusal` in bindings/git.ts), and the
+  // project trust gate (gate/project-trust.ts), which the git handlers answer as E_CONFLICT (`toGitError`).
+  const hostFile = (f) => readFileSync(new URL(`../../packages/daemon-host/src/${f}`, import.meta.url), "utf8");
+  const HOST_RAISED = {
+    git_drift: ["bindings/git.ts", /new GitOpsError\("E_CONFLICT",[^)]*\{ reason: "git_drift" \}\)/],
+    untrusted: ["gate/project-trust.ts", /new AxisError\("E_POLICY_DENIED",[^)]*\{ reason: "untrusted" \}\)/],
+  };
+  for (const [reason, [file, pattern]] of Object.entries(HOST_RAISED)) assert.match(hostFile(file), pattern, `the host no longer raises "${reason}"`);
   // Wire to packages: every listed reason exists, and is raised under the code the contract lists it under.
   for (const [reason, codes] of wire) {
     if (Object.hasOwn(HOST_RAISED, reason)) {

@@ -64,6 +64,10 @@ export const limitsSchema = z.strictObject({
   reconcileBudgetMs: boundedInt(1_000, 120_000).optional(),
   anchorMaxLagEvents: boundedInt(1, 100_000).optional(),
   anchorMaxAgeMs: boundedInt(1_000, 3_600_000).optional(),
+  /** Per take of a composer run's WT-2 snapshot (C7-F2); default `COMPOSER_SNAPSHOT_TAKE_MS`. */
+  composerSnapshotTakeMs: boundedInt(1_000, 120_000).optional(),
+  /** The supervisor's bound on a CLI run's whole GIT-SNAP-1 snapshot (`@axis/runs` `snapshotTimeoutMs`, default 10 s). A test on a loaded host raises it; never lowers below the default's room. */
+  runSnapshotTimeoutMs: boundedInt(10_000, 300_000).optional(),
 });
 export type HostLimits = z.infer<typeof limitsSchema>;
 

@@ -23,6 +23,7 @@ export const PROVIDER_ERROR_CODES = [
   "invalid_response",
   "budget_exceeded",
   "secret_in_request",
+  "scan_budget",
   "internal",
 ] as const;
 
@@ -53,6 +54,7 @@ const CODE_INFO: Readonly<Record<ProviderErrorCode, CodeInfo>> = {
   invalid_response: { retryable: false, axis: "E_INTERNAL", text: "The provider response was malformed or exceeded a limit." },
   budget_exceeded: { retryable: false, axis: "E_POLICY_DENIED", text: "The run budget is exhausted." },
   secret_in_request: { retryable: false, axis: "E_POLICY_DENIED", text: "The request contains a stored credential and was not sent." },
+  scan_budget: { retryable: false, axis: "E_POLICY_DENIED", text: "The request could not be checked for credentials and was not sent." },
   internal: { retryable: false, axis: "E_INTERNAL", text: "The provider adapter failed." },
 };
 

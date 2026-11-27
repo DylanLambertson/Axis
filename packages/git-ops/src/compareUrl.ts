@@ -1,5 +1,6 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 // GitHub compare URLs (threat model GIT-5). Only allow-listed hosts, parsed strictly from https, ssh and scp forms.
+import { vetOwnerRepo } from "@axis/protocol";
 import { safeRef } from "./args.js";
 import { invalid } from "./errors.js";
 
@@ -12,8 +13,6 @@ export interface CompareInput {
 }
 
 const LABEL = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
-const OWNER = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/;
-const REPO = /^[A-Za-z0-9._-]{1,100}$/;
 
 /** Lower-case ASCII host: letters, digits, hyphens and dots only. No IDN, no punycode, no trailing dot. */
 export function normaliseHost(host: string): string | undefined {
@@ -32,11 +31,12 @@ function ownerRepo(path: string): { owner: string; repo: string } | undefined {
   const owner = parts[0] as string;
   let repo = parts[1] as string;
   if (repo.endsWith(".git")) repo = repo.slice(0, -4);
-  if (!OWNER.test(owner) || !REPO.test(repo) || repo === "." || repo === "..") return undefined;
+  if (!vetOwnerRepo(owner, repo)) return undefined;
   return { owner, repo };
 }
 
-function parseRemote(url: string): { host: string; owner: string; repo: string } | undefined {
+/** A remote URL vetted by the H9 rules (GIT-5): host, owner and repository, or undefined. Also the forge binding's reader (PV-D2 §2). */
+export function parseRemote(url: string): { host: string; owner: string; repo: string } | undefined {
   if (/[\s\\\u0000-\u001f\u007f-\uffff]/.test(url) || url.length > 512) return undefined;
   const scp = /^([A-Za-z0-9_.-]+)@([^:/]+):(.+)$/.exec(url);
   if (scp && !url.includes("://")) {

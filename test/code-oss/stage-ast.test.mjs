@@ -157,7 +157,7 @@ test("element access with a computed key on process, globalThis, global and modu
     assert.match(bad(`${base}[k]("x");`)[0], /computed key/, base);
     assert.equal(bad(`${base}["ev" + "al"]("x");`).length >= 1, true, base);
   }
-  assert.deepEqual(bad('const a = other[k]; const b = process["env"]; const c = globalThis["fetch"];'), []);
+  assert.deepEqual(bad('const a = other[k]; const b = process["env"]; const c = globalThis["setTimeout"];'), []);
   assert.match(bad('const c = globalThis["x"];')[0], /globalThis used other than/);
 });
 
@@ -273,7 +273,7 @@ test("process, globalThis and global: only a direct read of a listed property is
   for (const f of ["const g = globalThis;", "const p = process;", "const g = global;", "f(process);", "return process;", "const { env } = process;", "const g = (globalThis as any);", "const k = (process as any)[name];", "(globalThis as any)[k]();", "(<any>process)[k];", "(0, process)[k];", "const x = [process];", "const o = { p: process };", "const s = globalThis ?? other;", "process.binding('fs');", "process._linkedBinding('x');", "process.mainModule;", "process.dlopen(m, f);", "globalThis.Function('x');", "globalThis.process;"]) {
     assert.equal(bad(f).length >= 1, true, f);
   }
-  for (const f of ["process.platform;", "process.env.HOME;", 'process["env"].HOME;', "process.on('exit', f);", "globalThis.fetch(u);", "global.setTimeout(f, 1);", "typeof process !== 'undefined';", "type T = typeof process;", "const o = { process: 1 }; o.process;", "function f(process: number) { return 1; }"]) {
+  for (const f of ["process.platform;", "process.env.HOME;", 'process["env"].HOME;', "process.on('exit', f);", "globalThis.setTimeout(f, 1);", "global.setTimeout(f, 1);", "typeof process !== 'undefined';", "type T = typeof process;", "const o = { process: 1 }; o.process;", "function f(process: number) { return 1; }"]) {
     const found = bad(f).filter((m) => !/Function constructor/.test(m));
     assert.deepEqual(f.startsWith("function f(process") ? [] : found, [], f);
   }
@@ -328,4 +328,32 @@ test("node:process is refused, worker_threads cannot be imported dynamically or 
 test("Reflect.get, getOwnPropertyDescriptor and assignment destructuring of constructor are refused", () => {
   for (const f of ['Reflect.get(f, "constructor");', 'Object.getOwnPropertyDescriptor(f, "constructor");', "Reflect.get(f, `constructor`);", "({ constructor: C } = f);", "({ constructor } = f);"]) assert.equal(bad(f).length >= 1, true, f);
   assert.deepEqual(bad('Reflect.get(f, "name"); Object.getOwnPropertyDescriptor(f, "length"); ({ name } = f);'), []);
+});
+
+test("the global network clients are named only in the daemon host's providers binding, in shipped code (review c6 SF-1)", () => {
+  const EGRESS = ["packages/daemon-host/src/bindings/providers.ts", "/home/u/repo/packages/daemon-host/src/bindings/providers.ts", "daemon-host/bindings/providers.ts", "C:\\repo\\packages\\daemon-host\\src\\bindings\\providers.ts"];
+  const uses = ["fetch(u);", "await fetch(u, init);", "const f = fetch;", "g(fetch);", "const o = { fetch };", "new WebSocket(u);", "new EventSource(u);", "new XMLHttpRequest();", "fetch.call(null, u);", "globalThis.fetch(u);", 'globalThis["fetch"](u);', "global.fetch(u);", "globalThis.WebSocket;", "const { fetch: f } = globalThis;", "fetch?.(u);", "globalThis?.fetch(u);", "globalThis.fetch?.(u);", "globalThis?.[k]?.(u);", "(0, fetch)(u);", "(fetch as any)(u);", "const k = 'fetch'; globalThis[k](u);", "Reflect.get(globalThis, 'fetch');", "new (WebSocket as any)(u);"];
+  for (const src of uses) {
+    for (const [file, pkg] of [["packages/daemon-host/src/handlers/git.ts", "daemon-host"], ["packages/daemon-host/src/bindings/agent.ts", "daemon-host"], ["daemon-host/bindings/agent.ts", "daemon-host"], ["packages/anthropic/src/adapter.ts", "anthropic"], ["packages/providers/src/bindings/providers.ts", "providers"], ["x.ts", null]]) {
+      assert.ok(bad(src, file, { pkg }).length >= 1, `${src} in ${file}`);
+    }
+  }
+  // The egress file (named exactly) may only hand `fetch` to the adapter; a bare call, a wrapper or another client stays refused.
+  for (const file of EGRESS) {
+    const pkgRel = file.startsWith("C:") || file.startsWith("/") ? "src/bindings/providers.ts" : null;
+    const imp = file.startsWith("daemon-host/") ? 'import { createAnthropicAdapter } from "../../anthropic/index.js";\n' : 'import { createAnthropicAdapter } from "@axis/anthropic";\n';
+    assert.deepEqual(bad(`${imp}createAnthropicAdapter({ fetch: (u, i) => fetch(u, i) });`, file, { pkg: "daemon-host", pkgRel }), [], file);
+    assert.ok(bad("createAnthropicAdapter({ fetch: (u, i) => fetch(u, i) });", file, { pkg: "daemon-host", pkgRel }).length >= 1, "no import, no sink");
+    for (const src of ["fetch(u);", "export const f = (u, i) => fetch(u, i);", "new WebSocket(u);", "globalThis.fetch(u);"]) assert.ok(bad(src, file, { pkg: "daemon-host", pkgRel }).length >= 1, `${src} in ${file}`);
+    assert.ok(bad("createAnthropicAdapter({ fetch });", file, { pkg: "anthropic", pkgRel }).length >= 1, "only as the daemon host's file");
+  }
+  for (const file of ["packages/daemon-host/src/web/daemon-host/bindings/providers.ts", "daemon-host/web/daemon-host/bindings/providers.ts", "xpackages/daemon-host/src/bindings/providers.ts", "daemon-host/bindings/providers.ts.evil.ts"]) {
+    assert.ok(bad("createAnthropicAdapter({ fetch });", file, { pkg: "daemon-host" }).length >= 1, `nested or suffixed: ${file}`);
+  }
+  // A property, a member, a parameter type or a type query is not the global; tests and pinned code are not shipped code.
+  for (const src of ["options.fetch(u);", "const o = { fetch: f };", "interface A { fetch(u: string): void }", "type F = typeof fetch;", "class X { fetch() {} }", "const createEventSources = 1;", "const s = 'fetch';"]) {
+    assert.deepEqual(bad(src, "packages/daemon-host/src/a.ts", { pkg: "daemon-host" }), [], src);
+  }
+  assert.deepEqual(bad("fetch(u);", "packages/daemon-host/test/a.test.ts", { pkg: "daemon-host", shipped: false }), []);
+  assert.deepEqual(bad("fetch(u);", "vendor/zod/x.js", { vendored: true }), []);
 });

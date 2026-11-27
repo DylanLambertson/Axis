@@ -93,7 +93,10 @@ test("every daemon-context call has an empty hooks path and no hook-capable defa
     assert.ok(c.argv.includes("core.hooksPath=/dev/null"), sub(c.argv).join(" "));
     assert.ok(c.argv.includes("core.fsmonitor=false"));
     assert.ok(c.argv.includes("commit.gpgsign=false"));
-    assert.equal(Object.keys(c.env).some((n) => /^GIT_/.test(n) && n !== "GIT_TERMINAL_PROMPT"), false);
+    assert.ok(c.argv.includes("help.autocorrect=0"));
+    // GIT-ENV-1 plus the lazy-fetch pins (no lazy fetch can run a program, whatever the repository config says).
+    assert.deepEqual(Object.keys(c.env).filter((n) => /^GIT_/.test(n)).sort(), ["GIT_ALLOW_PROTOCOL", "GIT_NO_LAZY_FETCH", "GIT_TERMINAL_PROMPT"]);
+    assert.deepEqual([c.env["GIT_ALLOW_PROTOCOL"], c.env["GIT_NO_LAZY_FETCH"]], ["/", "1"]);
   }
 });
 
@@ -112,9 +115,31 @@ test("filter drivers present in the config are neutralised on daemon calls", asy
   }
 });
 
+test("an empty or upper-case filter name is neutralised as git spells it; a two-level filter key names no driver", async () => {
+  const r = new FakeRunner(healthy((s) => (s[0] === "config" ? { stdout: "filter..process\0filter.Up.clean\0filter.process\0" } : undefined)));
+  await planCommit(makeDeps(r), input);
+  const wt = r.calls.find((c) => sub(c.argv)[0] === "write-tree");
+  assert.ok(wt);
+  for (const f of ["", "Up"]) {
+    for (const k of ["clean", "smudge", "process"]) assert.ok(wt.argv.includes(`filter.${f}.${k}=`), `${f}.${k}`);
+    assert.ok(wt.argv.includes(`filter.${f}.required=false`));
+  }
+  assert.ok(!wt.argv.some((a) => a.startsWith("filter.process")), "no key made from the two-level name");
+});
+
 test("a filter with an unsafe name is refused", async () => {
   const r = new FakeRunner(healthy((s) => (s[0] === "config" ? { stdout: "filter.a b.clean\0" } : undefined)));
   assert.equal(await code(planCommit(makeDeps(r), input)), "E_POLICY_DENIED");
+});
+
+test("a filter key that cannot be read is refused, never skipped: line terminators and controls in the name, an unknown variable", async () => {
+  const keys = ["\u2028", "\u2029", "\u0085", "\v", "\f", "\r", "\t", "\n"].map((c) => `filter.a${c}b.clean`).concat(["filter.x.cleaner", "filter.x.clean.", "filter.X"]);
+  for (const key of keys) {
+    const r = new FakeRunner(healthy((s) => (s[0] === "config" ? { stdout: `filter.ok.clean\0${key}\0` } : undefined)));
+    assert.equal(await code(planCommit(makeDeps(r), input)), "E_POLICY_DENIED", JSON.stringify(key));
+  }
+  const two = new FakeRunner(healthy((s) => (s[0] === "config" ? { stdout: "filter.process\0filter.required\0" } : undefined)));
+  await planCommit(makeDeps(two), input);
 });
 
 test("bad input is refused: tree hash, message, paths, detached HEAD, other branch", async () => {

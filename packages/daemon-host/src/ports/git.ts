@@ -40,8 +40,8 @@ export interface PushPlanFacts {
   readonly requiresConfirmation: boolean;
   readonly reasons: readonly string[];
   readonly findings: readonly PushFindingFacts[];
-  /** Set when the scan blocks the push (a `GIT_PUSH_BLOCKS` value, validated by the wire reply) with the binary paths still to allow. */
-  readonly blocked?: { readonly reason: string; readonly binaryPaths: readonly string[] };
+  /** Set when the scan blocks the push (a `GIT_PUSH_BLOCKS` value, validated by the wire reply) with the binary files still to allow. */
+  readonly blocked?: { readonly reason: string; readonly binaryFiles: readonly { readonly id: string; readonly path: string; readonly lossy: boolean }[] };
 }
 
 export interface PushCall {
@@ -53,6 +53,10 @@ export interface PushCall {
   /** The last commit Axis pushed (or the recorded base before the first push), from the journal. */
   readonly baseSha: string;
   readonly allowedBinaryPaths?: readonly string[];
+  /** Binary files allowed by identity (`blocked.binaryFiles[].id` of an earlier plan). */
+  readonly allowedBinaryIds?: readonly string[];
+  /** The destination key (`pushTarget`), covered by the plan digest so a confirmation is bound to where the push goes. */
+  readonly destination?: string;
 }
 
 /**
@@ -68,11 +72,22 @@ export interface GitOperations {
    * so `pushurl` and `pushInsteadOf` rewrites count). A hash, never the URL: userinfo must not be stored or logged.
    */
   pushTarget(call: { readonly workspaceId: string; readonly worktree: WorktreeRef; readonly remote: string }): Promise<string>;
+  /**
+   * Whether `base` (the base kept for a destination) is a commit that is an ancestor of the branch's tip. A destination whose
+   * history was rewritten answers no, and the caller drops the entry and scans from the workspace's recorded base (a larger range).
+   */
+  baseUsable(call: { readonly worktree: WorktreeRef; readonly branch: string; readonly base: string }): Promise<boolean>;
   planPush(call: PushCall): Promise<PushPlanFacts>;
-  /** Pushes the one scanned tip, or refuses `E_CONFLICT` `plan_changed` when the outgoing changes are not the confirmed plan. */
-  executePush(call: PushCall, confirmed: { readonly tip: string; readonly digest: string }): Promise<void>;
-  /** The commit of the reviewed tree. `assertFresh` refuses by throwing (G2). */
-  executeCommit(call: { readonly workspaceId: string; readonly assertFresh: () => Promise<void> }, input: CommitInput): Promise<{ readonly commit: string; readonly tree: string }>;
+  /**
+   * Pushes the one scanned tip, or refuses `E_CONFLICT` `plan_changed` when the outgoing changes are not the confirmed plan. `signal`
+   * (the request's) ends the push run: aborted, it is `E_CANCELLED` and the run's group is killed.
+   */
+  executePush(call: PushCall & { readonly projectId: string }, confirmed: { readonly tip: string; readonly digest: string }, ticket: unknown, signal?: AbortSignal): Promise<void>;
+  /**
+   * The commit of the reviewed tree. `assertFresh` refuses by throwing (G2). Both writes spend the project trust gate's ticket
+   * (`consumeTicket`) for `projectId` and `workspaceId` at their entry, before any git: project-registration-and-trust.md §5.4.
+   */
+  executeCommit(call: { readonly workspaceId: string; readonly projectId: string; readonly assertFresh: () => Promise<void> }, input: CommitInput, ticket: unknown): Promise<{ readonly commit: string; readonly tree: string }>;
   /** The compare URL of the named remote (its own URL, from the repository). */
   compareUrl(call: { readonly workspaceId: string; readonly worktree: WorktreeRef; readonly remote: string; readonly base: string; readonly head: string }): Promise<string>;
 }

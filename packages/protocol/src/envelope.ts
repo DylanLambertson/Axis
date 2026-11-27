@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import { z } from "zod";
 import { errorSchema } from "./errors.js";
+import { ackEnvelopeSchema } from "./events.js";
 import { boundedJsonSchema, inspectMessage, type InspectFailure } from "./limits.js";
 import {
   contractIdSchema,
@@ -101,8 +102,8 @@ export const helloRejectedSchema = z.strictObject({
   error: errorSchema,
 });
 
-/** Every message a client may send: the first is `hello`, then requests and cancels. */
-export const clientMessageSchema = z.union([helloSchema, requestEnvelopeSchema, cancelEnvelopeSchema]);
+/** Every message a client may send: the first is `hello`, then requests, cancels and event acks (`axis.events/1`). */
+export const clientMessageSchema = z.union([helloSchema, requestEnvelopeSchema, cancelEnvelopeSchema, ackEnvelopeSchema]);
 export type ClientMessage = z.infer<typeof clientMessageSchema>;
 
 export type ParsedClientMessage =
@@ -111,7 +112,7 @@ export type ParsedClientMessage =
 
 /**
  * The only entry point the daemon uses for a decoded client message
- * (`hello`, request and cancel alike): the bounded walk runs first, then the
+ * (`hello`, request, cancel and ack alike): the bounded walk runs first, then the
  * envelope schema (ADR 0005 D2.5). Calling `clientMessageSchema` directly is a defect.
  */
 export function parseClientMessage(raw: unknown): ParsedClientMessage {

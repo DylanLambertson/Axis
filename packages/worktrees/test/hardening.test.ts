@@ -8,7 +8,7 @@ import * as path from 'node:path';
 import { afterEach, beforeEach, describe, it } from 'node:test';
 import { createExecGitRunner, createHooksGuard, WorktreeError, WorktreeManager, type GitRunner } from '../src/index.js';
 import { runsNoFilters } from '../src/hardenedGit.js';
-import { confirmFor, makeFixture, sh, write, type Fixture } from './helpers.js';
+import { confirmFor, makeFixture, sh, write, type Fixture, exp } from './helpers.js';
 
 const code = (c: string) => (e: unknown) => e instanceof WorktreeError && e.code === c;
 
@@ -41,12 +41,12 @@ describe('B-1: no writable hooks directory', () => {
     sh(fx.repo, 'config', 'core.hooksPath', '.githooks');
     const ws = await fx.manager.create({ repoPath: fx.repo, slug: 'hooky' });
     write(path.join(ws.path, 'a.txt'), 'edited\n');
-    await fx.manager.status(ws.path);
-    await fx.manager.restoreFromRunBase({ path: path.join(ws.path, 'a.txt') });
+    await fx.manager.status(ws.path, exp(ws.path));
+    await fx.manager.restoreFromRunBase({ path: path.join(ws.path, 'a.txt') , expectedWorktree: exp(path.join(ws.path, 'a.txt'))});
     write(path.join(ws.path, 'a.txt'), 'edited again\n');
-    await fx.manager.finalise({ path: ws.path, outcome: 'archived', discardConfirmation: await confirmFor(fx.manager, ws.path, ws.id, 'finalise') });
+    await fx.manager.finalise({ path: ws.path, expectedWorktree: exp(ws.path), outcome: 'archived', discardConfirmation: await confirmFor(fx.manager, ws.path, ws.id, 'finalise') });
     await fx.manager.sweepSnapshotRefs(fx.repo);
-    await fx.manager.remove({ path: ws.path, discardConfirmation: await confirmFor(fx.manager, ws.path, ws.id, 'remove') });
+    await fx.manager.remove({ path: ws.path, expectedWorktree: exp(ws.path), discardConfirmation: await confirmFor(fx.manager, ws.path, ws.id, 'remove') });
     assert.equal(existsSync(marker), false);
   });
 
@@ -88,16 +88,16 @@ describe('B-2: filter drivers never run in the daemon', () => {
     none();
     // bytes are checked out raw, never smudged
     assert.equal(readFileSync(path.join(ws.path, 'sub', 'b.txt'), 'utf8'), 'bravo\n');
-    assert.equal((await fx.manager.status(ws.path)).dirty.length, 0);
+    assert.equal((await fx.manager.status(ws.path, exp(ws.path))).dirty.length, 0);
     write(path.join(ws.path, 'a.txt'), 'agent edit\n');
     write(path.join(ws.path, 'run.sh'), '#!/bin/sh\nchanged\n');
-    await fx.manager.restoreFromRunBase({ path: path.join(ws.path, 'run.sh') });
+    await fx.manager.restoreFromRunBase({ path: path.join(ws.path, 'run.sh') , expectedWorktree: exp(path.join(ws.path, 'run.sh'))});
     write(path.join(ws.path, 'a.txt'), 'second edit\n');
-    const fin = await fx.manager.finalise({ path: ws.path, outcome: 'abandoned', discardConfirmation: await confirmFor(fx.manager, ws.path, ws.id, 'finalise') });
+    const fin = await fx.manager.finalise({ path: ws.path, expectedWorktree: exp(ws.path), outcome: 'abandoned', discardConfirmation: await confirmFor(fx.manager, ws.path, ws.id, 'finalise') });
     // the backup holds the raw bytes, not the clean filter's output
     assert.equal(sh(fx.repo, 'show', `${fin.backupRef}:a.txt`), 'second edit\n');
     await fx.manager.sweepSnapshotRefs(fx.repo);
-    await fx.manager.remove({ path: ws.path, discardConfirmation: await confirmFor(fx.manager, ws.path, ws.id, 'remove') });
+    await fx.manager.remove({ path: ws.path, expectedWorktree: exp(ws.path), discardConfirmation: await confirmFor(fx.manager, ws.path, ws.id, 'remove') });
     none();
   });
 
@@ -106,12 +106,12 @@ describe('B-2: filter drivers never run in the daemon', () => {
     plant(); // an agent in the workspace changes the shared config
     write(path.join(ws.path, 'a.txt'), 'edit\n');
     const denied = (e: unknown) => e instanceof WorktreeError && e.code === 'E_POLICY_DENIED' && e.details['reason'] === 'git-drift';
-    await assert.rejects(fx.manager.restoreFromRunBase({ path: path.join(ws.path, 'a.txt') }), denied);
+    await assert.rejects(fx.manager.restoreFromRunBase({ path: path.join(ws.path, 'a.txt') , expectedWorktree: exp(path.join(ws.path, 'a.txt'))}), denied);
     await assert.rejects(fx.manager.create({ repoPath: fx.repo, slug: 'next' }), denied);
-    await assert.rejects(fx.manager.finalise({ path: ws.path, outcome: 'archived' }), denied);
+    await assert.rejects(fx.manager.finalise({ path: ws.path, expectedWorktree: exp(ws.path), outcome: 'archived' }), denied);
     none();
     await fx.manager.acknowledgeDrift(ws.path);
-    await fx.manager.restoreFromRunBase({ path: path.join(ws.path, 'a.txt') });
+    await fx.manager.restoreFromRunBase({ path: path.join(ws.path, 'a.txt') , expectedWorktree: exp(path.join(ws.path, 'a.txt'))});
     await fx.manager.create({ repoPath: fx.repo, slug: 'next' });
     none();
   });
@@ -124,11 +124,11 @@ describe('B-2: filter drivers never run in the daemon', () => {
     const ws = await m.create({ repoPath: fx.repo, slug: 'sub' });
     write(path.join(ws.path, 'a.txt'), 'edit\n');
     write(path.join(ws.path, 'new.txt'), 'new\n');
-    await m.status(ws.path);
-    await m.previewDiscard(ws.path);
-    await m.restoreFromRunBase({ path: path.join(ws.path, 'a.txt') });
-    await m.finalise({ path: ws.path, outcome: 'archived', discardConfirmation: await confirmFor(m, ws.path, ws.id, 'finalise') });
-    await m.remove({ path: ws.path, deleteBranch: true, discardConfirmation: await confirmFor(m, ws.path, ws.id, 'remove') });
+    await m.status(ws.path, exp(ws.path));
+    await m.previewDiscard(ws.path, exp(ws.path));
+    await m.restoreFromRunBase({ path: path.join(ws.path, 'a.txt') , expectedWorktree: exp(path.join(ws.path, 'a.txt'))});
+    await m.finalise({ path: ws.path, expectedWorktree: exp(ws.path), outcome: 'archived', discardConfirmation: await confirmFor(m, ws.path, ws.id, 'finalise') });
+    await m.remove({ path: ws.path, expectedWorktree: exp(ws.path), deleteBranch: true, discardConfirmation: await confirmFor(m, ws.path, ws.id, 'remove') });
     await m.sweepSnapshotRefs(fx.repo);
     assert.ok(calls.length > 20);
     for (const c of calls) assert.equal(c[0], '--literal-pathspecs');

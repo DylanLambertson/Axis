@@ -15,11 +15,13 @@ import {
   type ChallengeManagerOptions,
   type ResolveResult,
 } from "@axis/challenge";
-import type { Challenge, ChallengeReference, ResolveChallengeRequest } from "@axis/protocol";
+import type { Challenge, ChallengeDetail, ChallengeReference, ResolveChallengeRequest } from "@axis/protocol";
 import type { Logger } from "../log/logger.js";
 import type { Clock } from "../ports/clock.js";
 import { NativeBridge, type NativeControl, type NativeStats } from "./native-bridge.js";
 import { PendingRegistry } from "./pending-registry.js";
+import { PluginChallenges, type PluginChallengeDeps } from "./plugin-approvals.js";
+import { createRunApprovals, type RunApprovals } from "./run-approvals.js";
 import { nativeSummary } from "./summary.js";
 
 /**
@@ -28,7 +30,7 @@ import { nativeSummary } from "./summary.js";
  * `ApprovalGate` the daemon takes as `DaemonOptions.approvals`, and the narrow port the `axis.approvals/1` handlers
  * use. Nothing here hands the manager, a proof or a challenge id to a handler.
  *
- * The adapter follows `docs/packages.md` "Wiring the daemon" and "Adapter rules" and adds nothing to them: both
+ * The adapter follows `docs/packages/daemon.md` "Wiring the daemon" and "Adapter rules" and adds nothing to them: both
  * `args` and `requestDigest: input.digest` go to `issue` and `consume` (the manager computes its own digest and
  * refuses a mismatch); identity comes only from `input.identity`, `input.actor` and `input.connectionId`; the
  * approval is spent by `consume` before the action runs and exactly once; a `ChallengeError` becomes an
@@ -74,12 +76,19 @@ export interface ApprovalsDeps {
    * action (the approval is already spent). Absent, or `undefined` for a method that needs none: no capability.
    */
   readonly capability?: (input: ApprovalInput, content: ApprovalContent) => unknown;
+  /**
+   * The plugin branch's dependencies (PV-K1e-a2, `gate/plugin-approvals.ts`). Absent, every challenge a plugin causes is refused
+   * before it exists: the host passes them from PV-K1e-b on, when the plugin handlers open.
+   */
+  readonly plugins?: PluginChallengeDeps;
 }
 
 /** What the `axis.approvals/1` handlers may do. The caller is the attested identity, never a payload value. */
 export interface ApprovalsPort {
   resolve(caller: { readonly actor: string; readonly windowId: string }, request: ResolveChallengeRequest): ResolveResult;
   pending(windowId: string): Challenge[];
+  /** The full request of one pending plugin challenge of the caller's window, or undefined for every other case alike. */
+  detail(caller: { readonly actor: string; readonly windowId: string; readonly clientKind: string }, challengeId: string): ChallengeDetail | undefined;
 }
 
 export interface ApprovalsStats {
@@ -91,7 +100,14 @@ export interface ApprovalsStats {
 export interface Approvals {
   readonly gate: ApprovalGate;
   readonly port: ApprovalsPort;
+  /** Composer tool-call approvals over the same manager and listing (`gate/run-approvals.ts`, DMN-3). */
+  readonly runs: RunApprovals;
   stats(): ApprovalsStats;
+  /**
+   * End every open challenge of one plugin in one project at once, as its requester (PV-K2 K2-g1: a revoke or a disable). Never
+   * another plugin's, another project's or a user's challenge. Returns how many were ended. Never throws.
+   */
+  endPlugin(pluginId: string, projectId: string): number;
   /** Cancel every native wait and forget every listing. Idempotent. */
   dispose(): void;
 }
@@ -137,10 +153,17 @@ export function createApprovals(deps: ApprovalsDeps): Approvals {
     ttlMs: ttl,
     maxEntries: Math.min(waitLimit, total),
     ...(perWindow === undefined ? {} : { maxPerWindow: Math.min(perWindow, waitLimit, total) }),
-    onLost: (l) => quietWithdraw(l.challengeId, { actor: l.actor as ActorId, connectionId: l.connectionId }),
+    onLost: (l) => {
+      quietWithdraw(l.challengeId, { actor: l.actor as ActorId, connectionId: l.connectionId });
+      runs.ended(l.challengeId);
+    },
     apply: (a) => {
       try {
-        manager.confirmNative({ windowId: a.windowId }, { challengeId: a.challengeId, proof: a.proof, confirmed: a.confirmed });
+        const result = manager.confirmNative({ windowId: a.windowId }, { challengeId: a.challengeId, proof: a.proof, confirmed: a.confirmed });
+        runs.confirmed(result);
+      } catch (e) {
+        runs.ended(a.challengeId); // a burned or ended challenge: a run's wait declines
+        throw e;
       } finally {
         registry.remove(a.challengeId);
       }
@@ -156,6 +179,15 @@ export function createApprovals(deps: ApprovalsDeps): Approvals {
       throw new AxisError("E_INTERNAL", "The preflight check must be synchronous", { reason: "preflight_async" });
     }
   };
+
+  const runs = createRunApprovals({
+    manager,
+    listing: registry,
+    now: () => clock.now(),
+    ttlMs: ttl,
+    preflight,
+    native: { reserve: (w) => bridge.reserve(w), start: (r, held) => bridge.start(r, held), end: (id) => bridge.end(id) },
+  });
 
   // Challenges whose connection closed while `issue` waited for the native request: not listed, not withdrawn twice.
   const gone = new Set<string>();
@@ -176,9 +208,29 @@ export function createApprovals(deps: ApprovalsDeps): Approvals {
   const issuedTiers = new Map<string, number>();
   const ISSUED_CAP = Math.min(total * 2, 131_072);
 
+  const plugins = new PluginChallenges({
+    deps: deps.plugins,
+    monotonic: () => clock.monotonic(),
+    lifetimeMs: ttl + (deps.limits?.confirmationTtlMs ?? 30_000),
+    audit: deps.audit,
+  });
+
   const forget = (challengeId: string): void => {
     registry.remove(challengeId);
     bridge.end(challengeId);
+    plugins.forget(challengeId);
+  };
+
+  /**
+   * A plugin challenge whose binding no longer holds is ended for good. Any call on its id may get here (a bystander's too), but
+   * the withdraw always uses the requester's own identity, and it ends only a challenge whose binding has already failed.
+   */
+  const endUnbound = (challengeId: string): boolean => {
+    const h = plugins.holds(challengeId);
+    if (!h.plugin || h.ok) return false;
+    quietWithdraw(challengeId, { actor: h.actor as ActorId, connectionId: h.connectionId });
+    forget(challengeId);
+    return true;
   };
 
   const quietWithdraw = (challengeId: string, caller: { actor: ActorId; connectionId: string }): void => {
@@ -196,6 +248,10 @@ export function createApprovals(deps: ApprovalsDeps): Approvals {
       // A tier is an integer: anything else (the manager would default it to the native tier) is refused before anything exists.
       if (!Number.isInteger(input.tier)) throw new ApprovalError("E_INVALID_ARGUMENT");
       preflight(input.tier);
+      // A plugin's challenge goes to its host window, after its bounds and binding are checked (refused outright when the
+      // plugin branch is not wired: PV-K1e-a2 is inert until PV-K1e-b).
+      const plugin = input.identity.clientKind === "plugin" ? plugins.prepare(input, content) : undefined;
+      const windowId = plugin?.windowId ?? input.identity.windowId;
       // A native wait is reserved BEFORE the challenge exists, so a full bridge refuses with no challenge, no audit row
       // and no quota used (a withdrawn challenge would keep counting against its window for the whole TTL).
       let reservation: { release(): void } | undefined;
@@ -215,9 +271,10 @@ export function createApprovals(deps: ApprovalsDeps): Approvals {
           contentDigest: content.contentDigest,
           actor: input.actor,
           connectionId: input.connectionId,
-          windowId: input.identity.windowId,
+          windowId,
           tier: input.tier,
         });
+        plugin?.track(challenge.challengeId);
       } catch (e) {
         reservation?.release();
         throw toGateError(e);
@@ -244,7 +301,7 @@ export function createApprovals(deps: ApprovalsDeps): Approvals {
         if (gone.has(challenge.challengeId)) {
           bridge.end(challenge.challengeId);
         } else {
-          registry.add(challenge, input.identity.windowId, input.connectionId);
+          registry.add(challenge, windowId, input.connectionId, plugins.requester(challenge.challengeId));
         }
       } catch (e) {
         reservation?.release();
@@ -271,6 +328,13 @@ export function createApprovals(deps: ApprovalsDeps): Approvals {
       // The tier the call claims must be the tier the challenge was issued at (checked before the spend, so a refusal costs nothing).
       const issuedAt = issuedTiers.get(approval.challengeId);
       if (issuedAt !== undefined && issuedAt !== input.tier) throw new ApprovalError("E_CONFLICT");
+      // A plugin approval is spent only while its binding (grant generation, host window) still holds; the content hook's
+      // digest is checked again by the manager, and PV-K1e-b's action re-checks under the project mutex.
+      if (endUnbound(approval.challengeId)) throw new ApprovalError("E_CONFLICT");
+      // Fail closed (review a2-1b S1): a plugin connection spends only an approval whose binding is tracked. The entry outlives
+      // the manager's token, so this refuses nothing today; it keeps the spend checked if that ever stops being true.
+      const tracked = input.identity.clientKind === "plugin" ? plugins.tracked(approval.challengeId) : undefined;
+      if (input.identity.clientKind === "plugin" && tracked === undefined) throw new ApprovalError("E_CONFLICT");
       try {
         const result = await manager.consume(
           approval.challengeId,
@@ -285,7 +349,9 @@ export function createApprovals(deps: ApprovalsDeps): Approvals {
             currentContentDigest: content.contentDigest,
           },
           (confirmed) => {
-            const capability = issuedAt === input.tier ? deps.capability?.(input, content) : undefined; // an unknown issue tier gets none
+            // An unknown issue tier gets none. A plugin challenge hands the handler what its binding recorded at issue (the approved
+            // grant generation, review K2 S2), so the handler compares the live grant with what the user approved.
+            const capability = issuedAt === input.tier ? (tracked?.approved ?? deps.capability?.(input, content)) : undefined;
             return action(capability === undefined ? confirmed : { ...confirmed, capability });
           },
         );
@@ -298,6 +364,11 @@ export function createApprovals(deps: ApprovalsDeps): Approvals {
         if (e instanceof ChallengeError && e.detail["executed"] === true) {
           forget(approval.challengeId);
           issuedTiers.delete(approval.challengeId);
+        } else if (tracked !== undefined && tracked.actor === input.actor && tracked.connectionId === input.connectionId && e instanceof ChallengeError && (e.code === "E_CONFLICT" || e.code === "E_POLICY_DENIED") && (e.detail["state"] === undefined || TERMINAL.has(String(e.detail["state"])))) {
+          // The plugin's own spend that the manager ended without running it (a request or content mismatch, an expired token):
+          // free its one open slot now instead of at the entry's deadline (review a2-1b N4). A spend that came before the user's
+          // answer (`not_live` with a live state) ends nothing and frees nothing; nor does a bystander's refusal.
+          plugins.forget(approval.challengeId);
         }
         throw toGateError(e);
       }
@@ -305,7 +376,7 @@ export function createApprovals(deps: ApprovalsDeps): Approvals {
 
     withdraw(challengeId: string, caller: { readonly actor: ActorId; readonly connectionId: string }): unknown {
       // Ended already by its connection closing during `issue`: nothing to withdraw, and no audit row for it.
-      if (gone.delete(challengeId)) return undefined;
+      if (gone.delete(challengeId)) return (plugins.forget(challengeId), undefined);
       quietWithdraw(challengeId, { actor: caller.actor, connectionId: caller.connectionId });
       return undefined;
     },
@@ -323,6 +394,7 @@ export function createApprovals(deps: ApprovalsDeps): Approvals {
         }
       }
       registry.removeConnection(connectionId);
+      plugins.forgetConnection(connectionId);
       bridge.endConnection(connectionId);
       return undefined;
     },
@@ -330,6 +402,8 @@ export function createApprovals(deps: ApprovalsDeps): Approvals {
 
   const port: ApprovalsPort = {
     resolve(caller, request) {
+      // A plugin challenge whose binding no longer holds is ended first; the manager then answers as for any ended challenge.
+      endUnbound(request.challengeId);
       let result: ResolveResult;
       try {
         result = manager.resolve(caller, request);
@@ -339,29 +413,58 @@ export function createApprovals(deps: ApprovalsDeps): Approvals {
         const state = e instanceof ChallengeError ? e.detail["state"] : undefined;
         if (e instanceof ChallengeError && e.code === "E_CONFLICT" && (state === undefined || TERMINAL.has(String(state)))) {
           forget(request.challengeId);
+          runs.ended(request.challengeId);
         }
         throw e;
       }
+      // A run's wait learns of the user's approval first: the dialog's answer may be applied at once just below.
+      runs.settled(result);
       if (result.state === "approved" && result.nativeRequired) {
         // Approved by the user: no longer a prompt to answer, though the dialog is still awaited.
         registry.remove(result.challengeId);
         bridge.userApproved(result.challengeId);
+      } else if (result.state === "approved") {
+        // Approved, waiting to be spent: no longer listed, but a plugin approval keeps its binding until the spend checks it.
+        registry.remove(result.challengeId);
+        bridge.end(result.challengeId);
       } else forget(result.challengeId);
       return result;
     },
-    pending: (windowId) => registry.list(windowId),
+    // A plugin challenge whose binding no longer holds (its host window's lifetime ended, PV-K2 K2-g4b; or its grant changed) is
+    // ended here too, so a reopened window never lists a card from the lifetime before.
+    pending: (windowId) => {
+      for (const c of registry.list(windowId)) endUnbound(c.challengeId);
+      return registry.list(windowId);
+    },
+    detail: (caller, challengeId) => {
+      endUnbound(challengeId);
+      return plugins.detail(caller, challengeId, registry.has(challengeId));
+    },
   };
 
   let disposed = false;
   return {
     gate,
     port,
+    runs,
     stats: () => Object.freeze({ pending: registry.size, native: bridge.stats(), withdrawErrors }),
+    endPlugin(pluginId: string, projectId: string): number {
+      let ended = 0;
+      for (const c of plugins.ofPlugin(pluginId, projectId)) {
+        quietWithdraw(c.challengeId, { actor: c.actor as ActorId, connectionId: c.connectionId });
+        forget(c.challengeId);
+        runs.ended(c.challengeId);
+        ended++;
+      }
+      return ended;
+    },
     dispose() {
       if (disposed) return;
       disposed = true;
+      runs.dispose();
       bridge.dispose();
       registry.clear();
+      plugins.clear();
       issuedTiers.clear();
     },
   };

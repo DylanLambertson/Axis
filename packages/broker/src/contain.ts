@@ -222,11 +222,11 @@ export interface WriteOptions {
   readonly signal?: AbortSignal;
 }
 
-const cancelled = (signal: AbortSignal | undefined): void => {
+export const cancelled = (signal: AbortSignal | undefined): void => {
   if (signal?.aborted === true) throw new BrokerError("E_CANCELLED", "aborted", "the call was cancelled");
 };
 
-function checkLimit(n: unknown): number {
+export function checkLimit(n: unknown): number {
   if (typeof n !== "number" || !Number.isInteger(n) || n < 0 || n > 64 * 1024 * 1024) throw invalid("invalid-call", "the size limit is not valid");
   return n;
 }

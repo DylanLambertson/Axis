@@ -3,8 +3,8 @@ import assert from "node:assert/strict";
 import { mkdirSync, rmSync } from "node:fs";
 import { test, type TestContext } from "node:test";
 import * as path from "node:path";
-import { newKey, type Client } from "./approvals-rig.js";
-import { createWs as createWsRaw, gitSkipReason, worktreesRig, type Rig } from "./worktrees-rig.js";
+import { type Client } from "./approvals-rig.js";
+import { finaliseApproved, createWs as createWsRaw, gitSkipReason, worktreesRig, type Rig } from "./worktrees-rig.js";
 
 const skip = gitSkipReason();
 const createWs = (user: Client, name?: string) => createWsRaw(user, (_m, x) => (assert.equal(x.ok, true, JSON.stringify(x.error)), x), name);
@@ -37,14 +37,14 @@ async function repairDuringReconcile(t: TestContext, tamper: boolean) {
   t.after(() => r.cleanup());
   const user = await r.connect();
   const { id } = await createWs(user);
-  assert.equal((await user.call("axis.worktrees", "finalise", { id, outcome: "archived" }, newKey())).ok, false);
+  assert.equal((await finaliseApproved(r, user, id, "archived")).ok, false);
   state.fail = false;
   const second = path.join(r.tmp, "repo2");
   mkdirSync(second);
   r.git(second, "init", "-q");
   r.git(second, "symbolic-ref", "HEAD", "refs/heads/main");
   r.git(second, "commit", "-q", "--allow-empty", "-m", "init");
-  r.journal.registerProject({ id: "proj-2", path: second, displayName: "two", trusted: true, actor: "user" });
+  r.journal.registerProject({ id: "proj-2", path: second, displayName: "two", trusted: false, actor: "user" });
   assert.deepEqual((await r.binding.service.reconcile(live)).needsAttention, [{ workspaceId: id, reason: "finalise_incomplete" }]);
   if (tamper) r.db.exec(`UPDATE agent_workspaces SET base_sha = '${"1".repeat(40)}' WHERE id = '${id}'`);
   const reached = new Promise<void>((res) => (hold.reached = res));

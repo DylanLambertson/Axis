@@ -8,7 +8,7 @@ import {
 import * as path from 'node:path';
 import { after } from 'node:test';
 import { WorktreeError, WorktreeManager } from '../src/index.js';
-import { confirmFor, makeFixture, sh, write, type Fixture } from './helpers.js';
+import { confirmFor, makeFixture, sh, write, type Fixture, exp } from './helpers.js';
 const fixtures: Fixture[] = [];
 export function fresh(extra: Parameters<typeof makeFixture>[0] = {}): Fixture {
   const f = makeFixture(extra);
@@ -66,8 +66,8 @@ export async function everyBlobPath(fx: Fixture, m: WorktreeManager, a: { path: 
   };
   dirtyA();
   await agentRewritesBaseline(m, a.path);
-  await step('status', () => m.status(a.path));
-  await step('previewDiscard', () => m.previewDiscard(a.path));
+  await step('status', () => m.status(a.path, exp(a.path)));
+  await step('previewDiscard', () => m.previewDiscard(a.path, exp(a.path)));
   await step('takeGitSnapshot', () => m.takeGitSnapshot(a.path));
   let b: { path: string; id: string } | null = null;
   await step('create(next workspace)', async () => {
@@ -75,25 +75,25 @@ export async function everyBlobPath(fx: Fixture, m: WorktreeManager, a: { path: 
   });
   dirtyA();
   await agentRewritesBaseline(m, a.path);
-  await step('restoreFromRunBase', () => m.restoreFromRunBase({ path: path.join(a.path, 'a.txt') }));
+  await step('restoreFromRunBase', () => m.restoreFromRunBase({ path: path.join(a.path, 'a.txt') , expectedWorktree: exp(path.join(a.path, 'a.txt'))}));
   dirtyA();
   await agentRewritesBaseline(m, a.path);
   await step('finalise(dirty, backup)', async () => m.finalise({
-    path: a.path, outcome: 'abandoned', discardConfirmation: await confirmFor(m, a.path, a.id, 'finalise'),
+    path: a.path, expectedWorktree: exp(a.path), outcome: 'abandoned', discardConfirmation: await confirmFor(m, a.path, a.id, 'finalise'),
   }));
   dirtyA();
   await agentRewritesBaseline(m, a.path);
   await step('remove(dirty, backup, --force)', async () => m.remove({
-    path: a.path, discardConfirmation: await confirmFor(m, a.path, a.id, 'remove'),
+    path: a.path, expectedWorktree: exp(a.path), discardConfirmation: await confirmFor(m, a.path, a.id, 'remove'),
   }));
   if (b !== null) {
     const bb: { path: string; id: string } = b;
     // Clean-but-stat-dirty workspace: remove without --force, so git worktree remove runs its own status child.
     await agentRewritesBaseline(m, bb.path).catch(() => undefined);
-    await step('finalise(clean)', () => m.finalise({ path: bb.path, outcome: 'archived' }));
+    await step('finalise(clean)', () => m.finalise({ path: bb.path, expectedWorktree: exp(bb.path), outcome: 'archived' }));
     statDirty(path.join(bb.path, 'a.txt'));
     await agentRewritesBaseline(m, bb.path).catch(() => undefined);
-    await step('remove(clean, no --force)', () => m.remove({ path: bb.path }));
+    await step('remove(clean, no --force)', () => m.remove({ path: bb.path , expectedWorktree: exp(bb.path)}));
   }
   await step('sweepSnapshotRefs', () => m.sweepSnapshotRefs(fx.repo, new Date(Date.now() + 365 * 86_400_000)));
   return log;

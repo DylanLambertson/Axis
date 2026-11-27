@@ -6,7 +6,7 @@ import type { Handler } from "@axis/daemon";
 import { auditListResponseSchema, auditVerifyResponseSchema } from "@axis/protocol";
 import { createAuditHandlers, createDaemonHost, createHandlerRegistrar, type AuditHandlerDeps, type AuditReader } from "../src/index.js";
 import { hostFixture } from "../testing/host-fixture.js";
-import { must, wait } from "./helpers.js";
+import { must, untilTrue } from "./helpers.js";
 
 function memoryLog(n: number): { db: DatabaseSync; log: AuditLog } {
   const db = openDatabase(":memory:");
@@ -20,13 +20,13 @@ const unlock = (db: DatabaseSync): void => db.exec("DROP TRIGGER audit_events_no
 
 const idle = { head: null, anchor: null, lag: 0, oldestUnackedAgeMs: null, stalled: false } as const;
 
-function rig(log: AuditLog, over: Partial<AuditHandlerDeps> = {}) {
+function rig(log: AuditLog, over: Partial<AuditHandlerDeps> = {}, tap: () => void = () => undefined) {
   const verifyCalls: Array<{ from?: ChainHead; limit?: number }> = [];
   let now = 0;
   const audit: AuditReader = {
     list: (o) => log.list(o),
     head: () => log.head(),
-    verify: (o) => (verifyCalls.push({ ...(o?.from === undefined ? {} : { from: o.from }), ...(o?.limit === undefined ? {} : { limit: o.limit }) }), log.verify(o)),
+    verify: (o) => (tap(), verifyCalls.push({ ...(o?.from === undefined ? {} : { from: o.from }), ...(o?.limit === undefined ? {} : { limit: o.limit }) }), log.verify(o)),
   };
   const handlers = createAuditHandlers({
     audit,
@@ -42,27 +42,27 @@ const code = (e: unknown): string | undefined => (e as { code?: string }).code;
 
 test("verify of a 50k-event log never holds the event loop for more than a slice", async () => {
   const { log } = memoryLog(50_000);
-  const t0 = performance.now();
-  assert.equal(log.verify().ok, true);
-  const whole = performance.now() - t0;
-  const r = rig(log, { sliceEvents: 2000 });
-  let maxGap = 0;
-  let last = performance.now();
-  const timer = setInterval(() => {
-    const t = performance.now();
-    maxGap = Math.max(maxGap, t - last);
-    last = t;
-  }, 1);
+  // Counted in event-loop turns, not milliseconds: a ping that re-arms with setImmediate counts one turn per loop
+  // iteration, so a slice that starts with no turn since the previous slice ran into it without yielding. A slice is
+  // at most 2000 events (checked below), so a scan that yields between slices never holds the loop for more than one.
+  let turns = 0;
+  let pinging = true;
+  const ping = (): void => { if (!pinging) return; turns++; setImmediate(ping); };
+  ping();
+  const turnsAtSlice: number[] = [];
+  const r = rig(log, { sliceEvents: 2000 }, () => void turnsAtSlice.push(turns));
   try {
     const out = auditVerifyResponseSchema.parse(await r.run());
     assert.equal(out.ok, true);
     assert.equal(out.ok && out.count, 50_000);
   } finally {
-    clearInterval(timer);
+    pinging = false;
   }
   assert.equal(r.verifyCalls.length, 25);
   assert.ok(r.verifyCalls.every((c) => c.limit === 2000));
-  assert.ok(maxGap < whole / 3, `max gap ${maxGap.toFixed(1)} ms against ${whole.toFixed(1)} ms for one scan`);
+  for (let i = 1; i < turnsAtSlice.length; i++) {
+    assert.ok((turnsAtSlice[i] as number) > (turnsAtSlice[i - 1] as number), `slice ${i + 1} started without the event loop turning since slice ${i}`);
+  }
 });
 
 test("cancellation between slices ends the scan with E_CANCELLED and frees the slot", async () => {
@@ -299,9 +299,9 @@ test("the stall and resume rows are written with their one fixed field and nothi
     for (let i = 0; i < 4; i++) must(s.audit).append({ actor: "daemon", action: "policy.decision", target: `t:${i}`, outcome: "success", payload: { tier: 0 } });
     s.anchors.noteWrite();
     assert.equal(s.anchors.status().stalled, true);
-    await wait(20);
+    await untilTrue(() => fix.supervisor.puts.length > 0, "the head was put to the supervisor", 10_000);
     fix.peer.send({ type: "anchor.ack", seq: must(fix.supervisor.puts.at(-1)).seq });
-    await wait(20);
+    await untilTrue(() => !s.anchors.status().stalled, "the ack ended the stall", 10_000);
     assert.equal(s.anchors.status().stalled, false);
     const rows = s.auditRead.list({ limit: 100 }).filter((e) => e.action.startsWith("anchor."));
     assert.deepEqual(rows.map((e) => [e.action, e.actor, e.target, e.outcome, e.payload]), [

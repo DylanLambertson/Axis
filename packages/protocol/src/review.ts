@@ -3,7 +3,11 @@ import { z } from "zod";
 import { cliRunSchema } from "./cliRuns.js";
 import { axisBranchSchema, objectIdSchema } from "./git.js";
 import { countSchema, displayTextSchema, guarded } from "./guard.js";
+import { reviewContentRequestSchema, reviewContentResponseSchema } from "./review-content.js";
+import { contentIdSchema, fileIdSchema, MAX_REVIEW_PATH } from "./review-ids.js";
 import { runIdSchema, workspaceIdSchema, type MethodSpec } from "./worktrees.js";
+
+export { contentIdSchema, fileIdSchema, MAX_REVIEW_PATH } from "./review-ids.js";
 
 /**
  * `axis.review/1` (docs/design/daemon-host.md section 4.2). `diff` is the read side of `@axis/review`: the changed files
@@ -28,7 +32,6 @@ export const REVIEW_VERSION = 1 as const;
  * `E_INVALID_ARGUMENT`, `reason: "too_large"`) instead of being listed in part, so what the user reviews is all of what is committed.
  */
 export const MAX_REVIEW_FILES = 200;
-export const MAX_REVIEW_PATH = 256;
 /** Files left out of the snapshot for their size: listed (up to this many) so they are not silently missing. */
 export const MAX_REVIEW_SKIPPED = 50;
 const MAX_FILE_TAGS = 4;
@@ -63,26 +66,6 @@ export const CHANGE_KIND_VALUES = ["text", "binary", "symlink", "submodule", "to
 export const changeStatusSchema = z.enum(CHANGE_STATUS_VALUES);
 export const changeKindSchema = z.enum(CHANGE_KIND_VALUES);
 
-/**
- * Names a file within one review. Minted by the host: the SHA-256, in lower-case hex, of the UTF-8 encoding of the repository
- * path as the host DECODED it (`ReviewFile.path`), never of the display string. The host has the path as a string, not as raw
- * bytes, so two different byte paths that decode to the same string would share an id: a path that does not decode as strict
- * UTF-8 (it holds U+FFFD) is therefore `unsafePath` (`not_utf8`), which blocks the tree, and the handler folds entries with
- * equal path strings into one row instead of listing equal ids. Among files that can be committed an id is unique within a
- * response. Two files can show the same `displayPath` (a cut in the middle of long paths) but never the same `fileId`.
- * It is an identity, not a secret.
- */
-export const fileIdSchema = z.string().regex(/^[0-9a-f]{64}$/);
-
-/**
- * The content AND mode binding of an acknowledgement: the SHA-256, in lower-case hex, of the string
- * `<newMode> <newOid>` (for example `100644 3b18e5...`), where mode and oid are the file's entry in the SNAPSHOT TREE the
- * `treeHash` is built from (for a symlink, mode `120000` and the blob of its target). An object id hashes bytes only, so
- * the mode is part of the binding: the same bytes made executable (`100755`) or turned into a symlink (`120000`) give a
- * different `contentId`, and an acknowledgement of one does not carry to the other. Only a `truncated` file has one.
- */
-export const contentIdSchema = z.string().regex(/^[0-9a-f]{64}$/);
-
 /** One acknowledgement: this file, with exactly this content. Both must equal the current entry, byte for byte (no case folding, no normalisation). */
 export const acknowledgementSchema = z.strictObject({ fileId: fileIdSchema, contentId: contentIdSchema });
 export type Acknowledgement = z.infer<typeof acknowledgementSchema>;
@@ -102,6 +85,16 @@ export function isAcknowledged(
 }
 
 const tag = (max: number) => z.array(displayTextSchema(64)).max(max);
+
+/** True when no protected file follows an ordinary one (WT-3: the review lists protected files first). */
+function protectedFirst(files: readonly { readonly protectedPath: boolean }[]): boolean {
+  let ordinary = false;
+  for (const f of files) {
+    if (!f.protectedPath) ordinary = true;
+    else if (ordinary) return false;
+  }
+  return true;
+}
 
 /** One changed file, as `ReviewFile` in `@axis/review` minus the raw paths, object ids and modes. */
 export const reviewFileSchema = z
@@ -127,13 +120,21 @@ export const reviewFileSchema = z
   contentId: contentIdSchema.nullable(),
   /** The request acknowledged this `fileId` AND this `contentId`, and both equal this entry's. Never true for a file that is not truncated. */
   acknowledged: z.boolean(),
-  /** WT-3: names of the protected-path rules that matched. */
+  /**
+   * WT-3, the closed flag: this file's path (either side of a rename, or where a symlink leads) matches a protected-path
+   * rule (CI, hooks, editor tasks, build scripts, the Git directory). True exactly when `protectedRules` is not empty. A
+   * response lists every protected file before every other. For a `truncated` file the flag is part of the `contentId`, so an
+   * acknowledgement given for a file shown as protected does not apply once the file is no longer reported as protected.
+   */
+  protectedPath: z.boolean(),
+  /** WT-3: names of the protected-path rules that matched (at most 4 shown). */
   protectedRules: tag(MAX_FILE_TAGS),
   /** Why only a whole-file decision is offered, when hunks are not. */
   fileLevelReason: displayTextSchema(128).optional(),
   /** Short labels such as `symlink-outside` or `binary`. */
   warnings: tag(MAX_FILE_TAGS),
   })
+  .refine((f) => f.protectedPath === f.protectedRules.length > 0, "the protected flag and the rule names disagree")
   .refine((f) => !f.acknowledged || f.truncated, "only a truncated file can be acknowledged")
   .refine((f) => f.truncated === (f.contentId !== null), "a truncated file, and only a truncated file, has a content id");
 export type ReviewFileWire = z.infer<typeof reviewFileSchema>;
@@ -188,6 +189,7 @@ export const reviewDiffResponseSchema = guarded(
     .refine((r) => r.treeHash === null || !r.files.some((f) => f.unsafePath || f.kind === "filtered"), "a tree needs committable files")
     .refine((r) => r.treeHash === null || !r.files.some((f) => f.truncated && !f.acknowledged), "a tree needs every cut file acknowledged")
     .refine((r) => new Set(r.files.map((f) => f.fileId)).size === r.files.length, "duplicate file id")
+    .refine((r) => protectedFirst(r.files), "protected files come first")
     .refine((r) => r.skippedCount >= r.skipped.length && r.skipped.length === Math.min(r.skippedCount, MAX_REVIEW_SKIPPED), "skipped list does not match its count"),
 );
 
@@ -201,6 +203,14 @@ export const reviewMethods = {
   diff: {
     request: reviewDiffRequestSchema,
     response: reviewDiffResponseSchema,
+    sideEffect: "read",
+    tier: 1,
+    idempotency: "none",
+    timeoutMs: 30_000,
+  },
+  content: {
+    request: reviewContentRequestSchema,
+    response: reviewContentResponseSchema,
     sideEffect: "read",
     tier: 1,
     idempotency: "none",

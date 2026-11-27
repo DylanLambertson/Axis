@@ -90,7 +90,7 @@ interface Shape {
  */
 const SHAPES: Readonly<Record<string, Shape>> = {
   'config': { flags: ['--null', '--list', '--show-origin', '--show-scope'], required: ['--null', '--list'], positional: false },
-  'rev-parse': { flags: ['--verify', '--quiet'] },
+  'rev-parse': { flags: ['--verify', '--quiet', '--git-path'] },
   'symbolic-ref': { flags: ['-q', '--short'], maxPositional: 1 },
   'show-ref': { flags: ['--verify', '--quiet'] },
   'check-ref-format': { flags: ['--branch'] },
@@ -98,8 +98,8 @@ const SHAPES: Readonly<Record<string, Shape>> = {
   'update-ref': { flags: ['-d'] },
   'branch': { flags: ['-D'], required: ['-D'] },
   'merge-base': { flags: ['--is-ancestor'] },
-  'rev-list': { flags: ['--left-right', '--count'] },
-  'ls-tree': { flags: ['-r', '-z', '-l', '--full-tree'] },
+  'rev-list': { flags: ['--left-right', '--count', '--objects'] },
+  'ls-tree': { flags: ['-r', '-t', '-z', '-l', '--full-tree'] },
   'cat-file': { flags: ['--batch', '--batch-check'] },
   'ls-files': { flags: ['-z', '-s', '--cached', '--others', '--exclude-standard', '--ignored', '--directory'], positional: false },
   'write-tree': { positional: false },
@@ -115,8 +115,8 @@ const SHAPES: Readonly<Record<string, Shape>> = {
   'worktree list': { flags: ['--porcelain', '-z'], positional: false },
 };
 
-/** The only variable a caller may add to git's environment (a temporary index in a private directory). */
-const CALLER_ENV = new Set(['GIT_INDEX_FILE']);
+/** The only variables a caller may add to git's environment: a temporary index, and the two that make the merged check ignore replace refs and grafts. */
+const CALLER_ENV = new Set(['GIT_INDEX_FILE', 'GIT_NO_REPLACE_OBJECTS', 'GIT_GRAFT_FILE']);
 
 /** Leading `-c` pairs a caller may add (commit identity only); any other global option is refused. */
 const CALLER_CONFIG = /^user\.(name|email)=/;
@@ -164,7 +164,9 @@ export function runsNoFilters(args: readonly string[]): boolean {
  * hooks off, core.fsmonitor=false, no signing, literal pathspecs, a timeout,
  * and only command shapes that cannot start a filter driver (clean, smudge,
  * process) or an editor (`runsNoFilters`); any other command is refused, so
- * nothing the repository configuration names can execute in the daemon.
+ * nothing the repository configuration names can execute in the daemon. A
+ * read of an object that a partial clone lacks does not fetch it (the
+ * runner's lazy-fetch pins, `help.autocorrect=0` here).
  */
 export class HardenedGit {
   private readonly timeoutMs: number;
@@ -184,6 +186,12 @@ export class HardenedGit {
       '-c', 'core.fsmonitor=false',
       '-c', 'commit.gpgsign=false',
       '-c', 'core.askPass=',
+      // protocol.allow=never is only a default (a repository's protocol.<name>.allow outranks it); the runner's
+      // GIT_NO_LAZY_FETCH / GIT_ALLOW_PROTOCOL carry the lazy-fetch protection. Autocorrect off: with `/` the only allowed
+      // protocol, a repository's `remote.<name>.vcs=/` makes git look for `git remote-/`, which autocorrect would turn
+      // into an `alias.remote-a` the repository defines.
+      '-c', 'protocol.allow=never',
+      '-c', 'help.autocorrect=0',
       ...(noOptionalLocks ? ['--no-optional-locks'] : []),
     ];
   }

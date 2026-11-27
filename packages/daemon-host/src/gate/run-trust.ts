@@ -3,6 +3,7 @@ import { attestTrust } from "@axis/runs/daemon-attestation";
 import type { Clock } from "../ports/clock.js";
 import type { RunTrustAttestation, RunTrustMinter } from "../ports/runs.js";
 import { runFailure } from "../runs/errors.js";
+import { consumeTicket } from "./project-trust.js";
 
 /**
  * The one file that mints the single-use `TrustAttestation` (design section 6.2, TRU-2). A minter is made from the host's
@@ -12,9 +13,11 @@ import { runFailure } from "../runs/errors.js";
  * from the journal row and the attested connection, never from a payload. A malformed fact is refused here with a fixed
  * error instead of reaching the package.
  */
-export function createRunTrustMinter(clock: Pick<Clock, "now">): RunTrustMinter {
+export function createRunTrustMinter(clock: Pick<Clock, "now" | "monotonic">): RunTrustMinter {
   return {
-    attest(facts: { readonly workspaceId: string; readonly projectId: string }): RunTrustAttestation {
+    attest(facts: { readonly workspaceId: string; readonly projectId: string }, ticket: unknown): RunTrustAttestation {
+      // The gate's ticket first (project-registration-and-trust.md §5.4): no attestation without the whole gate.
+      consumeTicket(ticket, facts, () => clock.monotonic());
       try {
         const issuedAt = clock.now();
         return attestTrust({ workspaceId: facts.workspaceId, projectId: facts.projectId, issuedAt }) as unknown as RunTrustAttestation;

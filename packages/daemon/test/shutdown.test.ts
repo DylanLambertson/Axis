@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { test, type TestContext } from "node:test";
 import { DrainGate, ShutdownCoordinator, type FlushableIdempotencyStore, type IdempotencyKey, MemoryIdempotencyStore } from "../src/index.js";
-import { CONTRACT, KEY1, req, rig, type Rig } from "./harness.js";
+import { CONTRACT, KEY1, drain, req, rig, untilTrue, type Rig } from "./harness.js";
 
 async function ready(t: TestContext, options: Parameters<typeof rig>[0] = {}): Promise<Rig> {
   const r = rig(options);
@@ -10,7 +10,6 @@ async function ready(t: TestContext, options: Parameters<typeof rig>[0] = {}): P
   await r.handshake();
   return r;
 }
-const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const never = () => new Promise<never>(() => undefined);
 function deferred<T = void>() {
   let resolve!: (v: T) => void;
@@ -25,8 +24,7 @@ test("SD1: new requests are refused with E_UNAVAILABLE and no handler starts; in
   let started = 0;
   r.daemon.register(CONTRACT, 1, { echo: () => (started++, gate.promise) });
   r.send(req("a", "echo", { text: "a" }));
-  await wait(20);
-  assert.equal(started, 1);
+  await untilTrue(() => started === 1, undefined, "the handler started");
   const done = r.daemon.shutdown("test");
   r.send(req("b", "echo", { text: "b" }));
   assert.equal((await r.inbox.response("b")).error?.code, "E_UNAVAILABLE");
@@ -41,9 +39,10 @@ test("SD1: new requests are refused with E_UNAVAILABLE and no handler starts; in
 test("SD2: new connections are closed while draining and after shutdown", async (t) => {
   const r = await ready(t);
   const gate = deferred<{ text: string }>();
-  r.daemon.register(CONTRACT, 1, { echo: () => gate.promise });
+  let started = 0;
+  r.daemon.register(CONTRACT, 1, { echo: () => (started++, gate.promise) });
   r.send(req("a", "echo", { text: "a" }));
-  await wait(20);
+  await untilTrue(() => started === 1, undefined, "the handler started");
   const done = r.daemon.shutdown("test");
   const late = r.connect("good#conn-2");
   assert.equal(await late.inbox.closedWithin(), true);
@@ -56,14 +55,16 @@ test("SD2: new connections are closed while draining and after shutdown", async 
 test("SD3: at the end of the grace period remaining handlers are cancelled through the cancel path and callers get E_CANCELLED", async (t) => {
   const r = await ready(t, fast);
   let aborted = false;
+  let entered = false;
   r.daemon.register(CONTRACT, 1, {
     echo: (c) =>
       new Promise((resolve) => {
+        entered = true;
         c.signal.addEventListener("abort", () => ((aborted = true), resolve({ text: "late" })));
       }),
   });
   r.send(req("a", "echo", { text: "a" }));
-  await wait(10);
+  await untilTrue(() => entered, undefined, "the handler started");
   const res = await r.daemon.shutdown("test");
   assert.equal(aborted, true);
   assert.equal((await r.inbox.response("a")).error?.code, "E_CANCELLED");
@@ -73,29 +74,30 @@ test("SD3: at the end of the grace period remaining handlers are cancelled throu
 test("SD4: a handler that ignores cancellation keeps its slot and orphan count; shutdown still finishes and reports it", async (t) => {
   const r = await ready(t, { ...fast, limits: { maxInFlight: 1 } });
   const release = deferred<{ text: string }>();
-  r.daemon.register(CONTRACT, 1, { echo: () => release.promise });
+  let entered = false;
+  r.daemon.register(CONTRACT, 1, { echo: () => ((entered = true), release.promise) });
   r.send(req("a", "echo", { text: "a" }));
-  await wait(10);
+  await untilTrue(() => entered, undefined, "the handler started");
   const res = await r.daemon.shutdown("test");
   assert.equal(res.unsettled, 1);
   assert.equal(res.graceful, false);
   assert.equal(r.daemon.orphanedHandlers, 1, "the slot is not freed while the handler runs");
   release.resolve({ text: "a" });
-  await wait(20);
-  assert.equal(r.daemon.orphanedHandlers, 0, "released when it finally settles");
+  await untilTrue(() => r.daemon.orphanedHandlers === 0, undefined, "the orphan slot was released when the handler settled");
 });
 
 test("SD5: shutdown is idempotent: same promise, first reason wins, escalate before/after is harmless", async (t) => {
   const r = await ready(t);
   r.daemon.escalate(); // before: no effect, must not poison the later shutdown
   const gate = deferred<{ text: string }>();
-  r.daemon.register(CONTRACT, 1, { echo: () => gate.promise });
+  let entered = false;
+  r.daemon.register(CONTRACT, 1, { echo: () => ((entered = true), gate.promise) });
   r.send(req("a", "echo", { text: "a" }));
-  await wait(10);
+  await untilTrue(() => entered, undefined, "the handler started");
   const p1 = r.daemon.shutdown("first");
   const p2 = r.daemon.shutdown("second");
   assert.equal(p1, p2);
-  await wait(30);
+  await drain(); // one settle (a promise-turn check, two macrotasks; the stubs are promise-only): the second call must not have started anything of its own
   gate.resolve({ text: "a" });
   const res = await p1;
   assert.equal(res.reason, "first");
@@ -105,15 +107,16 @@ test("SD5: shutdown is idempotent: same promise, first reason wins, escalate bef
 });
 
 test("SD6: escalate skips the grace wait (a long grace ends at once) and still cancels", async (t) => {
-  const r = await ready(t, { shutdown: { graceMs: 600_000, cancelSettleMs: 600_000 } });
+  const r = await ready(t, { shutdown: { graceMs: Infinity, cancelSettleMs: Infinity } }); // no timer at all: only escalate can end a wait
   const ignore = deferred<{ text: string }>();
-  r.daemon.register(CONTRACT, 1, { echo: () => ignore.promise });
+  let entered = false;
+  r.daemon.register(CONTRACT, 1, { echo: () => ((entered = true), ignore.promise) });
   r.send(req("a", "echo", { text: "a" }));
-  await wait(10);
-  const done = r.daemon.shutdown("sig");
-  await wait(10);
+  await untilTrue(() => entered, undefined, "the handler started");
+  const done = r.daemon.shutdown("sig"); // the grace wait is armed synchronously
   r.daemon.escalate(); // ends the grace wait; the cancel then waits for settle
-  await wait(10);
+  assert.equal((await r.inbox.response("a", 5_000)).error?.code, "E_CANCELLED"); // the cancel happened: the settle wait is the one in progress
+  await drain();
   r.daemon.escalate(); // ends the settle wait
   const res = await done;
   assert.equal(res.escalated, true);
@@ -124,16 +127,17 @@ test("SD6: escalate skips the grace wait (a long grace ends at once) and still c
 
 test("SD7: a request whose handler is not started when the grace ends never starts it", async (t) => {
   const audit = deferred();
-  const r = await ready(t, { ...fast, audit: { append: () => audit.promise } });
+  let appended = false;
+  const r = await ready(t, { ...fast, audit: { append: () => ((appended = true), audit.promise) } });
   let started = 0;
   r.daemon.register(CONTRACT, 1, { echo: () => (started++, { text: "x" }) });
   r.send(req("a", "echo", { text: "a" })); // parked in the audit sink
-  await wait(10);
+  await untilTrue(() => appended, undefined, "the request reached the audit sink");
   const res = await r.daemon.shutdown("test");
   assert.equal(started, 0);
   assert.equal(res.cancelled, 1);
   audit.resolve();
-  await wait(10);
+  await drain(); // one settle (a promise-turn check, two macrotasks; the stubs are promise-only), then one assert: the released request must not start its handler now
   assert.equal(started, 0);
 });
 
@@ -154,9 +158,10 @@ test("SD8: the idempotency store is flushed once, after in-flight work completed
   const store = new FlushStore();
   const r = await ready(t, { idempotency: store });
   const gate = deferred<{ n: number }>();
-  r.daemon.register(CONTRACT, 1, { write: () => gate.promise });
+  let entered = false;
+  r.daemon.register(CONTRACT, 1, { write: () => ((entered = true), gate.promise) });
   r.send(req("w", "write", { n: 1 }, { idempotencyKey: KEY1 }));
-  await wait(10);
+  await untilTrue(() => entered, undefined, "the handler started");
   const done = r.daemon.shutdown("test");
   gate.resolve({ n: 1 });
   const res = await done;

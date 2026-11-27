@@ -19,14 +19,16 @@ export {
 } from './gitSnap.js';
 export { SLUG_PATTERN, WorkspaceMetaSchema, type WorkspaceMeta } from './meta.js';
 export { MAX_SNAPSHOT_FILE_BYTES, type SnapshotResult } from './snapshotRef.js';
+export type { SnapshotFinding, SnapshotScanner } from './snapshotScan.js';
 export {
   BACKUP_RETENTION_DAYS, RUNBASE_RETENTION_DAYS, WorktreeManager, type ActiveRunOp, type WorktreeManagerOptions,
 } from './manager.js';
 export {
   parsePorcelainStatus,
-  type CreateInput, type CreatedWorkspace, type DirtyFile, type FinaliseOutcome, type FinaliseResult,
+  type CreateInput, type CreatedWorkspace, type DirtyFile, type ExpectedWorktree, type FinaliseOutcome, type FinaliseResult,
   type RemoveResult, type RestoreResult, type WorkspaceStatus, type WorktreeInfo,
 } from './types.js';
 export type { DiscardScan } from './discard.js';
 export { acquireFileLock } from './lock.js';
 export { createHooksGuard, redact, type HooksGuard } from './hardenedGit.js';
+export { MERGED_CHECK_ENV, verifyMerged, type MergedProbe, type MergedVerdict } from './mergedCheck.js';

@@ -1,8 +1,10 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
+import { consumeTicket, untrusted } from "../gate/project-trust.js";
+import type { PortContext } from "../ports/common.js";
 import { promises as fs } from "node:fs";
 import * as path from "node:path";
 import type { AuditActor, AuditLog } from "@axis/audit";
-import type { Journal, Workspace } from "@axis/journal";
+import { baseBranchSchema, type Journal, type Workspace } from "@axis/journal";
 import type { RunsService } from "../ports/runs.js";
 import type { RandomSource } from "../ports/random.js";
 import type { WorktreeLocator } from "../ports/worktree-locator.js";
@@ -19,7 +21,7 @@ import { workspaceSlug } from "./slug.js";
 
 export type ServiceJournal = Pick<
   Journal,
-  | "getProject" | "listProjects" | "getWorkspace" | "listWorkspaces" | "createWorkspace" | "setWorktreePath"
+  | "getProject" | "listProjects" | "getWorkspace" | "listWorkspaces" | "createWorkspace" | "setWorktreePath" | "recordBaseBranch"
   | "transitionWorkspace" | "lockWorkspace" | "unlockWorkspace" | "getRun" | "listRuns"
 >;
 
@@ -32,6 +34,8 @@ export interface WorktreesServiceDeps {
   readonly locator: WorktreeLocator;
   readonly mutex: ProjectMutex;
   readonly runs: Pick<RunsService, "hasActiveRun">;
+  /** Monotonic milliseconds: the project trust ticket's clock. */
+  readonly now: () => number;
   readonly random: RandomSource;
   readonly platform: NodeJS.Platform;
   /** Checks a restore path on disk before anything is written (default: `assertSafeRestorePath`). A test seam; never weaken it in the product. */
@@ -60,6 +64,11 @@ const exists = (p: string | null): Promise<boolean> => (p === null ? Promise.res
  */
 export function createWorktreesService(deps: WorktreesServiceDeps): WorktreesRuntime {
   const { journal, manager, locator, mutex } = deps;
+  // The project trust gate, right before the first write and inside the mutex; the ticket is spent here (no hook: refused).
+  const gated = async (ctx: PortContext, scope: { readonly projectId: string; readonly workspaceId?: string }): Promise<void> => {
+    if (ctx.trust === undefined) throw untrusted();
+    consumeTicket(await ctx.trust(scope), scope, deps.now);
+  };
   let attention = new Map<string, string>();
   // True after a reconcile that did not finish (aborted by the startup budget, failed, or cut at the report cap): until a
   // full one completes, EVERY workspace needs attention (design section 3 step 9, gate G-12); never "nothing is wrong".
@@ -88,7 +97,7 @@ export function createWorktreesService(deps: WorktreesServiceDeps): WorktreesRun
   async function inspect(ws: Workspace, signal: AbortSignal): Promise<WorktreeInfo> {
     try {
       const ref = await locator.locate(ws.id);
-      return workspaceInfo(ws, await manager.status(ref.workTree), true);
+      return workspaceInfo(ws, await manager.status(ref.workTree, { path: ref.workTree, id: ws.id }), true);
     } catch {
       signal.throwIfAborted();
       return workspaceInfo(ws, undefined, await exists(ws.worktreePath));
@@ -141,6 +150,7 @@ export function createWorktreesService(deps: WorktreesServiceDeps): WorktreesRun
           const branch = `axis/${slug}`;
           const baseSha = await manager.resolveCommit(project.path, baseRef);
           ctx.signal.throwIfAborted();
+          await gated(ctx, { projectId: project.id });
           // Journal first: the row exists (CREATING) before the repository changes, so a crash leaves a visible state.
           const id = journal.createWorkspace({ projectId: project.id, branch, baseRef, baseSha, createdBy: actor }).value.id;
           try {
@@ -149,10 +159,14 @@ export function createWorktreesService(deps: WorktreesServiceDeps): WorktreesRun
               if (made.baseSha !== baseSha || made.branch !== branch || made.id !== id) throw worktreeFailure("E_CONFLICT", "base_moved");
               return deps.transact(() => {
                 journal.setWorktreePath(id, made.path, actor);
+                // Recorded here, by the daemon, before the workspace is READY: `merged` is later judged against this alone. The
+                // manager keeps a base branch only when its exact ref held `baseSha` (checked above), so that is its tip (FU-WT-BASE2).
+                const recorded = made.baseBranch !== null && baseBranchSchema.safeParse(made.baseBranch).success ? made.baseBranch : null;
+                if (recorded !== null) journal.recordBaseBranch(id, recorded, baseSha, actor);
                 const ws = journal.transitionWorkspace(id, "READY", { actor, expectedFrom: "CREATING" });
                 deps.audit.append({
                   actor, action: "worktree.create", target: `workspace:${id}`, outcome: "success",
-                  payload: { workspaceId: id, projectId: project.id, branch, baseRef, baseSha },
+                  payload: { workspaceId: id, projectId: project.id, branch, baseRef, baseSha, ...(recorded === null ? {} : { baseBranch: recorded }) },
                 });
                 return ws;
               });
@@ -186,7 +200,7 @@ export function createWorktreesService(deps: WorktreesServiceDeps): WorktreesRun
             const project = journal.getProject(ws.projectId);
             if (project === undefined) throw worktreeFailure("E_NOT_FOUND");
             const target = `workspace:${ws.id}`;
-            const live = await manager.status(ref.workTree);
+            const live = await manager.status(ref.workTree, { path: ref.workTree, id: ws.id });
             if (live.id !== ws.id) throw worktreeFailure("E_CONFLICT", "path_changed");
             const recovering = live.state === "FINALISED"; // git's record says done while the journal says READY
             // Journal first: the intent is audited BEFORE git changes (the audit log has no "started" outcome, so the intent row is
@@ -201,7 +215,7 @@ export function createWorktreesService(deps: WorktreesServiceDeps): WorktreesRun
               if (recovering) {
                 outcome = await verifyFinalised(manager, project.path, ws, live, ref.workTree, req.outcome);
               } else {
-                const done = await manager.finalise({ path: ref.workTree, outcome: req.outcome, discardConfirmation: ctx.confirmation });
+                const done = await manager.finalise({ path: ref.workTree, expectedWorktree: { path: ref.workTree, id: ws.id }, outcome: req.outcome, discardConfirmation: ctx.confirmation, trustedBaseBranch: ws.baseBranch, trustedBaseTip: ws.baseTip });
                 backupRef = done.backupRef;
                 skippedLarge = done.skippedLarge.length;
               }
@@ -251,7 +265,7 @@ export function createWorktreesService(deps: WorktreesServiceDeps): WorktreesRun
           journal.transitionWorkspace(ws.id, "REMOVING", { actor, reason: "REMOVE_REQUESTED", expectedFrom: "FINALISED" });
           try {
             return await withLockRecord(ws.id, actor, async () => {
-              const done = await manager.remove({ path: ref.workTree, deleteBranch: req.deleteBranch === true, discardConfirmation: ctx.confirmation });
+              const done = await manager.remove({ path: ref.workTree, expectedWorktree: { path: ref.workTree, id: ws.id }, deleteBranch: req.deleteBranch === true, discardConfirmation: ctx.confirmation });
               deps.transact(() => {
                 journal.transitionWorkspace(ws.id, "REMOVED", { actor, expectedFrom: "REMOVING" });
                 deps.audit.append({
@@ -298,13 +312,14 @@ export function createWorktreesService(deps: WorktreesServiceDeps): WorktreesRun
           const ref = await locator.locate(ws.id);
           // Before any write: every path must be a plain file path inside THIS workspace (a symlink in it could lead elsewhere).
           for (const rel of req.paths) await deps.restorePathCheck(ref.workTree, rel, deps.platform);
+          await gated(ctx, { projectId: ws.projectId, workspaceId: ws.id });
           return withLockRecord(ws.id, actor, async () => {
             const restored: string[] = [];
             let backupRef: string | undefined;
             try {
               for (const rel of req.paths) {
                 ctx.signal.throwIfAborted();
-                const one = await manager.restoreFromRunBase({ path: path.join(ref.workTree, ...rel.split("/")), runId: run.id, expectedWorktree: ref.workTree });
+                const one = await manager.restoreFromRunBase({ path: path.join(ref.workTree, ...rel.split("/")), runId: run.id, expectedWorktree: { path: ref.workTree, id: ws.id } });
                 // The file is written: count it (and so audit it) BEFORE any check of what the manager says it wrote.
                 restored.push(rel);
                 backupRef ??= one.backupRef; // the first backup holds the state before anything was restored
@@ -334,7 +349,8 @@ export function createWorktreesService(deps: WorktreesServiceDeps): WorktreesRun
       return mutex.run(
         ws.projectId,
         async () => {
-          const scan = await manager.previewDiscard((await locator.locate(ws.id)).workTree);
+          const { workTree } = await locator.locate(ws.id);
+          const scan = await manager.previewDiscard(workTree, { path: workTree, id: ws.id });
           return {
             fingerprint: scan.fingerprint, dirtyFiles: scan.dirty.length, skippedLarge: scan.skippedLarge.length,
             ignored: scan.ignored.length, skippedUnsupported: scan.skippedUnsupported.length,
@@ -346,7 +362,10 @@ export function createWorktreesService(deps: WorktreesServiceDeps): WorktreesRun
 
     async assertNoDrift(workspaceId, ctx) {
       const ws = liveWorkspace(journal, workspaceId);
-      await mutex.run(ws.projectId, async () => manager.assertNoDrift((await locator.locate(ws.id)).workTree), ctx.signal);
+      await mutex.run(ws.projectId, async () => {
+        const { workTree } = await locator.locate(ws.id);
+        await manager.assertNoDrift(workTree, { path: workTree, id: ws.id });
+      }, ctx.signal);
     },
 
     async reconcile(signal) {

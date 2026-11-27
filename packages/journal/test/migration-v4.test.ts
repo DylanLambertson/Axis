@@ -47,13 +47,13 @@ test("a fresh database reaches the current version with the new tables and colum
   const audit = new AuditLog(db);
   Journal.open(db, { audit });
   assert.equal(schemaVersion(db, "journal"), JOURNAL_SCHEMA_VERSION);
-  assert.equal(JOURNAL_SCHEMA_VERSION, 4);
-  assert.deepEqual(columns(db, "projects"), ["id", "path", "display_name", "trusted", "created_at", "updated_at"]);
+  assert.ok(JOURNAL_SCHEMA_VERSION >= 4);
+  assert.deepEqual(columns(db, "projects"), ["id", "path", "display_name", "trusted", "created_at", "updated_at", "common_dir", "git_dir_id", "trust_changed_at"]);
   for (const c of ["worktree_path", "lock_state", "locked_at", "last_pushed_sha", "reviewed_tree_hash", "reviewed_at", "finalise_outcome"]) {
     assert.ok(columns(db, "agent_workspaces").includes(c), c);
   }
   assert.deepEqual((db.prepare("PRAGMA foreign_key_check").all() as unknown[]), []);
-  assert.deepEqual(db.prepare("PRAGMA foreign_key_list(agent_runs)").all().map((r) => (r as { table: string }).table), ["agent_workspaces"]);
+  assert.deepEqual(db.prepare("PRAGMA foreign_key_list(agent_runs)").all().map((r) => (r as { table: string }).table).sort(), ["agent_workspaces", "agents"]);
 });
 
 test("upgrading a populated version 3 database keeps every row, every index and the foreign keys", () => {
@@ -67,7 +67,7 @@ test("upgrading a populated version 3 database keeps every row, every index and 
     clock: dump(db, "daemon_idempotency_clock", "id"),
   };
   const journal = Journal.open(db, { audit });
-  assert.equal(schemaVersion(db, "journal"), 4);
+  assert.equal(schemaVersion(db, "journal"), JOURNAL_SCHEMA_VERSION);
   const pick = (rows: unknown[], keys: string[]) => rows.map((r) => Object.fromEntries(keys.map((k) => [k, (r as Record<string, unknown>)[k]])));
   const oldCols = Object.keys(before.ws[0] as object);
   assert.deepEqual(pick(dump(db, "agent_workspaces", "id"), oldCols), before.ws, "old columns carried over unchanged");
@@ -79,7 +79,8 @@ test("upgrading a populated version 3 database keeps every row, every index and 
     assert.equal(r["reviewed_tree_hash"], null);
     assert.equal(r["finalise_outcome"], null);
   }
-  assert.deepEqual(dump(db, "agent_runs", "id"), before.runs);
+  assert.deepEqual((dump(db, "agent_runs", "id") as Array<Record<string, unknown>>).map(({ agent_id: _a, ...rest }) => rest), before.runs, "version 12 adds only agent_id");
+  for (const r of dump(db, "agent_runs", "id")) assert.equal((r as Record<string, unknown>)["agent_id"], null);
   assert.deepEqual(dump(db, "state_transitions", "id"), before.tr);
   assert.deepEqual(dump(db, "idempotency", "scope, key"), before.idem);
   assert.deepEqual(dump(db, "daemon_idempotency", "key"), before.didem);
@@ -110,7 +111,7 @@ test("the audit chain tables are byte for byte the same after the upgrade and th
 test("running the migration again changes nothing, including after data was written to the new columns", () => {
   const { db, audit } = oldDatabase();
   const journal = Journal.open(db, { audit });
-  journal.registerProject({ id: "proj-a", path: "/work/a", displayName: "A", trusted: true, actor: "user" });
+  journal.registerProject({ id: "proj-a", path: "/work/a", displayName: "A", trusted: false, actor: "user" });
   journal.setWorktreePath("w-ready", "/work/a/.axis/w-ready", "daemon");
   const schema = schemaOf(db);
   const ws = dump(db, "agent_workspaces", "id");
@@ -120,11 +121,11 @@ test("running the migration again changes nothing, including after data was writ
   assert.deepEqual(schemaOf(db), schema);
   assert.deepEqual(dump(db, "agent_workspaces", "id"), ws);
   assert.deepEqual(audit.head(), head, "re-opening writes no audit event");
-  assert.equal(schemaVersion(db, "journal"), 4);
+  assert.equal(schemaVersion(db, "journal"), JOURNAL_SCHEMA_VERSION);
 });
 
 test("a database from a newer build, or any version above the known one, is refused and left untouched", () => {
-  for (const future of [5, 99, 2 ** 31]) {
+  for (const future of [JOURNAL_SCHEMA_VERSION + 1, 99, 2 ** 31]) {
     const { db, audit } = oldDatabase();
     Journal.open(db, { audit });
     db.prepare("UPDATE axis_schema SET version = ? WHERE component = 'journal'").run(future);
@@ -137,13 +138,13 @@ test("a database from a newer build, or any version above the known one, is refu
   }
 });
 
-test("a downgrade is not a migration: there is no way back to version 3, and an old build refuses a version 4 database", () => {
+test("a downgrade is not a migration: there is no way back to version 3, and an old build refuses a newer database", () => {
   const { db, audit } = oldDatabase();
   Journal.open(db, { audit });
   // What a version 3 build does with this database: its list has three entries.
   assert.throws(() => runMigrations(db, "journal", V3), code("E_UNAVAILABLE"));
-  assert.equal(schemaVersion(db, "journal"), 4);
-  assert.deepEqual(columns(db, "projects").length, 6);
+  assert.equal(schemaVersion(db, "journal"), JOURNAL_SCHEMA_VERSION);
+  assert.deepEqual(columns(db, "projects").length, 9);
 });
 
 test("a migration that fails late rolls back everything, schema and data, in one step", () => {
@@ -160,7 +161,7 @@ test("a migration that fails late rolls back everything, schema and data, in one
   assert.deepEqual(dump(db, "agent_runs", "id"), rows.runs);
   // The old database still opens and upgrades cleanly afterwards.
   Journal.open(db, { audit: new AuditLog(db) });
-  assert.equal(schemaVersion(db, "journal"), 4);
+  assert.equal(schemaVersion(db, "journal"), JOURNAL_SCHEMA_VERSION);
 });
 
 test("a leftover half-made table from an earlier failed attempt makes the migration fail without changing anything", () => {

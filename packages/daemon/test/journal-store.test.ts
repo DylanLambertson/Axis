@@ -7,12 +7,11 @@ import { JournalIdempotencyStore } from "@axis/journal";
 import type { ContractRegistry, IdempotencyStore } from "../src/index.js";
 import { DaemonError } from "../src/index.js";
 import { approveAndRun, fakeGate } from "./gate.js";
-import { KEY1, req, rig, testRegistry } from "./harness.js";
+import { KEY1, drain as settle, req, rig, testRegistry, untilTrue } from "./harness.js";
 
 /** Compile-time check: the journal store is assignable to the daemon's interface (a drifting method fails the build). */
 export const assignable = (s: JournalIdempotencyStore): IdempotencyStore => s;
 
-const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 function realStore(): JournalIdempotencyStore {
   const db = openDatabase(":memory:");
@@ -41,7 +40,8 @@ test("R1: a tier-2 write that times out leaves its key unknown, so the retry doe
   r.daemon.register("axis.test", 1, { write: abortingWrite(runs) });
   r.send(req("t1", "write", { n: 1 }, { idempotencyKey: KEY1, timeoutMs: 30 }));
   assert.equal((await r.inbox.response("t1")).error?.code, "E_TIMEOUT");
-  await wait(60);
+  await untilTrue(() => r.daemon.orphanedHandlers === 0, 5_000, "the aborted handler settled");
+  await settle(); // the key is marked unknown in the continuation after the handler settles
   r.send(req("t2", "write", { n: 1 }, { idempotencyKey: KEY1 }));
   const retry = await r.inbox.response("t2");
   assert.equal(retry.error?.code, "E_CONFLICT");
@@ -55,10 +55,11 @@ test("R1: a cancelled tier-2 write leaves its key unknown", async (t) => {
   const runs = { n: 0 };
   r.daemon.register("axis.test", 1, { write: abortingWrite(runs) });
   r.send(req("c1", "write", { n: 1 }, { idempotencyKey: KEY1 }));
-  await wait(20);
+  await untilTrue(() => runs.n === 1, 5_000, "the handler started");
   r.send({ v: 1, cancel: "c1" });
   assert.equal((await r.inbox.response("c1")).error?.code, "E_CANCELLED");
-  await wait(60);
+  await untilTrue(() => r.daemon.orphanedHandlers === 0, 5_000, "the cancelled handler settled");
+  await settle(); // the key is marked unknown in the continuation after the handler settles
   r.send(req("c2", "write", { n: 1 }, { idempotencyKey: KEY1 }));
   assert.equal((await r.inbox.response("c2")).error?.details?.reason, "outcome-unknown");
   assert.equal(runs.n, 1);
@@ -74,9 +75,11 @@ for (const where of ["begin", "decision audit"] as const) {
     let release!: () => void;
     const held = new Promise<void>((resolve) => (release = resolve));
     let hold = true;
+    let reached = false;
     const once = async (): Promise<void> => {
       if (!hold) return;
       hold = false;
+      reached = true;
       await held;
     };
     const store: IdempotencyStore = {
@@ -92,11 +95,13 @@ for (const where of ["begin", "decision audit"] as const) {
     const audit = { append: (): Promise<void> | void => (where === "decision audit" && real.size > 0 ? once() : undefined) };
     const r = await ready(t, { idempotency: store, audit });
     let runs = 0;
-    r.daemon.register("axis.test", 1, { write: (_c, p: { n: number }) => (runs++, p) });
+    r.daemon.register("axis.test", 1, { write: (_c, p: { n: number }) => (runs++, p), echo: (_c, p: { text: string }) => p });
     r.send(req("b1", "write", { n: 1 }, { idempotencyKey: KEY1 }));
-    await wait(20);
+    await untilTrue(() => reached, 5_000, `the request is held in ${where}`);
     r.send({ v: 1, cancel: "b1" });
-    await wait(20);
+    // Messages on one port are handled in order: the probe's answer proves the daemon has processed the cancel before the hold is released.
+    r.send(req("probe", "echo", { text: "x" }));
+    await r.inbox.response("probe", 5_000);
     release();
     assert.equal((await r.inbox.response("b1")).error?.code, "E_CANCELLED");
     assert.equal(runs, 0, "the handler never started");
@@ -127,7 +132,7 @@ test("S3: tier 4, the approval gate fails after the action ran: a second approva
   r.daemon.register("axis.test", 1, { danger: () => (runs++, { done: true }) });
   const first = await r.inbox.response(await approveAndRun(r, "g", { id: "ws-1" }));
   assert.equal(first.error?.code, "E_INTERNAL");
-  await wait(20);
+  await settle(); // the key is marked unknown in the continuation after the failed gate
   r.send(req("g-3", "danger", { id: "ws-1" }, { idempotencyKey: KEY1 }));
   const retry = await r.inbox.response("g-3");
   assert.equal(retry.error?.details?.reason, "outcome-unknown");

@@ -1,18 +1,26 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import { AuditLog, AxisError, type ChainHead, type DatabaseSync, type InstanceLock, type Redactor } from "@axis/audit";
-import { Journal, JournalIdempotencyStore } from "@axis/journal";
+import { Journal, JournalIdempotencyStore, lastTransitionId, transitionsSince, type TransitionTail } from "@axis/journal";
 import { PROTOCOL_VERSION } from "@axis/protocol";
 import type { HostConfig } from "./config.js";
 import type { ControlClient } from "./control/client.js";
 import { Disposables, type DisposeResult } from "./disposables.js";
 import { CHALLENGE_PAYLOAD_ALLOWLIST } from "./gate/audit-sink.js";
 import { REVIEW_PAYLOAD_ALLOWLIST } from "./handlers/review-audit.js";
+import { AGENT_PAYLOAD_ALLOWLIST } from "./bindings/agent.js";
+import { PROVIDERS_PAYLOAD_ALLOWLIST } from "./bindings/providers.js";
+import { INTEGRATIONS_PAYLOAD_ALLOWLIST } from "./integrations/service.js";
+import { TAINT_PAYLOAD_ALLOWLIST } from "./composer/taint.js";
+import { MESSAGES_PAYLOAD_ALLOWLIST } from "./messages/audit.js";
+import { PAGES_PAYLOAD_ALLOWLIST } from "./pages/service.js";
+import { TASKS_PAYLOAD_ALLOWLIST } from "./tasks/service.js";
+import { FORGE_PAYLOAD_ALLOWLIST } from "./forge/service.js";
 import { RUN_PAYLOAD_ALLOWLIST } from "./bindings/runs.js";
 import { ANCHOR_PAYLOAD_ALLOWLIST } from "./anchor/preflight.js";
 import { DegradedStartError } from "./exit-codes.js";
 import { summarizeError } from "./log/summarize-error.js";
 import type { Logger } from "./log/logger.js";
-import { checkCoverage, policySurface, RuleTablePolicy, InMemoryTrustRegistry, type PolicySurface } from "./policy/index.js";
+import { checkCoverage, checkPluginCoverage, policySurface, RuleTablePolicy, InMemoryTrustRegistry, type PolicySurface } from "./policy/index.js";
 import type { Clock } from "./ports/clock.js";
 import type { StoragePort } from "./ports/storage.js";
 import type { TrustRegistry } from "./ports/trust.js";
@@ -85,11 +93,15 @@ export interface HostOptions {
 }
 
 /** The reads of the journal, safe in every mode. A frozen facade of closures: no writer is reachable from it. */
-export type JournalReader = Pick<Journal, "getWorkspace" | "listWorkspaces" | "getRun" | "listRuns" | "transitions" | "listProjects">;
+export type JournalReader = Pick<Journal, "getWorkspace" | "listWorkspaces" | "getRun" | "listRuns" | "transitions" | "listProjects"> & {
+  /** Committed transitions after the row `afterId`, oldest first (the event sources' cursor, docs/design/events.md). */
+  transitionsSince(afterId: number, limit: number): TransitionTail[];
+  lastTransitionId(): number;
+};
 /** The reads of the audit log, safe in every mode (`axis.audit/1.list`, `verify`, `status`). A frozen facade too. */
 export type AuditReader = Pick<AuditLog, "list" | "verify" | "head">;
 
-function journalReader(j: Journal): JournalReader {
+function journalReader(j: Journal, db: DatabaseSync): JournalReader {
   return Object.freeze({
     getWorkspace: (id: string) => j.getWorkspace(id),
     listWorkspaces: (o?: Parameters<Journal["listWorkspaces"]>[0]) => j.listWorkspaces(o),
@@ -97,6 +109,8 @@ function journalReader(j: Journal): JournalReader {
     listRuns: (o?: Parameters<Journal["listRuns"]>[0]) => j.listRuns(o),
     transitions: (e: "workspace" | "run", id: string) => j.transitions(e, id),
     listProjects: () => j.listProjects(),
+    transitionsSince: (afterId: number, limit: number) => transitionsSince(db, afterId, limit),
+    lastTransitionId: () => lastTransitionId(db),
   });
 }
 
@@ -169,7 +183,8 @@ function degradedSurface(full: PolicySurface): PolicySurface {
     const picked = Object.fromEntries(Object.entries(methods).filter(([m]) => DEGRADED_METHODS.has(`${contract}.${m}`)));
     if (Object.keys(picked).length > 0) registry[contract] = picked;
   }
-  return { registry, rules: keep(full.rules), planned: keep(full.planned) };
+  // Nothing planned is kept: a degraded host has no planned rows, so it has no planned contracts either.
+  return { registry, rules: keep(full.rules), planned: keep(full.planned), plannedRegistry: {} };
 }
 
 const STEP_ERRORS: ReadonlySet<string> = new Set(["E_CONFLICT", "E_INVALID_ARGUMENT", "E_POLICY_DENIED"]);
@@ -227,7 +242,7 @@ export function createDaemonHost(config: HostConfig, ports: StartupPorts, option
       redactor: ports.redactor,
       now: () => new Date(ports.clock.now()),
       // The challenge rows keep their `method`; the anchor rows keep their one fixed field (a literal, never caller text); the review acknowledgement keeps its file id.
-      payloadAllowlist: { ...CHALLENGE_PAYLOAD_ALLOWLIST, ...ANCHOR_PAYLOAD_ALLOWLIST, ...REVIEW_PAYLOAD_ALLOWLIST, ...RUN_PAYLOAD_ALLOWLIST },
+      payloadAllowlist: { ...CHALLENGE_PAYLOAD_ALLOWLIST, ...ANCHOR_PAYLOAD_ALLOWLIST, ...REVIEW_PAYLOAD_ALLOWLIST, ...RUN_PAYLOAD_ALLOWLIST, ...AGENT_PAYLOAD_ALLOWLIST, ...PROVIDERS_PAYLOAD_ALLOWLIST, ...TAINT_PAYLOAD_ALLOWLIST, ...MESSAGES_PAYLOAD_ALLOWLIST, ...FORGE_PAYLOAD_ALLOWLIST, ...PAGES_PAYLOAD_ALLOWLIST, ...TASKS_PAYLOAD_ALLOWLIST, ...INTEGRATIONS_PAYLOAD_ALLOWLIST },
     });
     const check = await checkAnchor(audit, () => ports.control.anchorGet({ timeoutMs: options.anchorTimeoutMs ?? 5_000, signal: startup.signal }));
     alive();
@@ -277,12 +292,14 @@ export function createDaemonHost(config: HostConfig, ports: StartupPorts, option
     const full = policySurface(config.contracts);
     const surface = degraded === undefined ? full : degradedSurface(full);
     const trust = ports.trust ?? new InMemoryTrustRegistry();
-    const policy = new RuleTablePolicy(trust, surface.rules);
+    // Plugin calls read the journal's grants; the plugin sets are checked against the full served table (fails closed).
+    const policy = new RuleTablePolicy(trust, surface.rules, degraded === undefined ? { state: (pluginId, projectId) => journal.plugins.state(pluginId, projectId) } : undefined);
     checkCoverage(surface);
+    checkPluginCoverage();
     const served = [...new Set(Object.keys(surface.registry).map((k) => k.slice(0, k.indexOf("/"))))];
     alive();
     const services: HostServices = Object.freeze({
-      journalRead: journalReader(journal),
+      journalRead: journalReader(journal, db),
       auditRead: auditReader(audit),
       journal: degraded === undefined ? journal : undefined,
       audit: degraded === undefined ? audit : undefined,

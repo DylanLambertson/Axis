@@ -1,4 +1,5 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
+import { projectGated, trustCallOf, type ProjectTrustGate } from "../gate/project-trust.js";
 import { DaemonError, type Handler, type HandlerContext } from "@axis/daemon";
 import type { WorktreesMethod, WorktreesRequest } from "@axis/protocol";
 import type { PortContext } from "../ports/common.js";
@@ -6,7 +7,7 @@ import type { WorktreesService } from "../ports/worktrees.js";
 import { toDaemonError, worktreeFailure } from "../worktrees/errors.js";
 
 /**
- * `axis.worktrees/1` (design section 4.2): six methods over the `WorktreesService` port. Nothing here touches a path, git
+ * `axis.worktrees/1` (design section 4.2): eight methods over the `WorktreesService` port. Nothing here touches a path, git
  * or the journal. Who is calling comes from `ctx.identity` only (the payload names a workspace, never an actor), and
  * the only thing taken from a spent approval is `ctx.approved.capability`, passed through untouched for the service to
  * hand to the manager: a handler never makes one. A workspace the last reconcile found in disagreement answers
@@ -15,6 +16,8 @@ import { toDaemonError, worktreeFailure } from "../worktrees/errors.js";
  */
 export interface WorktreesHandlerDeps {
   readonly service: WorktreesService;
+  /** The project trust gate: handed to the service as `PortContext.trust` for create, restore and discard. */
+  readonly gate: ProjectTrustGate;
   /** True for a workspace the last reconcile reported (see `createWorktreesBinding`). */
   readonly needsAttention: (workspaceId: string, method?: string) => boolean;
 }
@@ -28,7 +31,14 @@ function portContext(context: HandlerContext): PortContext {
   };
 }
 
+/** The gate bound to this caller's window and signal, for a gated method only. */
+const trustFor = (gate: ProjectTrustGate, context: HandlerContext) => (scope: { readonly projectId: string; readonly workspaceId?: string }) =>
+  gate.admit({ ...scope, caller: trustCallOf(context.identity), signal: context.signal });
+
+const notServed = (): Promise<never> => Promise.reject(worktreeFailure("E_UNAVAILABLE", "not_available"));
+
 export function createWorktreesHandlers(deps: WorktreesHandlerDeps): Readonly<Record<WorktreesMethod, Handler>> {
+  const withTrust = (ctx: PortContext, context: HandlerContext): PortContext => ({ ...ctx, trust: trustFor(deps.gate, context) });
   const run =
     <M extends WorktreesMethod>(
       method: M,
@@ -55,9 +65,15 @@ export function createWorktreesHandlers(deps: WorktreesHandlerDeps): Readonly<Re
   return {
     list: run<"list">("list", none, (p, ctx) => deps.service.list(p, ctx)),
     status: run<"status">("status", (p) => p.ids, (p, ctx) => deps.service.status(p, ctx)),
-    create: run<"create">("create", none, (p, ctx) => deps.service.create(p, ctx)),
-    finalise: run<"finalise">("finalise", (p) => [p.id], (p, ctx) => deps.service.finalise(p, ctx)),
+    create: projectGated(run<"create">("create", none, (p, ctx, context) => deps.service.create(p, withTrust(ctx, context)))),
+    finalise: run<"finalise">("finalise", (p) => [p.id], (p, ctx, context) => (approved(context), deps.service.finalise(p, ctx))),
     remove: run<"remove">("remove", (p) => [p.id], (p, ctx, context) => (approved(context), deps.service.remove(p, ctx))),
-    restoreFromRunBase: run<"restoreFromRunBase">("restoreFromRunBase", (p) => [p.id], (p, ctx) => deps.service.restoreFromRunBase(p, ctx)),
+    restoreFromRunBase: projectGated(run<"restoreFromRunBase">("restoreFromRunBase", (p) => [p.id], (p, ctx, context) => deps.service.restoreFromRunBase(p, withTrust(ctx, context)))),
+    // The contract and policy rows exist (ticket P1d); the service behind them does not (it needs a discard entry point and a
+    // user-editing set in `@axis/worktrees`). Until then both answer a fixed refusal and touch nothing.
+    // Not served yet; marked gated so the row and its handler agree. When it is served it MUST pass `withTrust` to the service,
+    // whose discard then spends the ticket like create and restore (the mark alone guards nothing).
+    discard: projectGated(run<"discard">("discard", (p) => [p.id], notServed)),
+    setUserEditing: run<"setUserEditing">("setUserEditing", (p) => [p.id], notServed),
   };
 }

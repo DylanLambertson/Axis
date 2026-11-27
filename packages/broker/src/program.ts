@@ -1,6 +1,6 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 // PTY-4: the program a command will start, found and pinned when the policy decides and checked again when it runs.
-import { resolveExecutable, nodeFs } from "@axis/pty-policy";
+import { isPlainAbsolute, resolveExecutable, nodeFs } from "@axis/pty-policy";
 import { BrokerError, denied, invalid } from "./errors.js";
 import type { BrokerFs } from "./fs.js";
 import { isUnder } from "./contain.js";
@@ -72,7 +72,11 @@ async function shebang(d: Deps, real: string): Promise<{ readonly line: string }
 export async function pinProgram(d: Deps, command: unknown, env: Env, exclude: readonly string[]): Promise<PinnedProgram> {
   if (typeof command !== "string") throw invalid("invalid-command", "the command is not valid");
   let exe: string;
-  if (/^[A-Za-z]:[\\/]|^\//.test(command)) {
+  // Absolute for THIS platform only: a drive path on POSIX (or a root-relative one on Windows) would resolve against the
+  // daemon's working directory (review c3 r1 SF-2), so it is neither absolute nor a bare name and is refused.
+  const absolute = isPlainAbsolute(command, d.platform);
+  if (!absolute && /[\\/]|^[A-Za-z]:/.test(command)) throw invalid("invalid-command", "the command is neither a bare name nor an absolute path");
+  if (absolute) {
     const realExe = await d.fs.realpath(command).catch(() => {
       throw new BrokerError("E_NOT_FOUND", "unresolved-command", "the command was not found");
     });
@@ -88,7 +92,7 @@ export async function pinProgram(d: Deps, command: unknown, env: Env, exclude: r
   const first = await shebang(d, self.real);
   if (first === "none") return { exe, ...self, opaque: false };
   if (first === "unreadable") return { exe, ...self, opaque: true };
-  if (!/^[A-Za-z]:[\\/]|^\//.test(first.line)) throw denied("unresolved-command", "the script's interpreter is not an absolute path");
+  if (!isPlainAbsolute(first.line, d.platform)) throw denied("unresolved-command", "the script's interpreter is not an absolute path");
   const interpreter = await identify(d, first.line);
   // One level is judged and pinned; an interpreter that is itself a script (or unreadable) is not followed.
   return { exe, ...self, interpreter, opaque: (await shebang(d, interpreter.real)) !== "none" };

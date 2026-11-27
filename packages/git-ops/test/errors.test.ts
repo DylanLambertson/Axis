@@ -55,6 +55,9 @@ test("N-2: a timeout kills the whole process group, not just git", async () => {
   assert.notEqual(r.code, 0);
   assert.ok(existsSync(pidFile), "the child started");
   const pid = Number(readFileSync(pidFile, "utf8").trim());
-  await new Promise((res) => setTimeout(res, 200));
+  // The group is killed at exit, but the process is reaped on its own turn: wait for it to be gone (bounded, named) rather than for a duration.
+  for (const end = Date.now() + 10_000; Date.now() < end; await new Promise((res) => setTimeout(res, 10))) {
+    try { process.kill(pid, 0); } catch { break; }
+  }
   assert.throws(() => process.kill(pid, 0), "the grandchild is gone");
 });

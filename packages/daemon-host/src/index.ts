@@ -65,11 +65,15 @@ export * from "./worktrees/restore-paths.js";
 export * from "./worktrees/slug.js";
 // axis.cli-runs/1 over the real RunSupervisor (ticket H10).
 export { createRunsBinding, MAX_TRACKED_GROUPS, RUN_PAYLOAD_ALLOWLIST, type RunsBinding, type RunsBindingDeps } from "./bindings/runs.js";
+export { COMPOSER_SNAPSHOT_TAKE_MS, composerGuardDeps, createRunRepositoryGuard, createRunSnapshotter, gitSnapshotRunSnapshotter, MAX_HELD_SNAPSHOTS, SNAPSHOT_ATTEMPTS, SNAPSHOT_TAKE_MS, SUPERVISOR_SNAPSHOT_MS, type RunSnapshotterDeps, type RunSnapshotterFactory, type SnapshotTaker } from "./bindings/snapshot.js";
 export { createRunTrustMinter } from "./gate/run-trust.js";
 export * from "./handlers/cli-runs.js";
 export * from "./runs/errors.js";
 // axis.git/1 handlers and the GitOpsDeps assembly (ticket H9).
 export { createGitOperations, createGitPort, type GitBindingDeps, type GitOperationsDeps } from "./bindings/git.js";
+export type { ResolvedSshHost, SshHostResolver } from "./bindings/push-target.js";
+export { createSshResolver, parseSshConfig, unavailableSshResolver, type SshProcess, type SshResolverOptions, type SshSpawn } from "./bindings/ssh-resolver.js";
+export { loadPushedBases, savePushedBases, type BaseEntry } from "./storage/pushed-bases-file.js";
 export * from "./handlers/git.js";
 export * from "./handlers/git-errors.js";
 export * from "./handlers/git-wire.js";
@@ -77,4 +81,56 @@ export { PushedBases } from "./handlers/git-common.js";
 // The composition root and its parts (ticket H12).
 export { composeDaemonHost, type ComposeOptions, type ComposedHost } from "./compose.js";
 export * from "./compose-parts.js";
+export { createProjectControl, installProjectControl, projectDisplayName, projectExcludedRoots, type ProjectControlDeps, type ProjectMessage } from "./projects/control.js";
+export { bindingMatches, readRepositoryBinding, type BindingFs, type BindingResult, type RepositoryBinding } from "./projects/binding.js";
+export { createRemoteRunner, displayRemoteUrl, parseRemotes, readRemote, type RemoteSummary } from "./projects/remote.js";
 export * from "./handlers/projects.js";
+// axis.runs/1: composer runs on the mock provider through the broker (ticket C1, docs/design/composer-runtime.md).
+export { AGENT_PAYLOAD_ALLOWLIST, createAgentBinding, taintReceiptOf, COMPOSER_TOOLS, MAX_INFLIGHT_CALLS, MAX_READ_BYTES, shownWhole, MAX_WRITE_BYTES, type AgentBinding, type AgentBindingDeps } from "./bindings/agent.js";
+// The Anthropic connection over the vault (ticket C6).
+export { createProvidersBinding, PROVIDERS_PAYLOAD_ALLOWLIST, type AnthropicConnectionOptions, type ProvidersBinding, type ProvidersBindingDeps } from "./bindings/providers.js";
+export { RunWt2, approvableCommand, commandLimits, commandOf, commandTool, hostCommandLimits, runCommandArgsOn, formatCommandResult, DEFAULT_COMMAND_LIMITS, MAX_ARGV_JSON, RUN_COMMAND, RUN_COMMAND_SPEC, type CommandLimits } from "./bindings/agent-command.js";
+export { DEFAULT_GIT_READ_LIMITS, GIT_COMMANDS, GIT_DIFF, GIT_READ_TIMEOUT_MS, GIT_STATUS, GIT_TOOL_SPECS, MAX_GIT_OUTPUT, checkGitCall, diffCall, escapeGitLine, gitCallTier, formatDiff, formatStatus, gitDiffArgs, gitReadRunnerOptions, gitStatusArgs, gitTools, statusCall, type GitReadLimits } from "./bindings/agent-git.js";
+export { MESSAGE_TOOL_SPECS, MessagesRead, READ_MESSAGES, SEND_MESSAGE, messageTools, messagingReason, readMessagesArgs, sendMessageArgs, sendPreview } from "./bindings/agent-messages.js";
+export * from "./composer/activity.js";
+export * from "./composer/budget.js";
+export * from "./composer/errors.js";
+export * from "./composer/loop.js";
+export * from "./composer/persist.js";
+export * from "./composer/preview.js";
+export * from "./composer/service.js";
+export * from "./composer/taint.js";
+export * from "./gate/run-approvals.js";
+export * from "./handlers/composer-runs.js";
+// The parent side: spawn, restart policy, exit-code handling and shutdown (ticket X1; runs in Electron main).
+export * from "./supervisor.js";
+// axis.messages/1: the message service, its settings and the bridge handlers (ticket PV-M3).
+export * from "./handlers/messages.js";
+export * from "./messages/audit.js";
+export * from "./messages/binding.js";
+export * from "./pages/service.js";
+export { createPagesHandlers, registerPagesHandlers, toPagesError } from "./handlers/pages.js";
+export * from "./tasks/service.js";
+export { createTaskStart, startReceipt, startState, taskPrompt, type TaskStartDeps } from "./tasks/start.js";
+export { createTasksContentHooks, taskContent, type TasksConfirmDeps } from "./tasks/confirm.js";
+export { createTasksHandlers, registerTasksHandlers, toTasksError } from "./handlers/tasks.js";
+export { CREATE_TASK, LIST_TASKS, WORKER_CREATES_PER_RUN, READ_TASK, TASK_TOOL_SPECS, TaskRead, UPDATE_TASK, createTaskArgs, createTaskPreview, listTasksArgs, readTaskArgs, taskReceipt, taskTools, tasksReason, updateTaskArgs, updateTaskPreview } from "./bindings/agent-tasks.js";
+export { createPagesContentHooks, pageContent, type PagesConfirmDeps } from "./pages/confirm.js";
+export { PAGE_TOOL_SPECS, PageRead, READ_PAGE, WRITE_PAGE, lineChange, pageTools, pagesReason, readPageArgs, writePageArgs, writePagePreview } from "./bindings/agent-pages.js";
+export * from "./messages/delivery.js";
+export * from "./messages/limits.js";
+export * from "./messages/participation.js";
+export * from "./messages/endpoint.js";
+export * from "./messages/policy.js";
+export * from "./messages/service.js";
+export * from "./messages/settings.js";
+export { pageByText, principalOf, toWire, StoredRecordError } from "./messages/wire.js";
+export { createForgeService, createMemoryPinStore, ForgeRefusal, FORGE_AUDIT, FORGE_PAYLOAD_ALLOWLIST, DEFAULT_FORGE_LIMITS, type ForgeService, type ForgeServiceDeps, type ForgeListPort, type OriginRead, type ForgeLimits, type PinStore } from "./forge/service.js";
+export { createOriginReader, MAX_ORIGIN_CHARS, type OriginReaderDeps } from "./forge/origin.js";
+export { FORGE_AUTH_UNSUPPORTED, forgeLogLine, forgeRequestId, journalPinStore, registerForgeServing, type ForgeServingDeps, type StoredPins } from "./compose-forge.js";
+export { parseForgeList, forgeDisplay, reduceChecks, reduceReview, type ParsedList } from "./forge/parse.js";
+export { createForgeHandlers, registerForgeHandlers, toForgeError, type ForgeHandlerDeps } from "./handlers/forge.js";
+export { AttentionRefusal, ATTENTION_SCAN_ROWS, countOf, createAttentionService, type AttentionRunRow, type AttentionService, type AttentionServiceDeps } from "./attention/service.js";
+export { createAttentionHandlers, registerAttentionServing } from "./handlers/attention.js";
+export { UsageRefusal, createUsageService, remaining, usageServiceDeps, type UsageService, type UsageServiceDeps, type UsageTotalsRow } from "./usage/service.js";
+export { createUsageHandlers, registerUsageServing } from "./handlers/usage.js";

@@ -7,7 +7,7 @@ import { after, describe, it } from 'node:test';
 import { consumeConfirmation, CONFIRMATION_TTL_MS } from '../src/confirmation.js';
 import { markDiscardConfirmed } from '../src/daemonConfirm.js';
 import { createExecGitRunner, WorktreeError, WorktreeManager, type GitRunner } from '../src/index.js';
-import { makeFixture, write, type Fixture } from './helpers.js';
+import { makeFixture, write, type Fixture, exp } from './helpers.js';
 
 const fixtures: Fixture[] = [];
 after(() => fixtures.forEach((f) => f.cleanup()));
@@ -50,13 +50,13 @@ describe('confirmation tokens', () => {
     const m = new WorktreeManager({ runner, worktreeRoot: fx.root });
     const ws = await m.create({ repoPath: fx.repo, slug: 'spent' });
     write(path.join(ws.path, 'a.txt'), 'dirty\n');
-    const scan = await m.previewDiscard(ws.path);
+    const scan = await m.previewDiscard(ws.path, exp(ws.path));
     failCommit = true; // the backup snapshot fails after the token was accepted
     const token = markDiscardConfirmed({ workspaceId: ws.id, op: 'finalise', fingerprint: scan.fingerprint });
-    await assert.rejects(m.finalise({ path: ws.path, outcome: 'archived', discardConfirmation: token }), WorktreeError);
+    await assert.rejects(m.finalise({ path: ws.path, expectedWorktree: exp(ws.path), outcome: 'archived', discardConfirmation: token }), WorktreeError);
     failCommit = false;
     await assert.rejects(
-      m.finalise({ path: ws.path, outcome: 'archived', discardConfirmation: token }),
+      m.finalise({ path: ws.path, expectedWorktree: exp(ws.path), outcome: 'archived', discardConfirmation: token }),
       (e: unknown) => e instanceof WorktreeError && e.code === 'E_CONFLICT' && e.details['reason'] === 'confirmation-spent',
     );
   });
@@ -66,12 +66,12 @@ describe('confirmation tokens', () => {
     fixtures.push(fx);
     const ws = await fx.manager.create({ repoPath: fx.repo, slug: 'old' });
     write(path.join(ws.path, 'a.txt'), 'dirty\n');
-    const scan = await fx.manager.previewDiscard(ws.path);
+    const scan = await fx.manager.previewDiscard(ws.path, exp(ws.path));
     let t = 0;
     const token = markDiscardConfirmed({ workspaceId: ws.id, op: 'finalise', fingerprint: scan.fingerprint }, { now: () => t });
     t = CONFIRMATION_TTL_MS;
     await assert.rejects(
-      fx.manager.finalise({ path: ws.path, outcome: 'archived', discardConfirmation: token }),
+      fx.manager.finalise({ path: ws.path, expectedWorktree: exp(ws.path), outcome: 'archived', discardConfirmation: token }),
       (e: unknown) => e instanceof WorktreeError && e.code === 'E_CONFLICT' && e.details['reason'] === 'confirmation-expired',
     );
   });

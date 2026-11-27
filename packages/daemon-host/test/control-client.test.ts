@@ -4,7 +4,7 @@ import { getEventListeners } from "node:events";
 import { test } from "node:test";
 import { ChannelMux, ControlClient } from "../src/index.js";
 import { memoryChannelPair, type MemoryEnd } from "../testing/memory-channel.js";
-import { processSnapshot, trackTimers, wait } from "./helpers.js";
+import { processSnapshot, settledTo, trackTimers, wait } from "./helpers.js";
 
 const chal = "C".repeat(43);
 const proof = "q".repeat(32);
@@ -63,7 +63,7 @@ test("settings.get returns the value main sent", async () => {
 
 test("trust.check: trusted resolves; untrusted, no answer and a closed channel all refuse with E_POLICY_DENIED", async () => {
   const { b, client, peer } = setup();
-  const req = { windowId: "win-1", workspaceId: "ws-1", projectId: "p-1" };
+  const req = { windowId: "win-1", workspaceId: "ws-1", projectId: "p-1", projectPath: "/work/repo" };
   const ok = client.trustCheck(req);
   await wait(0);
   assert.deepEqual({ ...last(peer), requestId: undefined }, { type: "trust.check", requestId: undefined, ...req });
@@ -119,29 +119,34 @@ test("cancellation before sending sends nothing; pending requests are bounded", 
   await assert.rejects(client.anchorGet({ timeoutMs: 0 }), { code: "E_INVALID_ARGUMENT" });
 });
 
-test("inbound events: init once, connect, trust.set, projects.register, shutdown, anchor.ack; invalid are counted", async () => {
+test("inbound events: init once, connect, trust.set, the project messages, shutdown, anchor.ack; invalid are counted", async () => {
   const { b, client } = setup();
   const seen: string[] = [];
   client.onInit((c) => seen.push(`init:${Object.keys(c).join(",")}`));
   client.onConnect((c) => seen.push(`connect:${c.cid}`));
   client.onTrustSet((m) => seen.push(`trust:${String(m.trusted)}`));
-  client.onProjectsRegister((m) => seen.push(`project:${m.path}`));
+  client.onProjects((m) => seen.push(`${m.type}:${m.path}`));
   client.onShutdown(() => seen.push("shutdown"));
   client.onAnchorAck((s) => seen.push(`ack:${s}`));
+  client.onWindowGone((m) => seen.push(`gone:${m.windowId}`));
   const att = { identity: { actor: "user" }, issuedAt: 1, mac: "m".repeat(43) };
   b.send({ type: "init", config: { dataDir: "/d" } });
   b.send({ type: "init", config: { dataDir: "/other" } });
   b.send({ type: "connect", cid: "conn-0001", attestation: att });
   b.send({ type: "trust.set", windowId: "w", trusted: true });
-  b.send({ type: "projects.register", requestId: "r1", path: "/p", trusted: false });
+  b.send({ type: "projects.inspect", requestId: "r0", path: "/p" });
+  b.send({ type: "projects.register", requestId: "r1", path: "/p", commonDir: "/p/.git", trusted: false });
+  b.send({ type: "projects.trust", requestId: "r2", projectId: "p-1", path: "/p", trusted: false });
   b.send({ type: "anchor.ack", seq: 4 });
+  b.send({ type: "window.gone", windowId: "w3" });
+  b.send({ type: "window.gone", windowId: "p3" });
   b.send({ type: "shutdown" });
   b.send({ type: "shutdown", extra: 1 });
   b.send({ type: "mystery" });
   await wait(0);
-  assert.deepEqual(seen, ["init:dataDir", "connect:conn-0001", "trust:true", "project:/p", "ack:4", "shutdown"]);
+  assert.deepEqual(seen, ["init:dataDir", "connect:conn-0001", "trust:true", "projects.inspect:/p", "projects.register:/p", "projects.trust:/p", "ack:4", "gone:w3", "shutdown"]);
   assert.equal(client.stats().duplicateInits, 1);
-  assert.equal(client.stats().invalidMessages, 2);
+  assert.equal(client.stats().invalidMessages, 3);
 });
 
 test("a handler that throws does not stop the others", async () => {
@@ -165,7 +170,7 @@ test("outbound messages are validated before they are sent, with fixed error tex
 test("dispose rejects what is waiting and leaves no timer, listener or pending entry", async () => {
   const before = processSnapshot();
   const { a, client, mux } = setup();
-  const waiting = [client.anchorGet(), client.settingsGet("axis.cliAgents"), client.trustCheck({ windowId: "w", workspaceId: "s", projectId: "p" })];
+  const waiting = [client.anchorGet(), client.settingsGet("axis.cliAgents"), client.trustCheck({ windowId: "w", workspaceId: "s", projectId: "p", projectPath: "/p" })];
   const ac = new AbortController();
   const withSignal = client.anchorGet({ signal: ac.signal });
   client.dispose();
@@ -177,8 +182,7 @@ test("dispose rejects what is waiting and leaves no timer, listener or pending e
   assert.throws(() => client.send({ type: "fatal", code: "E_INTERNAL" }), { code: "E_UNAVAILABLE" });
   mux.dispose();
   assert.equal((a as MemoryEnd).listeners(), 0);
-  await wait(5);
-  assert.deepEqual(processSnapshot(), before);
+  await settledTo(before);
 });
 
 test("the channel closing rejects waiting requests with E_UNAVAILABLE", async () => {

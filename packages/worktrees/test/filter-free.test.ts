@@ -9,7 +9,7 @@ import { after, describe, it } from 'node:test';
 import { createExecGitRunner, createHooksGuard } from '../src/index.js';
 import { HardenedGit } from '../src/hardenedGit.js';
 import { readDirtyFilterFree } from '../src/dirty.js';
-import { makeFixture, sh, write, type Fixture } from './helpers.js';
+import { makeFixture, sh, write, type Fixture, exp } from './helpers.js';
 
 const fixtures: Fixture[] = [];
 function fresh(): Fixture {
@@ -45,7 +45,7 @@ describe('NB-2: filter-free dirty detection', () => {
   it('reports the same dirty set as a user would expect, without any git status', async () => {
     const fx = fresh();
     const ws = await fx.manager.create({ repoPath: fx.repo, slug: 'dirty' });
-    const clean = await fx.manager.status(ws.path);
+    const clean = await fx.manager.status(ws.path, exp(ws.path));
     assert.deepEqual(clean.dirty, []);
     write(path.join(ws.path, 'a.txt'), 'changed\n');
     unlinkSync(path.join(ws.path, 'sub', 'b.txt'));
@@ -99,8 +99,8 @@ describe('NB-2: filter-free dirty detection', () => {
       for (let i = 0; i < 25; i++) {
         const t = new Date(Date.now() + 120_000 + i);
         utimesSync(path.join(ws.path, 'a.txt'), t, t);
-        await fx.manager.status(ws.path).catch(() => undefined); // drift or other refusals are fine; execution is not
-        await fx.manager.previewDiscard(ws.path).catch(() => undefined);
+        await fx.manager.status(ws.path, exp(ws.path)).catch(() => undefined); // drift or other refusals are fine; execution is not
+        await fx.manager.previewDiscard(ws.path, exp(ws.path)).catch(() => undefined);
       }
     } finally {
       loop.kill('SIGKILL');
