@@ -89,9 +89,10 @@ Each failure answers a closed error with `INTEGRATIONS_REFUSAL_MESSAGE` and `det
      - The new closed vault code is `weak_entry`, mapped to `needs_reconnect`. The existing quarantine check (SF-3) stays and maps the same way.
      - Provider reveals are unchanged.
    - The handler then checks the token against the connector's `tokenShape` before step 5, and refuses with `needs_reconnect` on a mismatch.
-   - The vault's `onAccess` events are not the audit: their exceptions are ignored by design, so steps 6 and 10 write the service's own rows.
+   - The vault's `onAccess` events are not the audit: their exceptions are ignored by design, so the service writes its own rows.
+   - **Every reveal attempt is audited** (audit C L1, as the providers binding audits every read, DMN-5). A vault refusal, a token that fails `tokenShape` (the vault accepts 8 characters, GitHub's shape needs 20), or a failed registration (step 5) writes one `integration.credential` row with outcome `failure` and the closed reason. The call keeps that reason, even if the row cannot be written, and nothing is sent.
 5. **Register with the redactor at once,** before anything else uses the value: the exact header value (`Bearer <token>`) and the token alone.
-6. **Audit `integration.credential`** (§5). If the row cannot be written, the call answers `audit_unavailable` and nothing is sent.
+6. **Audit `integration.credential`** with outcome `success` and reason `ok` (§5). If the row cannot be written, the call answers `audit_unavailable` and nothing is sent.
 7. **Attach and send:**
    - `new Credential(header, { integration: "github", origin })`, then `authorize(matched, credential)`, then `client.sendAuthorized(request, { signal: context.signal })`.
    - The client takes the credential once and attaches it to exactly the matched URL.
@@ -103,13 +104,13 @@ Each failure answers a closed error with `INTEGRATIONS_REFUSAL_MESSAGE` and `det
 10. **Epilogue: audit `integration.request`.**
     - This step runs whenever step 6 wrote its row, on EVERY exit path that follows: success, any refusal, an echo, a parse failure, cancellation, or an internal error. The handler holds steps 7 to 9 in a `try` with this step in its `finally`.
     - If the row cannot be written, any result is discarded and the call answers `audit_unavailable`. A cancelled call still answers `E_CANCELLED`.
-    - A refusal before step 6 writes no integration row (neither kind), because nothing was revealed for a send.
+    - A refusal before the reveal (step 4) writes no integration row of either kind, because nothing was revealed. A refused reveal writes only its `failure` credential row (step 4) and no request row, because nothing was sent.
 11. **Reply:** `{ status, result }`. No header, no URL, no `Location`.
 
 **Order invariant:**
 - The redactor registration (5) comes before any use (7).
 - The first echo scan (8) comes before any parse (9), and both scans come before any reply, event or log.
-- A written credential row (6) is always followed by exactly one request row (10), unless the process dies between the two.
+- A written `success` credential row (6) is always followed by exactly one request row (10), unless the process dies between the two.
 - **A crash between the two rows** (a crash or `SIGKILL` after step 6 and before the epilogue) leaves a credential row with no request row. Such an orphan row means the send's outcome is unknown: a request may or may not have gone out. The audit chain stays valid, and nothing reconciles the orphan at the next start.
 
 ### 4.1 Cancel, disconnect and failure mid-flight
@@ -167,7 +168,7 @@ The first scan runs on the exact bytes the client collected, because only they h
 
 ## 5. The audit rows (exact fields, allowlisted)
 
-- **`integration.credential`:** written at step 6, before attach. Fields: `integrationId`, `operation`, `projectId`, `actorKind` (`user` in this slice), `purpose` (`integration_request`).
+- **`integration.credential`:** one row per reveal attempt. It is `success` at step 6, before attach, or `failure` for a reveal refused at step 4 or 5. Fields: `integrationId`, `operation`, `projectId`, `actorKind` (`user` in this slice), `purpose` (`integration_request`), and `reason` (`ok`, or the refusal's closed reason).
 - **`integration.request`:** written by the epilogue (step 10). Fields:
   - `integrationId`, `operation`, `projectId`;
   - `status`: the HTTP status as an integer, when one was received;
