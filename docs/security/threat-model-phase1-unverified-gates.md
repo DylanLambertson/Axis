@@ -17,7 +17,7 @@ These need building first. Platform is secondary.
 | 1a/L2, L10, L17, L24 | The Axis pty process is on `feat/pty-process` (B9, in review), not on main. The slice's pty on main is a plain child process. The group-liveness acceptance test (`sh -c 'sleep 30 & exit 0'`) must pass on POSIX and with a job object on Windows. | B9; RR-2 |
 | 1a/L3, L14, L18 | GIT-SNAP-1 wired into runs (H13, real in the slice); the commit and push gate moves onto it in H13b. | RR-3 |
 | 1a/L15 | The commit-hook step (pre-commit, commit-msg on a scratch checkout). | H9-hooks; RR-4 |
-| 1a/L32 | REV-2 hardened attribute reads. | RR-13 |
+| 1a/L32 | REV-2 hardened attribute reads: built (REV2-FIX, in review); Linux evidence `packages/review/test/real-attr-snapshot.test.ts`; not run on macOS or Windows. | RR-13 |
 | 1a/L13 | Workbench registration of the four `axis.*` settings with user, application or machine scope. | RR-15 |
 | 1a/L33 | Refusal of `--remote-debugging-port` and `--inspect*` in a packaged build. | RR-19 |
 | 1b/L1 to L16 (daemon side) | Composer wiring, drift, command tools, native confirmation for destructive calls, Anthropic and vault wiring, REF-1 scan, hooks decision. Branch `feat/composer-runtime` carries C1 only. | C1 to C7, J2; RR-20 to RR-27 |
@@ -30,7 +30,7 @@ The package logic is tested on Linux with injected fakes. The gate wording needs
 |---|---|---|
 | 1a/L1 | Scenarios 2 to 5 of `docs/PRODUCT.md` with an installed agent CLI; stub `gh` run with the expected arguments. | Push to a local bare remote and compare URL in slice step 6 and `@axis/git-ops` tests. No code that runs `gh pr create` was found in `packages/` at `74cd12e` (only the compare URL), so the stub-`gh` half of the line is **not built**. |
 | 1a/L2 | PTY-5 with the git extension enabled, `git.terminalAuthentication` on and a test extension adding an environment collection. | `@axis/pty-policy` tests and slice step 3 (a plain child process, seeded names). The extension-collection half needs Code OSS. |
-| 1a/L8 | Tier 4 confirmation through the native dialog (`dialog.showMessageBox`, main-built summary, APR-2). | Challenge manager and gate tests; the slice answers `native.confirm` from a test supervisor. |
+| 1a/L8 | Tier 4 confirmation through the native dialog (`dialog.showMessageBox`, main-built summary, APR-2). | Challenge manager and gate tests; the slice answers `native.confirm` from a test supervisor. Main's dialog is built (X1c, `2a0acff`: `nativeDialog`, `dialog.showMessageBox`), but no recorded run confirms a tier 4 challenge through it yet (the driver in `pty-exec-node.md` is a plan). |
 | 1a/L9, L19, L25 | Restricted Mode for an untrusted repository; trust re-derived at mount and at run start; main's attestation. | Host trust registry and single-use attestation in the slice; main's side is **[B]** X1. |
 | 1a/L11, L30 | Keyboard-only run of all three view modes; screen-reader announcement of a view switch; typing after a switch reaches only the destination. | none (shell A1 has a workspace model test, no input-routing run). |
 | 1a/L22 | Open VSX signed, unsigned and tampered install against a packaged build. | none; a packaged build refuses every gallery install today. |

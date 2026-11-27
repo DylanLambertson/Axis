@@ -121,3 +121,33 @@ test("S4: the composition hands its tool caps to the composer service (an invali
     fix.cleanup();
   }
 });
+
+test("C7-F3: caps whose run history one request's secret scan could not read are refused; the host does not start (review c7-f3-impl r1 N2)", async () => {
+  const fix = hostFixture();
+  const composed = composeDaemonHost(options(fix, { composer: { toolCaps: { inputBytesPerRun: 64 * 1024 * 1024 } } }));
+  try {
+    const outcome = await composed.start().then((s) => s.degraded ?? "started", (e: unknown) => (e instanceof RangeError ? "refused" : `other:${String(e)}`));
+    assert.equal(outcome, "refused");
+  } finally {
+    await composed.stop();
+    fix.cleanup();
+  }
+});
+
+test("C3 WT-2: the CLI runs' snapshotter is built once; the composer's commands never share it (their guard holds a baseline per run)", async () => {
+  const fix = hostFixture();
+  const made: string[] = [];
+  const counting: NonNullable<ComposeOptions["snapshotter"]> = (deps) => (made.push(deps.gitPath), snapshotter(deps));
+  let commands: boolean | undefined;
+  let gitReads: boolean | undefined;
+  const composed = composeDaemonHost(options(fix, { snapshotter: counting, observeAgent: (a) => void ((commands = a.commands), (gitReads = a.gitReads)) }));
+  try {
+    await composed.start();
+    assert.equal(made.length, 1, "the factory serves CLI runs only");
+    assert.equal(commands, true, "the composer binding got its own guard, so it offers run_command");
+    assert.equal(gitReads, true, "the composer binding got the host's git, so it offers git_status and git_diff (C3 slice 2)");
+  } finally {
+    await composed.stop();
+    fix.cleanup();
+  }
+});

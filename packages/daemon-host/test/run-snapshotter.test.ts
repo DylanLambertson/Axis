@@ -7,6 +7,7 @@ import { after, before, describe, test } from "node:test";
 import { AxisError } from "@axis/audit";
 import { resolveGit, type GitRunner } from "@axis/git-ops";
 import { composeDaemonHost, createRunSnapshotter, SNAPSHOT_ATTEMPTS, SNAPSHOT_TAKE_MS, SUPERVISOR_SNAPSHOT_MS, type ComposeOptions, type SnapshotTaker, type PtyPort, type RunSnapshotterDeps, type RunSnapshotterFactory } from "../src/index.js";
+import { SLICE_SNAPSHOT_TAKE_MS, sliceSnapshotter } from "../testing/slice-snapshotter.js";
 import { createGitFixture, gitSkipReason, type GitFixture } from "../testing/git-fixture.js";
 import { hostFixture } from "../testing/host-fixture.js";
 
@@ -140,6 +141,15 @@ describe("the run snapshotter over @axis/git-snapshot", { skip }, () => {
     await s.before(newer);
     await assert.rejects(s.after(older), (e) => reasonOf(e) === "no_baseline", "only the workspace's latest run has a baseline");
     assert.deepEqual(await s.after(newer), { drift: false });
+  });
+
+  test("the slice host's snapshotter gives every take the long bound and the production attempts", async () => {
+    const seen: Array<Parameters<SnapshotTaker>[0]> = [];
+    const spy: SnapshotTaker = (opts) => (seen.push(opts), Promise.reject(new Error("stop here")));
+    await assert.rejects(sliceSnapshotter(spy)({ gitPath, env: fx.env, projectRoot: () => fx.repo }).before(ctx()));
+    assert.equal(seen.length, 1);
+    assert.equal(seen[0]?.limits?.maxMillis, SLICE_SNAPSHOT_TAKE_MS);
+    assert.equal(seen[0]?.attempts, SNAPSHOT_ATTEMPTS);
   });
 
   test("a stable snapshot fits inside the supervisor's bound with room to spawn git, and every take is given that bound", async () => {

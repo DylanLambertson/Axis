@@ -2,6 +2,7 @@
 import { AxisError, isWellFormedString, withTransaction, type DatabaseSync } from "@axis/audit";
 import { z } from "zod";
 import { invalid, type CreateRunInput, type Created, type Run } from "./model.js";
+import { exactInt, readProjectUsage, type ProjectUsage } from "./usage-totals.js";
 
 /**
  * Composer run records (schema version 6, tickets J2 and C10; docs/design/composer-runtime.md section 4). What a run was
@@ -42,6 +43,8 @@ export interface ComposerRunRecord extends ComposerRunMeta {
   readonly lastSeq: number;
   readonly activityRows: number;
   readonly activityBytes: number;
+  /** IAC-T (PV-M0, schema version 8): the run received content from a listed taint source. Never goes back to false. */
+  readonly tainted: boolean;
 }
 export type ActivityType = (typeof ACTIVITY_TYPES)[number];
 export interface ActivityRecord {
@@ -91,6 +94,7 @@ const parse = <T>(schema: z.ZodType<T>, value: unknown, what: string): T => {
 const ZERO: BudgetTotals = Object.freeze({ tokens: 0, costMicroUsd: 0, requests: 0, unpricedRequests: 0 });
 
 interface RunRow {
+  tainted: number;
   run_id: string;
   mode: ComposerRunMeta["mode"];
   provider_id: string;
@@ -123,8 +127,12 @@ export class ComposerRecords {
     this.#createRun = createRun;
   }
 
-  /** `Journal.createRun` for a composer run and its record, in one transaction. A replay returns the earlier run as it is. */
-  createRun(input: Omit<CreateRunInput, "kind">, meta: ComposerRunMeta): Created<Run> {
+  /**
+   * `Journal.createRun` for a composer run and its record, in one transaction. A replay returns the earlier run as it is.
+   * `within` runs inside the same transaction once the record exists (a plugin-started run is tainted there, PV-K1e): if it
+   * throws, nothing is created.
+   */
+  createRun(input: Omit<CreateRunInput, "kind">, meta: ComposerRunMeta, within?: (runId: string) => void): Created<Run> {
     const m = parse(metaSchema, meta, "composer run");
     return withTransaction(this.#db, () => {
       const created = this.#createRun({ ...input, kind: "composer" });
@@ -132,6 +140,7 @@ export class ComposerRecords {
       this.#db
         .prepare("INSERT INTO composer_runs (run_id, mode, provider_id, model_id, created_at) VALUES (?, ?, ?, ?, ?)")
         .run(created.value.id, m.mode, m.providerId, m.modelId, this.#ts());
+      within?.(created.value.id);
       return created;
     });
   }
@@ -149,7 +158,24 @@ export class ComposerRecords {
       lastSeq: row.last_seq,
       activityRows: row.activity_rows,
       activityBytes: row.activity_bytes,
+      tainted: row.tainted === 1,
     };
+  }
+
+  /**
+   * IAC-T: record that the run is tainted, before the tainted content reaches its model (the host taints the run in memory
+   * first). Idempotent; the schema refuses clearing it. Throws `E_NOT_FOUND` for a run with no composer record, so a taint
+   * that cannot be recorded never goes unnoticed.
+   */
+  markTainted(id: string): void {
+    const r = parse(runId, id, "run id");
+    withTransaction(this.#db, () => one(this.#db.prepare("UPDATE composer_runs SET tainted = 1 WHERE run_id = ?").run(r)));
+  }
+
+  /** Whether the run is recorded as tainted; false for a run with no composer record. */
+  tainted(id: string): boolean {
+    const row = this.#db.prepare("SELECT tainted FROM composer_runs WHERE run_id = ?").get(parse(runId, id, "run id")) as { tainted: number } | undefined;
+    return row?.tainted === 1;
   }
 
   recordUsage(id: string, usage: ComposerUsageRecord): void {
@@ -184,12 +210,21 @@ export class ComposerRecords {
     });
   }
 
-  /** The workspace's budget totals so far; zero for a workspace no composer run has charged. */
+  /** Usage and cost of the project's composer runs, in total and per agent (PV-D3, `axis.usage/1`; `./usage-totals.ts`). */
+  projectUsage(projectId: string): ProjectUsage {
+    return readProjectUsage(this.#db, projectId);
+  }
+
+  /**
+   * The workspace's budget totals so far; zero for a workspace no composer run has charged. Read exactly (as BigInt): a value
+   * above `Number.MAX_SAFE_INTEGER` is refused, never rounded (PV-D3 review N-3), so neither a budget nor a reply is off.
+   */
   workspaceBudget(workspaceId: string): BudgetTotals {
-    const row = this.#db
-      .prepare("SELECT tokens, cost_micro_usd, requests, unpriced FROM composer_workspace_budgets WHERE workspace_id = ?")
-      .get(parse(runId, workspaceId, "workspace id")) as { tokens: number; cost_micro_usd: number; requests: number; unpriced: number } | undefined;
-    return row === undefined ? ZERO : { tokens: row.tokens, costMicroUsd: row.cost_micro_usd, requests: row.requests, unpricedRequests: row.unpriced };
+    const read = this.#db.prepare("SELECT tokens, cost_micro_usd, requests, unpriced FROM composer_workspace_budgets WHERE workspace_id = ?");
+    read.setReadBigInts(true);
+    const row = read.get(parse(runId, workspaceId, "workspace id")) as Record<string, unknown> | undefined;
+    if (row === undefined) return ZERO;
+    return { tokens: exactInt(row["tokens"]), costMicroUsd: exactInt(row["cost_micro_usd"]), requests: exactInt(row["requests"]), unpricedRequests: exactInt(row["unpriced"]) };
   }
 
   /**

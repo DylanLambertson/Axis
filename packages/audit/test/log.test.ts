@@ -62,6 +62,7 @@ test("the Phase 1a actions are all recorded with actor identity and verify", () 
     { actor: "user", action: AuditActions.tier4Challenge, target: "workspace:ws-1", outcome: "success" },
     { actor: "daemon", action: AuditActions.tier4Execute, target: "workspace:ws-1", outcome: "denied", payload: { reason: "challenge_expired" } },
     { actor: "agent:run-42", action: AuditActions.policyDecision, target: "tool:git.push", outcome: "denied" },
+    { actor: "plugin:acme.board", action: AuditActions.policyDecision, target: "rpc:axis.approvals/1.resolve", outcome: "denied" },
   ];
   for (const c of cases) log.append(c);
   const stored = log.list();
@@ -75,6 +76,13 @@ test("invalid events are rejected with E_INVALID_ARGUMENT and write nothing", ()
   const bad: unknown[] = [
     { actor: "root", action: "git.push", target: "t", outcome: "success" },
     { actor: "agent:", action: "git.push", target: "t", outcome: "success" },
+    { actor: "plugin:", action: "git.push", target: "t", outcome: "success" },
+    { actor: "plugin:Acme", action: "git.push", target: "t", outcome: "success" },
+    { actor: "plugin:a..b", action: "git.push", target: "t", outcome: "success" },
+    { actor: "plugin:1a", action: "git.push", target: "t", outcome: "success" },
+    { actor: `plugin:${"a".repeat(65)}`, action: "git.push", target: "t", outcome: "success" },
+    { actor: "plugin:a.b.c.d.e", action: "git.push", target: "t", outcome: "success" },
+    { actor: "plugin:a_b", action: "git.push", target: "t", outcome: "success" },
     { actor: "user", action: "Push", target: "t", outcome: "success" },
     { actor: "user", action: "git.push", target: "", outcome: "success" },
     { actor: "user", action: "git.push", target: "t", outcome: "maybe" },

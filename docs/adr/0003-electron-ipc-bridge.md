@@ -389,3 +389,7 @@ export interface IAxisPolicyEngine { evaluate(req: PolicyRequest, token: Cancell
 2. Should tier-3 actions (network, package install) also require native confirmation, or is the renderer approval UI enough?
 3. Should Axis also remove upstream's renderer-reachable `UtilityProcessWorker` channel (`app.ts:1532`)? The agent-host channels are already covered by ADR 0002 decision 6. This one is a footprint versus surface-reduction tradeoff, to be decided with M3.
 4. How long should idempotency records and audit records be retained?
+
+## Amendment (2026-11-22, ADR 0008)
+
+ADR 0008 ("Axis plugins") adds a fourth principal kind, `plugin:<id>`, to D4. Main mints one connection per plugin view when it creates the view, signed like a window connection with `clientKind: plugin` and a `p<n>` window id; a plugin view never uses `vscode:axisConnect`, and D1.3's checks still refuse it there. A plugin actor never resolves an approval, the D5 record may name it, and D7 is unchanged (the plugin port shim adds no `contextBridge` global). Its section "Amendment to ADR 0003" governs where wording differs.

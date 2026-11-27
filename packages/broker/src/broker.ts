@@ -79,7 +79,7 @@ export interface BrokerDeps {
   readonly redactor?: Redactor;
   /** Needed only for git tools. */
   readonly gitRunner?: GitRunner;
-  readonly assertNoDrift?: (w: WorktreeRef) => Promise<void>;
+  readonly assertNoDrift?: (w: WorktreeRef, signal?: AbortSignal) => Promise<void>;
   readonly clock?: Clock;
   readonly platform?: NodeJS.Platform;
   readonly policy?: PolicyOptions;
@@ -288,7 +288,7 @@ export class ToolBroker {
       ...(argv0 !== undefined && declaredArgv === undefined ? { argsAtRunTime: true } : {}),
       ...(raised === undefined ? {} : { raisedTier: raised }),
     });
-    if (decision.effect === "deny") return refuse(denied("invalid-tier", "the tool tier is not valid"));
+    if (decision.effect === "deny") return refuse(decision.reason === "invalid-tier" ? denied("invalid-tier", "the tool tier is not valid") : denied(decision.reason, "the call could not be judged"));
 
     let digest: string;
     try {

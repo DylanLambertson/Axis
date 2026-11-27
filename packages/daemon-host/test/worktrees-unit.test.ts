@@ -67,11 +67,14 @@ test("worktreesCapability: only finalise and remove of axis.worktrees/1, bound t
 
 test("errors: closed codes, fixed texts, nothing from the cause", () => {
   const nasty = "/home/u/secret-repo ghp" + "_" + "Ab1".repeat(12);
-  for (const e of [new Error(nasty), new AxisError("E_INTERNAL", nasty), new AxisError("E_POLICY_DENIED", nasty), "x", null]) {
+  for (const e of [new Error(nasty), new AxisError("E_INTERNAL", nasty), "x", null]) {
     const d = toDaemonError(e);
     assert.equal(d.code, "E_INTERNAL");
     assert.ok(!d.message.includes("secret"));
   }
+  // The project trust gate's internal refusal answers E_CONFLICT untrusted on the wire (only the daemon says E_POLICY_DENIED).
+  const gate = toDaemonError(new AxisError("E_POLICY_DENIED", nasty, { reason: "untrusted" }));
+  assert.deepEqual([gate.code, gate.details?.["reason"], gate.message.includes("secret")], ["E_CONFLICT", "untrusted", false], "mutant: passed through as E_INTERNAL");
   const c = toDaemonError(new AxisError("E_CONFLICT", nasty, { state: nasty }));
   assert.equal(c.code, "E_CONFLICT");
   assert.ok(!JSON.stringify([c.message, c.details]).includes("secret"));

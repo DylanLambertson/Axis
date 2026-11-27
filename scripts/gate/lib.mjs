@@ -132,7 +132,16 @@ export function parseTestCounts(output) {
 }
 
 const oneLine = (text) => (text ?? "").trim().replace(/\s*\n\s*/g, " / ");
-const MARK = { pass: "PASS", fail: "FAIL", skip: "SKIP" };
+// "absent": a step whose tool is not available here (the overlay tests without a tree). Unlike "skip" (GATE_SKIP) it does
+// not make the run INCOMPLETE, but the verdict names it.
+const MARK = { pass: "PASS", fail: "FAIL", skip: "SKIP", absent: "SKIP" };
+
+/** The overlay tests could not run: a loud skip, or a failure when the builder requires them (PV-X3). */
+export function overlayNotRun(reason, required) {
+  return required
+    ? { status: "fail", detail: `required by AXIS_REQUIRE_OVERLAY_TESTS=1 but did not run: ${reason}` }
+    : { status: "absent", detail: reason };
+}
 
 /** Fixed-width table: one row per result { name, status, detail }. */
 export function formatTable(results) {
@@ -163,6 +172,8 @@ export function formatReport({ branch, head, results, packageCounts }) {
     for (const p of packageCounts) lines.push(`  ${p.name}: ${p.pass} pass, ${p.fail} fail`);
   }
   const code = exitCode(results);
-  lines.push(`verdict: ${code === 0 ? "ALL GATES PASSED" : code === 1 ? "FAILED" : "INCOMPLETE (skipped gates)"}`, "```");
+  const absent = results.some((r) => r.status === "absent");
+  const passed = absent ? "PASSED (overlay tests skipped)" : "ALL GATES PASSED";
+  lines.push(`verdict: ${code === 0 ? passed : code === 1 ? "FAILED" : "INCOMPLETE (skipped gates)"}`, "```");
   return lines.join("\n");
 }

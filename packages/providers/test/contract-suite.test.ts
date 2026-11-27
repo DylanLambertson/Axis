@@ -164,7 +164,7 @@ test("redirect: the suite fails an adapter that follows after the call settled (
   assert.match(output, /redirect host: https:\/\/redirect-target\.contract\.invalid/, "the late request is the reported violation");
 });
 
-// verylate: follows 4 s later, after the suite's final late window closed.
+// verylate: follows from `beforeExit`, after the suite's final late window closed and nothing else is left to run.
 // Every check passes; the process exit scan must still fail the file.
 test("redirect: a request after the suite ended still fails the file (FOLLOW=verylate)", async () => {
   const { output, code } = await runFixture("http-harness.js", { FOLLOW: "verylate" });

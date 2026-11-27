@@ -7,11 +7,9 @@ import { status } from '../../../../base/browser/ui/aria/aria.js';
 import { mainWindow } from '../../../../base/browser/window.js';
 import { Emitter, Event } from '../../../../base/common/event.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
-import { URI } from '../../../../base/common/uri.js';
 import { localize } from '../../../../nls.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { IContextKey, IContextKeyService, RawContextKey } from '../../../../platform/contextkey/common/contextkey.js';
-import { ITextEditorSelection } from '../../../../platform/editor/common/editor.js';
 import { InstantiationType, registerSingleton } from '../../../../platform/instantiation/common/extensions.js';
 import { createDecorator } from '../../../../platform/instantiation/common/instantiation.js';
 import { IStorageService } from '../../../../platform/storage/common/storage.js';
@@ -19,6 +17,7 @@ import { IEditorService } from '../../../../workbench/services/editor/common/edi
 import { Parts } from '../../../../workbench/services/layout/browser/layoutService.js';
 import { IAxisWorkbenchLayoutService } from '../../../browser/axisLayoutService.js';
 import { AXIS_VIEW_MODE_SETTING, AxisLayoutKind, AxisSplitCollapse, AxisViewKind, AxisViewMode, IAxisLayoutRequest, toAxisViewMode } from '../../../common/axisView.js';
+import { editorInputForReveal, IAxisRevealTarget } from '../common/axisRevealInput.js';
 import { AxisViewState } from '../common/axisViewState.js';
 import { AxisFocusMemory } from './axisFocusMemory.js';
 
@@ -32,11 +31,7 @@ export interface IAxisShowViewOptions {
 	readonly focus?: boolean;
 }
 
-/** A location to open in the IDE view (docs/design/axis-agent-shell.md section 3.4). */
-export interface IAxisRevealTarget {
-	readonly resource: URI;
-	readonly selection?: ITextEditorSelection;
-}
+export type { IAxisRevealTarget } from '../common/axisRevealInput.js';
 
 export interface IAxisViewChange {
 	readonly layout: AxisLayoutKind;
@@ -75,7 +70,10 @@ export interface IAxisViewService {
 	/** Toggles the view; in split mode, moves focus to the other half. */
 	toggle(): void;
 
-	/** Opens a location in the IDE view per mode: switches to it, or opens in the IDE half. */
+	/**
+	 * Opens a location in the IDE view per mode: switches to it, or opens in the IDE half.
+	 * A file, a diff (at its first change) or a multi-diff (docs/design/axis-agent-shell.md section 3.4).
+	 */
 	reveal(target: IAxisRevealTarget): Promise<void>;
 
 	/**
@@ -195,6 +193,10 @@ export class AxisViewService extends Disposable implements IAxisViewService {
 	}
 
 	async reveal(target: IAxisRevealTarget): Promise<void> {
+		const input = editorInputForReveal(target);
+		if (!input) {
+			return;
+		}
 		this.rememberFocus();
 		if (this._mode === 'split') {
 			if (this.state.getSplitCollapsed() === 'ide') {
@@ -207,10 +209,7 @@ export class AxisViewService extends Disposable implements IAxisViewService {
 		this.applyLayout(undefined);
 
 		// Focus rule 1: opening a location focuses the editor at that file and line.
-		await this.editorService.openEditor({
-			resource: target.resource,
-			options: { selection: target.selection, revealIfOpened: true, pinned: true }
-		});
+		await this.editorService.openEditor(input);
 		this.focusIfLost();
 	}
 

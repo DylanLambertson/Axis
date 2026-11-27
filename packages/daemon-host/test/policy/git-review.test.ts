@@ -19,10 +19,10 @@ const registry = (): InMemoryTrustRegistry => {
   return r;
 };
 
-const EXPECTED: Array<[string, string, number, "none" | "registry"]> = [
+const EXPECTED: Array<[string, string, number, "none" | "project"]> = [
   ["axis.git", "pushPlan", 1, "none"],
-  ["axis.git", "commit", 2, "registry"],
-  ["axis.git", "push", 4, "registry"],
+  ["axis.git", "commit", 2, "project"],
+  ["axis.git", "push", 4, "project"],
   ["axis.git", "compareUrl", 0, "none"],
   ["axis.review", "diff", 1, "none"],
   ["axis.review", "complete", 2, "none"],
@@ -39,7 +39,11 @@ test("the six rows are served rules with the design's tier and trust mode, and n
   }
   assert.deepEqual(coverageProblems(), []);
   assert.deepEqual(coverageProblems(policySurface(["axis.git", "axis.review"])), []);
-  assert.deepEqual(Object.keys(PLANNED_RULES), [], "every named method is served now (P1d moved discard and setUserEditing)");
+  // Only planned contracts' methods are planned now (P1d moved discard and setUserEditing; axis.forge/1 is PV-D2's,
+  // axis.agents/1 and axis.agent-groups/1 PV-G2's, axis.pages/1 PV-Q1's, axis.integrations/1 and axis.net/1 PV-N1a's,
+  // axis.tasks/1 PV-T1's).
+  const planned = ["axis.forge/", "axis.agents/", "axis.agent-groups/", "axis.integrations/", "axis.net/", "axis.pages/", "axis.tasks/"];
+  assert.deepEqual(Object.keys(PLANNED_RULES).filter((k) => !planned.some((p) => k.startsWith(p))), []);
 });
 
 test("only a user is admitted: agent, daemon, missing and malformed actors are refused on every method (DMN-3)", () => {
@@ -53,13 +57,14 @@ test("only a user is admitted: agent, daemon, missing and malformed actors are r
   }
 });
 
-test("commit and push need a trusted project; reads, compareUrl and complete do not", () => {
+test("policy does not decide commit and push trust (the gate does): only a recorded revoke refuses them at dispatch", () => {
   const policy = new RuleTablePolicy(registry());
   for (const [c, m, , trust] of EXPECTED) {
     const untrusted = policy.evaluate(input(c, m, { trusted: false })).effect;
-    assert.equal(untrusted, trust === "registry" ? "deny" : "allow", `${c}.${m} attested untrusted`);
+    // The connect-time flag is never read and no grant is needed: the gate decides a project row in the handler.
+    assert.equal(untrusted, "allow", `${c}.${m} attested untrusted (${trust})`);
     const unknownWindow = policy.evaluate(input(c, m, { windowId: "w2", workspaceId: undefined })).effect;
-    assert.equal(unknownWindow, trust === "registry" ? "deny" : "allow", `${c}.${m} unknown window`);
+    assert.equal(unknownWindow, "allow", `${c}.${m} unknown window`);
   }
   const revoked = registry();
   revoked.set({ windowId: "w1", workspaceId: "ws1" }, false);

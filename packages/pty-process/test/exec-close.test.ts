@@ -23,7 +23,7 @@ function gatedExec(versionGate: Promise<void>): { exec: ExecFn; log: ExecRequest
       let end: (o: ExecOutcome) => void = () => undefined;
       const done = new Promise<ExecOutcome>((res) => (end = res));
       // Like a real child, the killed process reports later, after the next control channel may already be open.
-      return { done, kill: () => void setImmediate(() => end({ code: null, signal: "SIGKILL", stdout: new Uint8Array(), stderr: new Uint8Array(), truncated: false })) };
+      return { done, kill: () => void setImmediate(() => end({ code: null, signal: "SIGKILL", stdout: new Uint8Array(), stderr: new Uint8Array(), truncated: false, stdoutTruncated: false, stderrTruncated: false })) };
     }
     return { done: Promise.resolve(out("")), kill: () => undefined };
   };

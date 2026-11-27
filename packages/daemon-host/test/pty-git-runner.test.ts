@@ -1,10 +1,11 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 // createPtyGitRunner (H9-hooks §4.1): git-ops' exact pty prefix is mapped onto `exec` fields, anything else is refused, and a
-// missing or failing pty process is E_UNAVAILABLE. Real git and the real pty service: pty-git-runner-real.test.ts.
+// missing or failing pty process is E_UNAVAILABLE. Real git and the real pty service: pty-git-runner-real.test.ts. Push (S4):
+// pty-git-push.test.ts and pty-git-push-real.test.ts.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { GitOpsError, prefix, type GitOpsDeps, type GitRunRequest } from "@axis/git-ops";
-import { createPtyGitRunner, PUSH_NOT_AVAILABLE } from "../src/bindings/pty-git.js";
+import { createPtyGitRunner } from "../src/bindings/pty-git.js";
 import type { PtyExecCall, PtyExecOutcome, PtyExecPort } from "../src/ports/pty.js";
 
 const GIT = "/usr/bin/git";
@@ -189,30 +190,4 @@ test("the composition's choice: a pty port with exec gets the strict runner over
   assert.equal(selectPtyGitRunner(undefined, {} as never, "linux"), "pty_git_runner_required");
   const fake = selectPtyGitRunner({}, explicit, "linux") as (g: string) => unknown;
   assert.equal(fake(GIT), explicit, "a pty port without exec (a test fake) keeps the caller's runner");
-});
-
-/** git-ops' push (`push.ts`): its prefix, its transport allow-list (`protocolAllowList()`), then `push`. */
-const gitOpsPush = (hooks: boolean, protocols: readonly string[] = ["https", "ssh", "file"]): string[] => [
-  ...gitOpsPrefix(hooks), "-c", "protocol.allow=never", ...protocols.flatMap((p) => ["-c", `protocol.${p}.allow=always`]),
-  "push", "--no-follow-tags", "--no-recurse-submodules", ...(hooks ? [] : ["--no-verify"]), "--", "origin", "refs/heads/axis/x:refs/heads/axis/x",
-];
-
-test("git-ops' push is answered E_UNAVAILABLE with a fixed reason until H9-hooks S4 builds it, never as an internal fault, and nothing is sent", async () => {
-  for (const hooks of [false, true]) {
-    const port = recording();
-    await assert.rejects(runner(port).run(req(gitOpsPush(hooks))), (e: unknown) => isCode("E_UNAVAILABLE")(e) && (e as GitOpsError).details?.["reason"] === PUSH_NOT_AVAILABLE, `hooks ${hooks}`);
-    await assert.rejects(runner(undefined).run(req(gitOpsPush(hooks))), (e: unknown) => (e as GitOpsError).details?.["reason"] === PUSH_NOT_AVAILABLE);
-    assert.equal(port.calls.length, 0);
-  }
-  // Only git-ops' own form is recognised: anything else around a push stays a refused, unmapped form.
-  const base = gitOpsPush(false);
-  const at = base.indexOf("push");
-  for (const [what, argv] of [
-    ["an unknown -c among the transport pins", [...base.slice(0, at), "-c", "core.sshCommand=/bin/x", ...base.slice(at)]],
-    ["a transport pin set to never", base.map((a) => (a === "protocol.ssh.allow=always" ? "protocol.ssh.allow=never" : a))],
-    ["no protocol.allow=never first", base.filter((_, k) => k !== base.indexOf("protocol.allow=never") && k !== base.indexOf("protocol.allow=never") - 1)],
-    ["a lost --git-dir", base.filter((a) => !a.startsWith("--git-dir="))],
-  ] as const) {
-    await assert.rejects(runner(recording()).run(req(argv)), isCode("E_INTERNAL"), what);
-  }
 });

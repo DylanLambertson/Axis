@@ -29,7 +29,7 @@ import { nativeSummary } from "./summary.js";
  * `ApprovalGate` the daemon takes as `DaemonOptions.approvals`, and the narrow port the `axis.approvals/1` handlers
  * use. Nothing here hands the manager, a proof or a challenge id to a handler.
  *
- * The adapter follows `docs/packages.md` "Wiring the daemon" and "Adapter rules" and adds nothing to them: both
+ * The adapter follows `docs/packages/daemon.md` "Wiring the daemon" and "Adapter rules" and adds nothing to them: both
  * `args` and `requestDigest: input.digest` go to `issue` and `consume` (the manager computes its own digest and
  * refuses a mismatch); identity comes only from `input.identity`, `input.actor` and `input.connectionId`; the
  * approval is spent by `consume` before the action runs and exactly once; a `ChallengeError` becomes an

@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { Redactor } from "@axis/audit";
 import { createLogger, Disposables, exitCodeForStartupError, parseHostConfig, summarizeError } from "../src/index.js";
-import { fakeClock, processSnapshot, validConfig, wait } from "./helpers.js";
+import { fakeClock, processSnapshot, settledTo, validConfig, wait } from "./helpers.js";
 
 test("using every part of the scaffold leaves no timers and no process listeners", async () => {
   const before = processSnapshot();
@@ -20,6 +20,17 @@ test("using every part of the scaffold leaves no timers and no process listeners
     try { parseHostConfig({}, new Redactor()); } catch (e) { exitCodeForStartupError(e); summarizeError(e); }
   }
   await d.dispose();
-  await wait(5);
-  assert.deepEqual(processSnapshot(), before);
+  await settledTo(before);
+});
+
+test("settledTo is not waited out: a leak that would expire by itself fails at once, short-lived or not", async () => {
+  const before = processSnapshot();
+  for (const ms of [1_000, 8_000, 60_000]) {
+    const t = setTimeout(() => undefined, ms);
+    const started = Date.now();
+    await assert.rejects(settledTo(before, `a ${ms} ms timer is still live`), { name: "AssertionError" });
+    assert.ok(Date.now() - started < 500, "it did not poll for the timer to expire");
+    clearTimeout(t);
+  }
+  await settledTo(before, "nothing left");
 });

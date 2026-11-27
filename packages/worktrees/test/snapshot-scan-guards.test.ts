@@ -174,4 +174,52 @@ describe('REF-1 guards', () => {
     const e = await refusal(scanHistory(git, fx.repo, base, tip, startSnapshotScan(quiet), quiet.limits, bt, 2));
     assert.equal(e.details['reason'], 'snapshot-unscanned');
   });
+
+  it('a commit object over four times the size bound is refused without being read from the object store', async () => {
+    const batches: string[] = [];
+    fx = makeFixture({
+      snapshotScanner: quiet,
+      runner: hooked((args, input) => void (args.includes('--batch') && batches.push(String(input)))),
+    });
+    const wt = (await fx.manager.create({ repoPath: fx.repo, slug: 'bigmsg' })).path;
+    sh(wt, 'commit', '-q', '--allow-empty', '-m', BIG);
+    const commit = sh(wt, 'rev-parse', 'HEAD').trim();
+    const e = await refusal(fx.manager.finalise({ path: wt, expectedWorktree: exp(wt), outcome: 'archived' }));
+    assert.deepEqual(e.details['findings'], [{ rule: 'scan-incomplete', commit }]);
+    assert.ok(batches.length > 0 && batches.every((b) => !b.includes(commit)), 'the big commit was never requested');
+  });
+
+  it('the temporary index is read from the HEAD that was resolved, not from HEAD again', async () => {
+    let wt = '';
+    let scanned = '';
+    let moved = false;
+    const readTrees: string[][] = [];
+    fx = makeFixture({
+      runner: hooked(
+        (args) => {
+          if (!moved && scanned !== '' && args.includes('HEAD^{commit}')) {
+            moved = true;
+            sh(wt, 'commit', '-q', '--allow-empty', '-m', 'later');
+          }
+        },
+        (args) => void (args.includes('read-tree') && readTrees.push([...args])),
+      ),
+    });
+    wt = (await fx.manager.create({ repoPath: fx.repo, slug: 'rt' })).path;
+    scanned = sh(wt, 'rev-parse', 'HEAD').trim();
+    readTrees.length = 0; // create read its own
+    write(path.join(wt, 'a.txt'), 'changed\n');
+    const r = await fx.manager.restoreFromRunBase({ path: path.join(wt, 'a.txt'), expectedWorktree: exp(path.join(wt, 'a.txt')) });
+    assert.ok(moved);
+    assert.equal(readTrees.length, 1);
+    assert.equal(readTrees[0]?.at(-1), scanned, 'read-tree names the resolved id');
+    assert.equal(sh(fx.repo, 'rev-parse', `${r.backupRef}^`).trim(), scanned);
+  });
+
+  it('a name scan that runs out of time is unscanned', async () => {
+    const times = [0, 1_000_000];
+    const check = startSnapshotScan(quiet, () => times.shift() ?? 1_000_000, 10);
+    const e = await refusal(check.addNames([{ rel: 'a.txt', mode: '100644' }]));
+    assert.equal(e.details['reason'], 'snapshot-unscanned');
+  });
 });

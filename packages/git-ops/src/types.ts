@@ -19,6 +19,15 @@ export interface GitRunRequest {
    * (E_UNAVAILABLE) when it asked for raw output and the result does not say it got it.
    */
   readonly raw?: boolean;
+  /** Ends the command early (the request was cancelled or timed out). A runner that honours it kills the command's group. */
+  readonly signal?: AbortSignal;
+  /** Push only: `pushUrlsDigest` of the push URLs git-ops read. A runner that can re-read them just before the push refuses on a difference. */
+  readonly pushUrls?: string;
+  /**
+   * Keep at most this many characters of stdout for this call (a non-negative safe integer; the runner's own limit still
+   * applies when it is lower). Output past it is read and dropped, never held, and the result says `truncated`.
+   */
+  readonly maxOutput?: number;
 }
 
 export interface GitRunResult {
@@ -75,7 +84,7 @@ export interface GitOpsDeps {
   readonly runner: GitRunner;
   /** daemon: GIT-ENV-1 environment. pty: the PTY-5 environment (credentials, signing). */
   readonly env: { readonly daemon: Env; readonly pty: Env };
-  /** axis.git.runHooks. Push adds --no-verify and an empty hooks path when false. The daemon never runs repository commit hooks and a bound commit runs none either way. The host is to run `pre-commit` and `commit-msg` under the daemon's commit lock, on a temporary index and scratch checkout of the reviewed tree, before `commit-tree`; NOT BUILT YET (H9-hooks), see docs/packages.md "Commit hooks". */
+  /** axis.git.runHooks. Push adds --no-verify and an empty hooks path when false. The daemon never runs repository commit hooks and a bound commit runs none either way. The host is to run `pre-commit` and `commit-msg` under the daemon's commit lock, on a temporary index and scratch checkout of the reviewed tree, before `commit-tree`; NOT BUILT YET (H9-hooks), see docs/packages/git-ops.md "Commit hooks". */
   readonly runHooks: boolean;
   /** Gate 1a/L24: Axis commit and push are refused while a CLI run is active in the workspace. */
   readonly isCliRunActive: (worktree: WorktreeRef) => boolean | Promise<boolean>;

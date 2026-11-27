@@ -43,7 +43,7 @@ export function daemonNotice(input: IAxisNoticeInput): IAxisNotice {
 		case 'connecting':
 			return { severity: 'info', text: localize('axis.notice.connecting', "Connecting to the Axis service. Worktrees are read from disk meanwhile.") };
 		case 'down':
-			return { severity: 'info', text: localize('axis.notice.down', "Read from the worktrees on disk. The Axis service is not running, so no agent runs are shown.") };
+			return { severity: 'info', text: localize('axis.notice.down', "The Axis service is not connected. Worktrees are read from disk; agent runs, run trust and approvals are not shown.") };
 		case 'failed':
 			switch (status.reason) {
 				case 'degraded': return { severity: 'error', text: localize('axis.notice.failedDegraded', "The Axis service stopped in degraded mode (its safety checks could not be set up) and will not restart by itself. Restart Axis to try again. Worktrees are read from disk.") };
@@ -54,6 +54,10 @@ export function daemonNotice(input: IAxisNoticeInput): IAxisNotice {
 			}
 	}
 	// The daemon is usable (ready or degraded).
+	// Degraded outranks the data notes: it is why adding and trusting projects is off and a degraded host does not serve the worktree reads, so a stale marker would hide the real cause (PV-E0 F2 review SF2).
+	if (status.kind === 'degraded') {
+		return { severity: 'warning', text: localize('axis.notice.degraded', "The Axis service is running in degraded mode. Reading works; starting runs and approving may be refused.") };
+	}
 	if (input.staleError) {
 		return { severity: 'warning', text: localize('axis.notice.stale', "The Axis service did not answer ({0}). Showing the last data it gave.", errorPhrase(input.staleError)) };
 	}
@@ -63,11 +67,21 @@ export function daemonNotice(input: IAxisNoticeInput): IAxisNotice {
 	if (input.truncatedProjects) {
 		return { severity: 'warning', text: localize('axis.notice.truncated', "The Axis service has more projects than the dashboard reads at once; only the first {0} are shown.", MAX_POLLED_PROJECTS) };
 	}
-	if (status.kind === 'degraded') {
-		return { severity: 'warning', text: localize('axis.notice.degraded', "The Axis service is running in degraded mode. Reading works; starting runs and approving may be refused.") };
-	}
 	return { severity: 'info', text: localize('axis.notice.ready', "Workspaces and agent runs are read from the Axis service.") };
 }
 
 /** Most projects one refresh reads from the daemon. */
 export const MAX_POLLED_PROJECTS = 50;
+
+/**
+ * Whether approval cards may be shown, and the line shown instead (PV-E0 F2 review SF2). Only a ready service shows cards: a
+ * degraded host serves no approvals, so cards kept from an earlier connection would offer an Approve that cannot work.
+ */
+export function approvalsAvailability(status: AxisDaemonStatus): { readonly cards: boolean; readonly line: string } {
+	switch (status.kind) {
+		case 'ready': return { cards: true, line: '' };
+		case 'connecting': return { cards: false, line: localize('axis.approvals.connecting', "Approvals are not available yet: connecting to the Axis service.") };
+		case 'degraded': return { cards: false, line: localize('axis.approvals.degraded', "Approvals are not available: the Axis service is in degraded mode.") };
+		default: return { cards: false, line: localize('axis.approvals.offline', "Approvals need the Axis service. It is not connected, so none are shown.") };
+	}
+}

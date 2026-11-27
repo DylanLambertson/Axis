@@ -111,3 +111,18 @@ test("the process entry is a composition point: the overlay may load it and it m
   assert.throws(() => checkStagedFile("daemon-host/handlers/git.ts", 'import "../entry.js";\n', files), /entry/);
   checkStagedFile("daemon-host/entry.ts", 'import { composeDaemonHost } from "./compose.js";\n', files);
 });
+
+test("the Anthropic adapter and the vault are loaded by the host's providers binding alone (C6)", () => {
+  const files = new Set([...FILES, D("bindings/providers.ts"), D("bindings/agent.ts"), "anthropic/index.ts", "anthropic/adapter.ts", "vault/index.ts", "vault/vault.ts", "providers/index.ts"]);
+  for (const pkg of ["anthropic", "vault"]) {
+    const rule = RESTRICTED_MODULES.find((r) => r.pkg === pkg && r.file === "index.ts");
+    assert.ok(rule, pkg);
+    checkStagedFile(D("bindings/providers.ts"), `import "../../${pkg}/index.js";\n`, files);
+    for (const [from, spec] of [[D("bindings/agent.ts"), `../../${pkg}/index.js`], [D("compose.ts"), `../${pkg}/index.js`], [D("handlers/git.ts"), `../../${pkg}/index.js`], ["providers/index.ts", `../${pkg}/index.js`]]) {
+      assert.throws(() => checkStagedFile(from, `import "${spec}";\n`, files), /reaches/, `${from} ${spec}`);
+    }
+    assert.equal(mayImportRestricted(rule, null, null), false, "not the overlay entry either");
+  }
+  // The package's own modules still load each other.
+  checkStagedFile("anthropic/index.ts", 'export * from "./adapter.js";\n', files);
+});

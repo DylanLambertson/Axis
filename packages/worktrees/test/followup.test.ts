@@ -3,7 +3,7 @@
 
 import assert from 'node:assert/strict';
 import { execFileSync, spawn } from 'node:child_process';
-import { existsSync, mkdirSync, readdirSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { after, describe, it } from 'node:test';
@@ -141,11 +141,24 @@ describe('nits', () => {
 
   it('N-D: the snapshot index lives in a private daemon directory, not in $TMPDIR', async () => {
     const fx = fresh();
-    const before = new Set(readdirSync(os.tmpdir()).filter((n) => n.startsWith('axis-snap-')));
-    const ws = await fx.manager.create({ repoPath: fx.repo, slug: 'scratch' });
-    write(path.join(ws.path, 'a.txt'), 'edit\n');
-    await fx.manager.restoreFromRunBase({ path: path.join(ws.path, 'a.txt') , expectedWorktree: exp(path.join(ws.path, 'a.txt'))});
-    assert.deepEqual(readdirSync(os.tmpdir()).filter((n) => n.startsWith('axis-snap-') && !before.has(n)), []);
+    // The temp directory is private to this test: other suites (and other agents' gate runs) create axis-snap-* entries in the shared
+    // one at the same time, and only what this test's own git runs put in $TMPDIR may be counted. Git and the manager read the
+    // variable at spawn time, so it is restored (and the directory removed) once the test is done.
+    const own = mkdtempSync(path.join(fx.tmp, 'private-tmp-'));
+    const saved = { TMPDIR: process.env['TMPDIR'], TEMP: process.env['TEMP'], TMP: process.env['TMP'] };
+    process.env['TMPDIR'] = process.env['TEMP'] = process.env['TMP'] = own;
+    try {
+      assert.equal(path.resolve(os.tmpdir()), path.resolve(own), 'the test sees its own temp directory');
+      const ws = await fx.manager.create({ repoPath: fx.repo, slug: 'scratch' });
+      write(path.join(ws.path, 'a.txt'), 'edit\n');
+      await fx.manager.restoreFromRunBase({ path: path.join(ws.path, 'a.txt') , expectedWorktree: exp(path.join(ws.path, 'a.txt'))});
+      assert.deepEqual(readdirSync(os.tmpdir()).filter((n) => n.startsWith('axis-snap-')), []);
+    } finally {
+      for (const [k, v] of Object.entries(saved)) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+    }
     const scratch = path.join(fx.root, '.axis-tmp');
     assert.equal(existsSync(scratch), true);
     assert.equal(statSync(scratch).mode & 0o077, 0);

@@ -31,6 +31,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { RESTRICTED_MODULES, mayImportRestricted } from "./stage-scan.mjs";
 import { metafileGaps, minterReachViolations, missingEntries } from "./graph-reach.mjs";
 import { listenerBuiltinRefusal, listenerReachViolations, webHostEdgeRefusal } from "./web-rules.mjs";
+import { egressBuiltinRefusal } from "./egress-rules.mjs";
 import { MANIFEST_NAME, STAGE_ROOT, verifyStaged } from "./stage-verify.mjs";
 import { readFileSync } from "node:fs";
 
@@ -75,8 +76,10 @@ export function checkMetafile(metafile, manifest, { bundledText = null, treeZod 
     const desktopEntry = input === DEFAULT_ENTRY || input === SEAM_ENTRY;
     for (const imp of info.imports) {
       if (imp.external === true && /^node:/.test(imp.path) && (rel !== null || desktopEntry)) {
-        const why = listenerBuiltinRefusal(imp.path, rel);
+        const why = listenerBuiltinRefusal(imp.path, rel, { desktop: true }); // the daemon and seam bundles: the web host only
         if (why !== null) bad.push(`${input}: ${why}`);
+        const egress = egressBuiltinRefusal(imp.path, rel);
+        if (egress !== null) bad.push(`${input}: ${egress}`);
       }
       if (imp.external !== true) {
         const why = webHostEdgeRefusal(rel, stagedOf(imp.path), rel === null ? input : null);

@@ -4,6 +4,7 @@ import { test, type TestContext } from "node:test";
 import { errorSchema, helloRejectedSchema, welcomeSchema } from "@axis/protocol";
 import { protocolRegistry } from "../src/index.js";
 import { CONTRACT, hello, identityOf, req, rig, verifier, type Rig } from "./harness.js";
+import { isAttestedIdentity } from "../src/index.js";
 
 function mk(t: TestContext, options: Parameters<typeof rig>[0] = {}): Rig {
   const r = rig(options);
@@ -116,6 +117,19 @@ test("identity comes only from the verifier: identity-looking fields in a reques
   assert.deepEqual(seen, [identityOf()]);
 });
 
+test("PV-K1c: a handler's identity is the session's attested object; a copy, a clone or a literal is not attested", async (t) => {
+  const seen: unknown[] = [];
+  const r = mk(t);
+  r.daemon.register(CONTRACT, 1, { echo: (ctx, p: { text: string }) => (seen.push(ctx.identity), p) });
+  await r.handshake();
+  r.send(req("a1", "echo", { text: "ok" }));
+  assert.equal((await r.inbox.response("a1")).ok, true);
+  const id = seen[0] as object;
+  assert.equal(isAttestedIdentity(id), true);
+  assert.equal(Object.isFrozen(id), true);
+  for (const copy of [{ ...id }, structuredClone(id), JSON.parse(JSON.stringify(id)), Object.create(id), identityOf(), null, "x"]) assert.equal(isAttestedIdentity(copy), false);
+});
+
 test("a second hello is a protocol violation, not a renegotiation; repeated violations close the connection", async (t) => {
   const r = mk(t, { limits: { maxViolations: 3 } });
   await r.handshake();
@@ -127,14 +141,14 @@ test("a second hello is a protocol violation, not a renegotiation; repeated viol
 
 test("a connection that never completes the handshake is closed", async (t) => {
   const r = mk(t, { limits: { handshakeTimeoutMs: 30 } });
-  assert.ok(await r.inbox.closedWithin(500));
+  assert.ok(await r.inbox.closedWithin());
 });
 
 test("connections beyond the limit are closed immediately", async (t) => {
   const r = mk(t, { maxConnections: 1 });
   await r.handshake();
   const second = r.connect("good#conn-2");
-  assert.ok(await second.inbox.closedWithin(500));
+  assert.ok(await second.inbox.closedWithin());
   assert.equal(r.daemon.connectionCount, 1);
 });
 

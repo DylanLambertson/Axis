@@ -167,3 +167,32 @@ test("isWorkbenchFrame: same scheme, host and path only", () => {
   assert.equal(isWorkbenchFrame(WB, ["::"]), false, "an unparsable expected URL matches nothing");
   assert.equal(isWorkbenchFrame(WB, []), false);
 });
+
+test("PV-E0 F2: a supervisor that stopped for good is named by its closed reason; anything else stays not_ready", () => {
+  const stopped = (state: string, failure: string | undefined) => ({ connect: () => false, state: () => state, failure: () => failure });
+  for (const f of ["lock_held", "bad_config", "degraded", "crash_loop"]) {
+    const r = rig({ supervisor: stopped("failed", f) });
+    const out = r.broker.connect(good, "n1");
+    assert.deepEqual(out, { ok: false, reason: `stopped_${f}` }, "mutant: not_ready for a stopped supervisor");
+    assert.ok(r.made.every((p) => p.closed), "both ends closed");
+  }
+  for (const [state, failure] of [["running", undefined], ["backoff", undefined], ["starting", undefined], ["failed", undefined], ["failed", "invented"], ["running", "crash_loop"]] as const) {
+    const r = rig({ supervisor: stopped(state, failure) });
+    assert.deepEqual(r.broker.connect(good, "n1"), { ok: false, reason: "not_ready" }, `${state}/${failure}`);
+  }
+  const throwing = rig({ supervisor: { connect: () => false, state: () => { throw new Error("x"); }, failure: () => "crash_loop" } });
+  assert.deepEqual(throwing.broker.connect(good, "n1"), { ok: false, reason: "not_ready" }, "a throwing lookup is not_ready, never a throw");
+});
+
+test("PV-E0 F2: a foreign frame, a bad nonce or a rate-limited window never learns why the service stopped", () => {
+  const sup = { connect: () => false, state: () => "failed", failure: () => "crash_loop" };
+  const r = rig({ supervisor: sup });
+  assert.deepEqual(r.broker.connect({ ...good, frameUrl: "https://evil.example/x" }, "n1"), { ok: false, reason: "bad_frame" });
+  assert.deepEqual(r.broker.connect({ ...good, isMainFrame: false }, "n1"), { ok: false, reason: "not_main_frame" });
+  assert.deepEqual(r.broker.connect({ ...good, codeWindowId: undefined }, "n1"), { ok: false, reason: "not_code_window" });
+  assert.deepEqual(r.broker.connect(good, "bad nonce"), { ok: false, reason: "bad_nonce" });
+  const limited = rig({ supervisor: sup });
+  const reasons = [];
+  for (let i = 0; i < 6; i++) reasons.push((limited.broker.connect(good, `n${i}`) as { reason: string }).reason);
+  assert.deepEqual(reasons, ["stopped_crash_loop", "stopped_crash_loop", "stopped_crash_loop", "stopped_crash_loop", "stopped_crash_loop", "rate_limited"], "the limit applies before the reason (mutant: reason first)");
+});

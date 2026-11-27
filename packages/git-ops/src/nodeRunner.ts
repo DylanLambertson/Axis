@@ -105,10 +105,14 @@ export function createNodeRunner(opts: NodeRunnerOptions = {}): GitRunner {
       // checks one argv or environment and the spawn another.
       let req: GitRunRequest;
       try {
-        const { argv: rawArgv, env: rawEnv, cwd, context, stdin, raw } = request;
+        const { argv: rawArgv, env: rawEnv, cwd, context, stdin, raw, maxOutput: cap } = request;
         const argv = Array.from(rawArgv);
         if (!argv.every((a) => typeof a === "string")) throw denied("every argv entry must be a string");
-        req = { argv, env: { ...rawEnv }, cwd, context, ...(stdin === undefined ? {} : { stdin }), ...(raw === true ? { raw: true } : {}) };
+        if (cap !== undefined && !(Number.isSafeInteger(cap) && cap >= 0)) throw denied("an output cap must be a non-negative integer");
+        req = {
+          argv, env: { ...rawEnv }, cwd, context,
+          ...(stdin === undefined ? {} : { stdin }), ...(raw === true ? { raw: true } : {}), ...(cap === undefined ? {} : { maxOutput: cap }),
+        };
       } catch (e) {
         return Promise.reject(e instanceof GitOpsError ? e : denied("the request could not be read"));
       }
@@ -125,7 +129,7 @@ export function createNodeRunner(opts: NodeRunnerOptions = {}): GitRunner {
       return new Promise((resolve, reject) => {
         // Its own process group on POSIX, so a timeout can kill git's children too (filters, submodule diffs, ssh).
         const group = process.platform !== "win32";
-        const child = spawn(gitPath, req.argv, { cwd: req.cwd, env: withTrustedPath(req.env, req, platform), shell: false, detached: group, stdio: ["pipe", "pipe", "pipe"] });
+        const child = spawn(gitPath, [...req.argv], { cwd: req.cwd, env: withTrustedPath(req.env, req, platform), shell: false, detached: group, stdio: ["pipe", "pipe", "pipe"] });
         if (group && child.pid !== undefined) {
           liveGroups.add(child.pid);
           if (!exitHookInstalled) {
@@ -148,8 +152,9 @@ export function createNodeRunner(opts: NodeRunnerOptions = {}): GitRunner {
           }
         }, opts.timeoutMs ?? 120_000);
         let truncated = false;
+        const limit = Math.min(maxOutput, req.maxOutput ?? maxOutput);
         child.stdout.setEncoding(req.raw === true ? "latin1" : "utf8").on("data", (d: string) => {
-          const room = Math.max(0, maxOutput - out.length);
+          const room = Math.max(0, limit - out.length);
           if (d.length > room) truncated = true;
           out += d.slice(0, room);
         });

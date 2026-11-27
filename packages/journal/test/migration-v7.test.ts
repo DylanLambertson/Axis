@@ -89,7 +89,7 @@ test("recordBaseBranch: the branch and its tip together, once, only while CREATI
   const db = openDatabase(":memory:");
   const audit = new AuditLog(db);
   const journal = Journal.open(db, { audit });
-  journal.registerProject({ id: "proj-a", path: "/work/a", displayName: "A", trusted: true, actor: "user" });
+  journal.registerProject({ id: "proj-a", path: "/work/a", displayName: "A", trusted: false, actor: "user" });
   for (const bad of ["", "abc", TIP.toUpperCase(), `${TIP} `, "refs/heads/main"]) {
     assert.throws(() => journal.recordBaseBranch(creating(journal, `axis/t${bad.length}`), "refs/heads/main", bad, "daemon"), code("E_INVALID_ARGUMENT"), bad);
   }

@@ -1,4 +1,7 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
+import { trustCallOf } from "../src/gate/project-trust.js";
+import { attestedWindow } from "../testing/attested.js";
+import type { ProjectTrustGate } from "../src/gate/project-trust.js";
 import assert from "node:assert/strict";
 import { existsSync, lstatSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { test, type TestContext } from "node:test";
@@ -13,7 +16,9 @@ const posix = process.platform === "win32" ? "symlinks" : undefined;
 const WT = "axis.worktrees";
 const createWs = (user: Client, name?: string) => createWsRaw(user, (_m, x) => (assert.equal(x.ok, true, JSON.stringify(x.error)), x), name);
 const dirOf = (r: Rig, id: string): string => String(r.journal.getWorkspace(id)?.worktreePath);
-const svc = { caller: { actor: "user", connectionId: "c", windowId: "w" }, signal: new AbortController().signal };
+const signal = new AbortController().signal;
+/** A direct service call as a handler makes it: with the gate (the rig's real one) bound to the caller's window. */
+const svcOf = (r: { gate: ProjectTrustGate }) => ({ caller: { actor: "user", connectionId: "c", windowId: "win-1" }, signal, trust: (scope: { projectId: string; workspaceId?: string }) => r.gate.admit({ ...scope, caller: trustCallOf(attestedWindow("win-1")), signal }) });
 const live = new AbortController().signal;
 
 async function twoWorkspaces(t: TestContext, options: RigOptions = {}) {
@@ -34,7 +39,7 @@ test("the manager backstop is reached: with the host's path check bypassed, a sy
   const { r, a, b, runId } = await twoWorkspaces(t, { testSeams: { restorePathCheck: async () => undefined } });
   symlinkSync(dirOf(r, b), path.join(dirOf(r, a), "link"));
   await assert.rejects(
-    r.binding.service.restoreFromRunBase({ id: a, runId, paths: ["link/a.txt"] }, svc),
+    r.binding.service.restoreFromRunBase({ id: a, runId, paths: ["link/a.txt"] }, svcOf(r)),
     (e: unknown) => e instanceof DaemonError && e.code === "E_CONFLICT",
   );
   bUntouched(r, b);
@@ -48,7 +53,7 @@ test("a symlink planted AFTER the host's check (a swap between check and call) i
     },
   });
   plant = () => symlinkSync(dirOf(r, b), path.join(dirOf(r, a), "swap"));
-  await assert.rejects(r.binding.service.restoreFromRunBase({ id: a, runId, paths: ["swap/a.txt"] }, svc));
+  await assert.rejects(r.binding.service.restoreFromRunBase({ id: a, runId, paths: ["swap/a.txt"] }, svcOf(r)));
   // (the host check ran first and the path was not a link yet: only the manager could refuse it)
   bUntouched(r, b);
 });
@@ -57,7 +62,7 @@ test("a symlink that stays inside the same workspace is refused by the manager's
   const { r, a, b, runId } = await twoWorkspaces(t, { testSeams: { restorePathCheck: async () => undefined } });
   const wa = dirOf(r, a);
   symlinkSync(path.join(wa, "sub"), path.join(wa, "alias")); // resolves inside A: only the symlink-component rule refuses it
-  await assert.rejects(r.binding.service.restoreFromRunBase({ id: a, runId, paths: ["alias/b.txt"] }, svc), (e: unknown) => e instanceof DaemonError && e.code === "E_CONFLICT");
+  await assert.rejects(r.binding.service.restoreFromRunBase({ id: a, runId, paths: ["alias/b.txt"] }, svcOf(r)), (e: unknown) => e instanceof DaemonError && e.code === "E_CONFLICT");
   assert.equal(readFileSync(path.join(wa, "sub", "b.txt"), "utf8"), "bravo\n");
   bUntouched(r, b);
 });
@@ -151,9 +156,18 @@ test("hook re-check under the lock: a workspace flagged while the call waits for
   const projectId = String(r.journal.getWorkspace(id)?.projectId);
   let pending: Promise<unknown> = Promise.resolve();
   // Hold the project mutex; the retry passes the hook's first check, then waits; the flag appears while it waits.
-  await r.binding.mutex.run(projectId, async () => {
+  // The retry has passed the hook's first check and is queued once it asks the mutex for the project: wait for that, not for a delay.
+  const mutex = r.binding.mutex;
+  const realRun = mutex.run.bind(mutex);
+  let queued!: () => void;
+  const retryQueued = new Promise<void>((res) => (queued = res));
+  mutex.run = ((key: string, fn: () => Promise<unknown>, signal?: AbortSignal) => {
+    if (key === projectId) queued();
+    return realRun(key, fn, signal);
+  }) as typeof mutex.run;
+  await realRun(projectId, async () => {
     pending = user.call(WT, "remove", { id, approval: { challengeId: c.challengeId } }, newKey());
-    await new Promise((res) => setTimeout(res, 300));
+    await retryQueued;
     r.db.exec(`UPDATE agent_workspaces SET base_sha = '${"1".repeat(40)}' WHERE id = '${id}'`);
     await r.binding.service.reconcile(live);
   });
@@ -164,4 +178,21 @@ test("hook re-check under the lock: a workspace flagged while the call waits for
   await r.binding.service.reconcile(live);
   const ok = await user.call(WT, "remove", { id, approval: { challengeId: c.challengeId } }, newKey());
   assert.equal(ok.ok, true, JSON.stringify(ok.error));
+});
+
+test("project trust at the worktrees port: create and restore without the gate, or with a forged ticket, write nothing (mutant: not spent)", { skip: skip ?? false }, async (t) => {
+  const r = await worktreesRig();
+  t.after(() => r.cleanup());
+  const isUntrusted = (e: unknown) => (e as { code?: string; detail?: { reason?: string } }).code === "E_POLICY_DENIED" && (e as { detail?: { reason?: string } }).detail?.reason === "untrusted";
+  const before = r.journal.listWorkspaces({ includeRemoved: true }).length;
+  const bare = { caller: { actor: "user" as const, connectionId: "c", windowId: "win-1" }, signal };
+  await assert.rejects(r.binding.service.create({ projectId: r.projectId, name: "No gate" }, bare), isUntrusted);
+  await assert.rejects(r.binding.service.create({ projectId: r.projectId, name: "Forged" }, { ...bare, trust: async () => ({ projectId: r.projectId }) }), isUntrusted);
+  assert.equal(r.journal.listWorkspaces({ includeRemoved: true }).length, before, "no workspace row was written");
+  // With the rig's real gate the same call goes through.
+  const made = await r.binding.service.create({ projectId: r.projectId, name: "Gated" }, svcOf(r));
+  assert.ok(made);
+  // The gate refuses once the record is revoked (a gesture), before any write.
+  r.journal.setProjectTrust({ id: r.projectId, trusted: false, via: "gesture" });
+  await assert.rejects(r.binding.service.create({ projectId: r.projectId, name: "Revoked" }, svcOf(r)), isUntrusted);
 });

@@ -31,7 +31,7 @@ export interface AnchorCheck {
 }
 
 /**
- * Verify the whole chain against the supervisor's anchor (`docs/packages.md` "Audit anchor", requirements 1 and 3). The
+ * Verify the whole chain against the supervisor's anchor (`docs/packages/daemon.md` "Audit anchor", requirements 1 and 3). The
  * full form is used on purpose: it is the startup check, so it re-reads every row. Reads only; it never appends, so a
  * broken or truncated chain is never extended by the check itself.
  *

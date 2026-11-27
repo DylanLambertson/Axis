@@ -1,6 +1,9 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
-import { outboundMessageSchema, type OutboundMessage } from "./control/messages.js";
+import { inboundMessageSchema, outboundMessageSchema, type InboundMessage, type OutboundMessage } from "./control/messages.js";
 import { base64url, signMainAttestation, type HmacSha256, type MainIdentity } from "./main/attest-sign.js";
+
+/** The project messages main starts (`sendProject`); nothing else goes that way. */
+const PROJECT_TYPES: ReadonlySet<string> = new Set(["projects.inspect", "projects.register", "projects.trust"]);
 
 /**
  * The parent side of the daemon host (ticket X1, design `docs/design/daemon-host-entry.md`): spawn the fixed entry, send `init`,
@@ -121,12 +124,11 @@ export function daemonEnvironment(source: Readonly<Record<string, string | undef
 }
 
 /**
- * Whether main starts the daemon at all. Until the pty process (B9) exists (the run snapshotter is wired, H13) the daemon refuses to
- * start (exit 78) in every build, so a packaged app does not spawn it: the extra process and its error lines would give a user
- * nothing. Unpackaged builds do, which exercises `fork`, `init` and the refusal. REMOVE the condition in the change that wires the
- * real ports (and X1c must land before or with it: docs/design/daemon-host-plan.md).
+ * Whether main starts the daemon, and with it the pty process (PV-X1b: one gate for both). Only in a development build until the
+ * owner's packaging ADR: a built (packaged) app starts neither. `isBuilt` is Code OSS's `environmentMainService.isBuilt` (false only
+ * under `VSCODE_DEV`), never Electron's `app.isPackaged`, which is true for every Code OSS executable (it is never named `electron`).
  */
-export const shouldStartDaemon = (isPackaged: boolean): boolean => !isPackaged;
+export const shouldStartDaemon = (isBuilt: boolean): boolean => !isBuilt;
 
 export interface AxisDataRoots {
   readonly dataDir: string;
@@ -240,6 +242,24 @@ export class DaemonSupervisor {
     try {
       const attestation = signMainAttestation(hmac, key, identity, (this.#o.wallNow ?? Date.now)());
       child.postMessage({ type: "connect", attestation }, [port]);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Post one of the project messages main starts (`projects.inspect`, `projects.register`, `projects.trust`; main only, after its
+   * own dialog: docs/design/project-registration-and-trust.md §4.3). It is checked against the host's inbound schema first, so a
+   * malformed message is never posted. `false` unless the host is `running`. Never throws.
+   */
+  sendProject(message: Extract<InboundMessage, { type: "projects.inspect" | "projects.register" | "projects.trust" }>): boolean {
+    const child = this.#child;
+    if (this.#state !== "running" || child === undefined) return false;
+    const parsed = inboundMessageSchema.safeParse(message);
+    if (!parsed.success || !PROJECT_TYPES.has(parsed.data.type)) return false;
+    try {
+      child.postMessage(parsed.data);
       return true;
     } catch {
       return false;

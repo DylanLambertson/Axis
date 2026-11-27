@@ -46,7 +46,8 @@ async function guarded<T>(fn: () => Promise<T>): Promise<T> {
   }
 }
 
-function reviewDepsOf(deps: ReviewBindingDeps): ReviewDeps {
+/** The review deps with the defaults applied (the broker's matcher, bounded limits). Exported for tests; not part of the package index. */
+export function reviewDepsOf(deps: ReviewBindingDeps): ReviewDeps {
   const limits: Partial<ReviewLimits> = {
     ...deps.limits,
     maxFiles: Math.min(deps.limits?.maxFiles ?? MAX_REVIEW_FILES, MAX_REVIEW_FILES),
@@ -97,6 +98,7 @@ export function createReviewService(deps: ReviewBindingDeps): ReviewService {
           skipped: session.skipped.map((s) => ({ path: s.path, size: s.size })),
           skippedCount: session.skippedCount,
           hasCutLines: (path) => guarded(() => session.hasCutLines(path)),
+          readNewBlob: (path, bound) => guarded(() => session.readNewBlob(path, bound)),
           accept: (path, options) => {
             try {
               session.acceptFile(path, options.acceptTruncated ? { acceptTruncated: true } : {});

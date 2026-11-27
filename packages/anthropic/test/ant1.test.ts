@@ -6,6 +6,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { ProviderError, type StreamEvent } from "@axis/providers";
 import { ANTHROPIC_ORIGIN } from "../src/index.js";
+import { budget } from "./support/load-margin.js";
 import { MODEL } from "./support/scenarios.js";
 import { CREDENTIAL, PATTERN_KEY, drain, failure, guarded, live, make, req, run, secretForms, views } from "./support/harness.js";
 import { chunkBytes, jsonResponse, response, sseEvent, sseResponse, textReply, type Handler } from "./support/transport.js";
@@ -154,7 +155,7 @@ test("ANT-1: a deeply nested event is refused without being parsed", async () =>
   const t0 = Date.now();
   const { err } = await streamError(startEvent + evil, { limits: { maxEventBytes: 2_000_000, maxLineBytes: 2_000_000 } }, 65_536);
   assert.equal(err.details.reason, "event_too_deep");
-  assert.ok(Date.now() - t0 < 2_000, "refused quickly");
+  assert.ok(Date.now() - t0 < budget(2_000), "refused quickly"); // the 200 000-deep scan is linear; parsing or rescanning it takes far longer
 });
 
 test("ANT-1: brackets inside strings do not count as nesting", async () => {

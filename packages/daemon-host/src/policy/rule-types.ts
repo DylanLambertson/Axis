@@ -1,14 +1,15 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 
 /**
- * How a method is gated on trust.
+ * How a method is gated on trust (docs/design/project-registration-and-trust.md §5.4).
  * - `none`: no trust condition.
- * - `registry`: the attested `identity.trusted` AND the live `TrustRegistry` must both say trusted (design 6.2).
- * - `per-start`: a CLI run start. Trust is a single-use attestation minted per call from the supervisor's live answer
- *   (TRU-2), so the registry is not the authority, but an explicit revoke in it refuses the start as well. Policy does
- *   NOT check the attested `identity.trusted` for this mode: the per-start `trust.check` (ticket H10) must refuse.
+ * - `project`: the project trust gate decides, inside the handler right before the side effect (T1 to T4: the main-confirmed
+ *   record, its binding, the worktree's binding, main's `trust.check`, no revoke), and the side-effect port requires the ticket
+ *   it mints. Policy refuses only a recorded revoke here, at dispatch.
+ * - `per-start`: a CLI run start: the same gate, then the single-use `TrustAttestation` (TRU-2). Same policy check.
+ * Policy never reads the attested `identity.trusted` (the connect-time reading of the renderer-writable model).
  */
-export type TrustMode = "none" | "registry" | "per-start";
+export type TrustMode = "none" | "project" | "per-start";
 
 /** The actors a rule admits. In Phase 1a only `user` connects; an `agent:*` or `daemon` identity is refused everywhere. */
 export type RuleActor = "user";

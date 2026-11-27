@@ -20,6 +20,7 @@ test("registry: tiers, side effects, idempotency, as in the design table", () =>
     [G, "push", 4, "network", "required"],
     [G, "compareUrl", 0, "read", "none"],
     [R, "diff", 1, "read", "none"],
+    [R, "content", 1, "read", "none"],
     [R, "complete", 2, "write", "required"],
   ];
   for (const [c, m, tier, sideEffect, idem] of expect) {
@@ -32,7 +33,7 @@ test("registry: tiers, side effects, idempotency, as in the design table", () =>
     assert.equal(Object.isFrozen(spec), true);
   }
   assert.deepEqual(Object.keys(contracts["axis.git/1"] ?? {}).sort(), ["commit", "compareUrl", "push", "pushPlan"]);
-  assert.deepEqual(Object.keys(contracts["axis.review/1"] ?? {}).sort(), ["complete", "diff"]);
+  assert.deepEqual(Object.keys(contracts["axis.review/1"] ?? {}).sort(), ["complete", "content", "diff"]);
   assert.deepEqual(tableProblems(contracts), []);
 });
 
@@ -313,7 +314,7 @@ test("review.complete: a run id in, a COMPLETED run out, and no actor in the req
 });
 
 test("the git commit reasons are the ones the packages use and are a closed set", () => {
-  assert.deepEqual([...GIT_COMMIT_REASONS].sort(), ["detached_head", "git_drift", "head_moved", "index_changed", "no_head", "not_found", "operation_in_progress", "ref_update_failed", "snapshot_failed", "stale", "too_large"]);
+  assert.deepEqual([...GIT_COMMIT_REASONS].sort(), ["detached_head", "git_drift", "head_moved", "index_changed", "no_head", "not_found", "operation_in_progress", "ref_update_failed", "snapshot_failed", "stale", "too_large", "untrusted"]);
   assert.deepEqual([...REVIEW_DIFF_REASONS].sort(), ["filtered_path", "hunks_do_not_apply", "index_refused", "no_head", "not_found", "not_head", "nothing_accepted", "path_conflict", "snapshot_failed", "too_large", "truncated_hunk", "unsafe_path"]);
   assert.equal((REVIEW_DIFF_REASONS as readonly string[]).includes("not_a_commit"), false);
 });

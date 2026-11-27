@@ -1,10 +1,12 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
+import type { ForgeListRequest, ForgeReply } from "@axis/protocol";
 import { createExecCalls, type PtyExecCall, type PtyExecOutcome } from "./exec-client.js";
-import { controlReply, type ControlReply } from "./messages.js";
+import { createForgeCalls } from "./forge-client.js";
+import { controlReply, relayInbound, type ControlReply, type RelayInbound, type RelayOutbound } from "./messages.js";
 import { probeGroup, signalGroup, validPgid } from "./group.js";
 import { systemClock, systemProcessOps, type Channel, type Clock, type Disposable, type ProcessOps, type PtyExit, type PtyHandle, type PtyPort, type PtySignal, type PtySpawn } from "./ports.js";
 
-export type PtySpawnFailure = "timeout" | "channel_closed" | "capacity" | "env_denied" | "bad_group" | "spawn_failed" | "no_control" | "bad_bind" | "hook_changed";
+export type PtySpawnFailure = "timeout" | "channel_closed" | "capacity" | "env_denied" | "bad_group" | "spawn_failed" | "no_control" | "bad_bind" | "hook_changed" | "bad_argv" | "remote_refused" | "endpoint_unavailable";
 
 /** The rejection of `spawn`. Carries a code only: never the argv or the environment. */
 export class PtySpawnError extends Error {
@@ -23,6 +25,26 @@ export interface PtyProcessPortOptions {
   readonly spawnTimeoutMs?: number;
   /** Spawns waiting for an answer. Default 64; execs waiting for an answer are bounded by the same number, separately. */
   readonly maxPending?: number;
+  /** PV-M6: each endpoint relay message, parsed by the shared envelope schema (the daemon's relay answers it with `relay`). */
+  readonly onRelay?: (msg: RelayInbound) => void;
+}
+
+/**
+ * H9-hooks S4: one `git push` of the pinned refspec as a terminal-bound run (the `push` message). The pty process builds the argv,
+ * the pins and the environment; `env` carries only the exec allow-list (identity, `GIT_TERMINAL_PROMPT`, `LANG`, `LC_*`).
+ */
+export interface PtyPushCall {
+  readonly runId: string;
+  readonly repo: { readonly gitDir: string; readonly workTree: string };
+  readonly remote: string;
+  readonly refspec: string;
+  /** git-ops' `pushUrlsDigest` of the push URLs it read; the pty process refuses (`remote_refused`) when its own read differs. */
+  readonly pushUrls: string;
+  readonly env: Readonly<Record<string, string>>;
+  /** The configuration and ssh variables the host validated, `null` for unset; the pty process refuses a push whose own differ. */
+  readonly expectEnv: Readonly<Record<"HOME" | "XDG_CONFIG_HOME" | "GIT_CONFIG" | "GIT_CONFIG_GLOBAL" | "GIT_CONFIG_SYSTEM" | "GIT_CONFIG_NOSYSTEM" | "GIT_SSH" | "GIT_SSH_COMMAND" | "GIT_SSH_VARIANT" | "GIT_PROXY_COMMAND", string | null>>;
+  readonly cols: number;
+  readonly rows: number;
 }
 
 /** A `PtyHandle` that also names its terminal, so the entry can have main broker a data port for it (`grant`). */
@@ -39,8 +61,20 @@ export interface PtyProcessPort extends PtyPort, Disposable {
    * channel closes; rejects with a `PtyExecError` code only. The daemon host's `createPtyGitRunner` is its one caller.
    */
   exec(call: PtyExecCall): Promise<PtyExecOutcome>;
+  /**
+   * `git push` as a terminal-bound run (H9-hooks §5.2): settles like `spawn`, and the handle reports the exit status only (the
+   * push's output goes to the terminal, never here). A refusal rejects with a `PtySpawnError` code (`bad_argv`, `env_denied`, ...).
+   */
+  push(call: PtyPushCall): Promise<PtyProcessHandle>;
+  /**
+   * The user's `gh pr list` for one vetted repository (`forge-list`, PV-D2). Resolves with the reply parsed by the shared schema
+   * (`undefined` for a reply to this request that failed it); rejects with a `PtyForgeError` code only.
+   */
+  forgeList(request: ForgeListRequest): Promise<ForgeReply | undefined>;
   /** How many terminals the port still tracks (an exited terminal whose group is gone is forgotten). For diagnostics and tests. */
   trackedTerminals(): number;
+  /** PV-M6: send the daemon's answer for the endpoint relay; false when the channel is closed. */
+  relay(msg: RelayOutbound): boolean;
 }
 
 interface Pending {
@@ -78,6 +112,7 @@ export function createPtyProcessPort(options: PtyProcessPortOptions): PtyProcess
   let seq = 0;
   let closed = false;
   const execs = createExecCalls({ send: (m) => send(m), closed: () => closed, clock, graceMs: timeoutMs, maxPending });
+  const forge = createForgeCalls({ send: (m) => send(m), closed: () => closed, clock, maxPending });
 
   const send = (msg: unknown): boolean => {
     if (closed) return false;
@@ -103,7 +138,11 @@ export function createPtyProcessPort(options: PtyProcessPortOptions): PtyProcess
 
   const onMessage = (raw: unknown): void => {
     const parsed = controlReply.safeParse(raw);
-    if (!parsed.success) return execs.onMessage(raw);
+    if (!parsed.success) {
+      const relay = relayInbound.safeParse(raw);
+      if (relay.success) return void options.onRelay?.(relay.data);
+      return void (forge.onMessage(raw) || execs.onMessage(raw));
+    }
     const m = parsed.data;
     if (m.t === "spawned") {
       const p = pending.get(m.req);
@@ -199,6 +238,24 @@ export function createPtyProcessPort(options: PtyProcessPortOptions): PtyProcess
     }
   };
 
+  /** Sends one terminal-starting message (`spawn` or `push`) and settles on its `spawned`/`spawn-failed`, a timeout or a close. */
+  const request = (build: (req: string) => Record<string, unknown>): Promise<PtyProcessHandle> => {
+    if (closed) return Promise.reject(new PtySpawnError("channel_closed"));
+    if (pending.size >= maxPending) return Promise.reject(new PtySpawnError("capacity"));
+    const req = `r${++seq}`;
+    return new Promise<PtyProcessHandle>((resolve, reject) => {
+      const timer = clock.setTimeout(() => {
+        if (pending.delete(req)) reject(new PtySpawnError("timeout"));
+      }, timeoutMs);
+      pending.set(req, { resolve, reject, timer });
+      const ok = send(build(req));
+      if (!ok && pending.delete(req)) {
+        clock.clearTimeout(timer);
+        reject(new PtySpawnError("channel_closed"));
+      }
+    });
+  };
+
   const subs = [
     channel.onMessage(onMessage),
     channel.onClose(() => {
@@ -206,6 +263,7 @@ export function createPtyProcessPort(options: PtyProcessPortOptions): PtyProcess
       closed = true;
       failAll("channel_closed");
       execs.failAll("channel_closed");
+      forge.failAll("channel_closed");
       killKnown();
       // The pty process is gone, so no `exit` will come. Say so with an unknown exit; the group probe still guards finalisation.
       for (const t of terms.values()) settleExit(t, { exitCode: null, signal: null });
@@ -213,24 +271,14 @@ export function createPtyProcessPort(options: PtyProcessPortOptions): PtyProcess
   ];
 
   return {
-    spawn(spec: PtySpawn): Promise<PtyProcessHandle> {
-      if (closed) return Promise.reject(new PtySpawnError("channel_closed"));
-      if (pending.size >= maxPending) return Promise.reject(new PtySpawnError("capacity"));
-      const req = `r${++seq}`;
-      return new Promise<PtyProcessHandle>((resolve, reject) => {
-        const timer = clock.setTimeout(() => {
-          if (pending.delete(req)) reject(new PtySpawnError("timeout"));
-        }, timeoutMs);
-        pending.set(req, { resolve, reject, timer });
-        const ok = send({ t: "spawn", req, runId: spec.runId, argv: [...spec.argv], cwd: spec.cwd, env: { ...spec.env }, cols: spec.cols, rows: spec.rows });
-        if (!ok && pending.delete(req)) {
-          clock.clearTimeout(timer);
-          reject(new PtySpawnError("channel_closed"));
-        }
-      });
-    },
+    spawn: (spec: PtySpawn): Promise<PtyProcessHandle> =>
+      request((req) => ({ t: "spawn", req, runId: spec.runId, argv: [...spec.argv], cwd: spec.cwd, env: { ...spec.env }, cols: spec.cols, rows: spec.rows, ...(spec.messagesEndpoint === undefined ? {} : { messagesEndpoint: { endpoint: spec.messagesEndpoint.endpoint, token: spec.messagesEndpoint.token } }) })),
+    push: (call: PtyPushCall): Promise<PtyProcessHandle> =>
+      request((req) => ({ t: "push", req, runId: call.runId, repo: { gitDir: call.repo.gitDir, workTree: call.repo.workTree }, remote: call.remote, refspec: call.refspec, pushUrls: call.pushUrls, env: { ...call.env }, expectEnv: { ...call.expectEnv }, cols: call.cols, rows: call.rows })),
     exec: (call) => execs.exec(call),
+    forgeList: (request) => forge.list(request),
     trackedTerminals: () => terms.size,
+    relay: (msg) => !closed && send(msg),
     grant(terminalId, conn) {
       send({ t: "grant", term: terminalId, conn });
     },
@@ -239,6 +287,7 @@ export function createPtyProcessPort(options: PtyProcessPortOptions): PtyProcess
         closed = true;
         failAll("channel_closed");
         execs.failAll("channel_closed");
+        forge.failAll("channel_closed");
         killKnown();
       }
       subs.forEach((s) => s.dispose());

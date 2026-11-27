@@ -80,13 +80,35 @@ describe("headless slice", { skip, timeout: SUITE_TIMEOUT_MS }, () => {
     sup = started.sup;
     const ready = await started.ready;
     assert.equal(ready["degraded"], undefined);
-    assert.deepEqual([...(ready["contracts"] as string[])].sort(), ["axis.approvals", "axis.audit", "axis.cli-runs", "axis.events", "axis.git", "axis.projects", "axis.providers", "axis.review", "axis.runs", "axis.worktrees"]);
+    assert.deepEqual([...(ready["contracts"] as string[])].sort(), ["axis.agent-groups", "axis.agents", "axis.approvals", "axis.attention", "axis.audit", "axis.cli-runs", "axis.events", "axis.forge", "axis.git", "axis.messages", "axis.pages", "axis.projects", "axis.providers", "axis.review", "axis.runs", "axis.tasks", "axis.usage", "axis.worktrees"]);
     trustWindow(sup);
     projectId = await registerProject(sup, fx.repo);
     user = await TestClient.open(sup);
     assert.deepEqual(user.welcome.contracts.map((c) => c.id).sort(), (ready["contracts"] as string[]).slice().sort());
     const projects = await user.ok<{ projects: Array<{ id: string; trusted: boolean }> }>("axis.projects", "list", {});
     assert.deepEqual(projects.projects.map((p) => p.id), [projectId]);
+    // PV-M3: the composed host serves axis.messages/1 over the journal; no agent exists yet (PV-G3), so nothing can be addressed.
+    const threads = await user.ok<{ threads: unknown[] }>("axis.messages", "threads", {});
+    assert.deepEqual(threads.threads, []);
+    const settings = await user.ok<{ settings: { projectId: string; agents: unknown[] } }>("axis.messages", "settings", { projectId });
+    assert.deepEqual([settings.settings.projectId, settings.settings.agents], [projectId, []]);
+    const nobody = await user.call("axis.messages", "send", { recipients: [{ agent: "a1" }], body: { format: "text", text: "hi" } }, true);
+    assert.deepEqual([nobody.error?.code, nobody.error?.details], ["E_CONFLICT", { reason: "recipient_refused" }]);
+    // PV-D2 slice 2: the composed host serves axis.forge/1 to the user; this fixture's origin is a local path, not GitHub.
+    const forge = await user.ok<{ state: string }>("axis.forge", "pullRequests", { projectId, trigger: "view" });
+    assert.equal(forge.state, "remote_invalid");
+    // PV-D4: the composed host serves axis.attention/1 over the journal and the live run services; nothing needs attention yet.
+    const zero = { n: 0, capped: false };
+    const attention = await user.ok("axis.attention", "summary", { projectId });
+    assert.deepEqual(attention, { projectId, approvalsWaiting: { total: zero, byAgent: [], more: false }, failedRuns: zero, quietCliRuns: zero, driftFlags: zero, unreadMessages: zero });
+    const unknown = await user.call("axis.attention", "summary", { projectId: "no-such-project" }, true);
+    assert.deepEqual([unknown.error?.code, unknown.error?.details], ["E_NOT_FOUND", { reason: "not_found" }]);
+    // PV-D3: the composed host serves axis.usage/1 over the journal and the composer's workspace limits; nothing spent yet.
+    const none = { runs: 0, inputTokens: 0, outputTokens: 0, tokens: 0, requests: 0, costMicroUsd: 0, unpricedRequests: 0 };
+    const usage = await user.ok("axis.usage", "summary", { projectId });
+    assert.deepEqual(usage, { projectId, project: none, agents: [], unattributed: none });
+    const unknownUsage = await user.call("axis.usage", "summary", { projectId: "no-such-project" }, true);
+    assert.deepEqual([unknownUsage.error?.code, unknownUsage.error?.details], ["E_NOT_FOUND", { reason: "not_found" }]);
     // C5: the composed list answers from the agent binding's registry (it was [] before), so the mock and its model are listed.
     const listed = await user.ok<{ providers: Array<{ providerId: string; status: string; models: Array<{ modelId: string }> }> }>("axis.providers", "list", {});
     assert.deepEqual(listed.providers.map((p) => [p.providerId, p.status, p.models.map((m) => m.modelId)]), [["mock", "ready", ["mock-model"]]]);

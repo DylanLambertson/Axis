@@ -1,4 +1,5 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
+import { trustCallOf } from "../gate/project-trust.js";
 import { DaemonError, type ApprovalContentHook, type Handler, type HandlerContext } from "@axis/daemon";
 import { gitPushRequestSchema, type GitRequest } from "@axis/protocol";
 import type { PushCall } from "../ports/git.js";
@@ -18,6 +19,8 @@ async function pushCall(deps: GitHandlerDeps, id: string, method: string, reques
     remote: request.remote,
     branch: ws.branch,
     baseSha: await scanBase(deps, ws, id, worktree, target),
+    // The destination is part of the plan digest, so the tier 4 approval names it: re-pointed after the plan, the push is `plan_changed`.
+    destination: target,
     ...(request.allowedBinaryPaths === undefined ? {} : { allowedBinaryPaths: request.allowedBinaryPaths }),
     ...(request.allowedBinaryIds === undefined ? {} : { allowedBinaryIds: request.allowedBinaryIds }),
   };
@@ -99,7 +102,10 @@ export function createGitPushHandler(deps: GitHandlerDeps): Handler {
           if (ws.projectId !== first.projectId) throw gitFailure("E_NOT_FOUND");
           if (runActive(deps, workspaceId)) throw gitFailure("E_CONFLICT");
           if (signal.aborted) throw gitFailure("E_CANCELLED");
-          await deps.ops.executePush(call, confirmedPlan);
+          // The gate, right before git: after the tier 4 confirmation (spent at dispatch) and inside the mutex.
+          const ticket = await deps.gate.admit({ projectId: ws.projectId, caller: trustCallOf(context.identity), workspaceId, signal });
+          // The request's signal ends the push run (the method's timeout, a cancel): the run never outlives the request.
+          await deps.ops.executePush({ ...call, projectId: ws.projectId }, confirmedPlan, ticket, signal);
           // Known pushed to THIS destination now (before the journal write, which can fail without undoing the push).
           deps.bases.record(workspaceId, target, confirmedPlan.tip);
           // Both writes can fail without undoing the push: a failed one is reported and the push still succeeds.

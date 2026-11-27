@@ -3,7 +3,11 @@ import { z } from "zod";
 import { cliRunSchema } from "./cliRuns.js";
 import { axisBranchSchema, objectIdSchema } from "./git.js";
 import { countSchema, displayTextSchema, guarded } from "./guard.js";
+import { reviewContentRequestSchema, reviewContentResponseSchema } from "./review-content.js";
+import { contentIdSchema, fileIdSchema, MAX_REVIEW_PATH } from "./review-ids.js";
 import { runIdSchema, workspaceIdSchema, type MethodSpec } from "./worktrees.js";
+
+export { contentIdSchema, fileIdSchema, MAX_REVIEW_PATH } from "./review-ids.js";
 
 /**
  * `axis.review/1` (docs/design/daemon-host.md section 4.2). `diff` is the read side of `@axis/review`: the changed files
@@ -28,7 +32,6 @@ export const REVIEW_VERSION = 1 as const;
  * `E_INVALID_ARGUMENT`, `reason: "too_large"`) instead of being listed in part, so what the user reviews is all of what is committed.
  */
 export const MAX_REVIEW_FILES = 200;
-export const MAX_REVIEW_PATH = 256;
 /** Files left out of the snapshot for their size: listed (up to this many) so they are not silently missing. */
 export const MAX_REVIEW_SKIPPED = 50;
 const MAX_FILE_TAGS = 4;
@@ -62,26 +65,6 @@ export const CHANGE_STATUS_VALUES = ["A", "M", "D", "R", "T"] as const;
 export const CHANGE_KIND_VALUES = ["text", "binary", "symlink", "submodule", "too-large", "filtered"] as const;
 export const changeStatusSchema = z.enum(CHANGE_STATUS_VALUES);
 export const changeKindSchema = z.enum(CHANGE_KIND_VALUES);
-
-/**
- * Names a file within one review. Minted by the host: the SHA-256, in lower-case hex, of the UTF-8 encoding of the repository
- * path as the host DECODED it (`ReviewFile.path`), never of the display string. The host has the path as a string, not as raw
- * bytes, so two different byte paths that decode to the same string would share an id: a path that does not decode as strict
- * UTF-8 (it holds U+FFFD) is therefore `unsafePath` (`not_utf8`), which blocks the tree, and the handler folds entries with
- * equal path strings into one row instead of listing equal ids. Among files that can be committed an id is unique within a
- * response. Two files can show the same `displayPath` (a cut in the middle of long paths) but never the same `fileId`.
- * It is an identity, not a secret.
- */
-export const fileIdSchema = z.string().regex(/^[0-9a-f]{64}$/);
-
-/**
- * The content AND mode binding of an acknowledgement: the SHA-256, in lower-case hex, of the string
- * `<newMode> <newOid>` (for example `100644 3b18e5...`), where mode and oid are the file's entry in the SNAPSHOT TREE the
- * `treeHash` is built from (for a symlink, mode `120000` and the blob of its target). An object id hashes bytes only, so
- * the mode is part of the binding: the same bytes made executable (`100755`) or turned into a symlink (`120000`) give a
- * different `contentId`, and an acknowledgement of one does not carry to the other. Only a `truncated` file has one.
- */
-export const contentIdSchema = z.string().regex(/^[0-9a-f]{64}$/);
 
 /** One acknowledgement: this file, with exactly this content. Both must equal the current entry, byte for byte (no case folding, no normalisation). */
 export const acknowledgementSchema = z.strictObject({ fileId: fileIdSchema, contentId: contentIdSchema });
@@ -220,6 +203,14 @@ export const reviewMethods = {
   diff: {
     request: reviewDiffRequestSchema,
     response: reviewDiffResponseSchema,
+    sideEffect: "read",
+    tier: 1,
+    idempotency: "none",
+    timeoutMs: 30_000,
+  },
+  content: {
+    request: reviewContentRequestSchema,
+    response: reviewContentResponseSchema,
     sideEffect: "read",
     tier: 1,
     idempotency: "none",

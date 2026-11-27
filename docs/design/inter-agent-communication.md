@@ -79,7 +79,7 @@ Settings that widen messaging (cross-group, an agent accepting from `project`, e
 - **Participant set.** Each thread has a daemon-held participant set of principals (the user, agent ids, plugin ids). It is fixed at creation from the sender and the policy-checked, expanded recipients. It grows only (a) by a user action ("add to thread"), or (b) when a send to the thread names a recipient that the send policy (§4.1) allows for that sender; the new participant sees messages from the moment it joined, not the history, unless the user adds it with history.
 - **Reads.** `thread`, `threads`, `read` (the composer tool `read_messages` and the CLI endpoint's read) and `markRead` return only threads where the caller is a participant, and within them only messages addressed to the caller or sent after it joined. Thread lists never include ids of other threads.
 - **Posting into a thread.** `send` with a `threadId` requires the sender to be a participant; the recipients must be a subset of the participants plus targets the send policy allows the sender. **Participation is necessary, not sufficient:** every recipient, participant or not, passes §4.1 (including the recipient's `accepts from`) at accept and again at delivery; a participant the policy no longer allows stays a reader of the history only (review 2, NS1).
-- **No existence oracle.** A thread that exists but is not visible to the caller answers with the same closed `not_found`, same shape and same timing class, as a thread that does not exist. Ids are random (§2), never sequential.
+- **No existence oracle.** A thread that exists but is not visible to the caller answers with the same closed `not_found`, same shape and on the same structural path (one participant-scoped lookup), as a thread that does not exist. Ids are random (§2), never sequential.
 - **The user.** The user (actor `user`) can read every thread of the project; that is the visibility guarantee in §10.
 - **Policy rows.** Every read method has its own policy row (actors, tier 0 or 1); a read by an actor without a row is `E_POLICY_DENIED`. The coverage check (the H6 pattern) covers them.
 - **Audit.** A refused read or post writes `message.read.refused` or `message.send.refused` with the caller's ids and the requested thread id (never content).
@@ -148,6 +148,19 @@ Every broker tool except pure reads of the run's own worktree and of Axis state 
 - **Precedence.** IAC-T overrides every standing grant, auto mode, "always allow" rule or future wake grant (M-4). Nothing disables it in 2a (M-2).
 - **Separate ticket.** The taint core (flag, sources, broker decision hook, approval-card list) is ticket PV-M0, which PV-M4, PV-Q1 and PV-T1 depend on, so no source ships before the rule exists.
 
+### 6.7 The taint core as built (PV-M0)
+
+- **Sources as a closed enum.** `@axis/protocol` `TAINT_SOURCES`, in the order of §6.6: `message` (1), `read_messages` (2), `excerpt` (3), `page` (4), `task_start` (5), `plugin_output` (6), `integration_data` (7), `task_read` (8). The daemon refuses any other value. The user is never a sender kind (`agent`, `plugin`, `cli`, `integration`).
+- **The flag.** One `RunTaint` per composer run (`packages/daemon-host/src/composer/taint.ts`), held by the agent binding for the run's life. Nothing clears it. A producer calls `receive` before it returns the result or delivery that carries the content, so the next call of the same reply is decided tainted. `receive` sets the flag before it checks anything. A receipt that is not on the closed list, or whose audit row cannot be written, still leaves the run tainted, and then `receive` throws. When that happens, the binding withholds the result and the run ends `FAILED` / `TOOL_FAILED`.
+- **Across a restart or a resume.** Invariant: a run whose journal record says it is tainted starts tainted. The journal records it in `composer_runs.tainted` (schema version 8, forward-only). A trigger refuses clearing it. `receive` writes it right after the in-memory flag and before anything else. A run with no record cannot record its taint, so `receive` throws and the result is withheld. Each time the binding builds a run's tools (a start, or any later resume or wake, M-4), it seeds the flag from the record. A record that cannot be read starts the run tainted. A run recorded before schema version 8 reads as untainted, which is right because no source existed then. Today only a start builds a run's tools, so the resume and wake cases hold by construction. Two rules bind PV-M4 and any later resume, continue or wake (M-4): a new run id that carries an earlier run's history must inherit that run's taint, and one run must never have two live tool sets, because `decide` reads the in-memory flag, not the journal.
+- **The decision hook.** `@axis/broker` `PolicyOptions.hook` is asked for every call, after the tier, launcher and protected-path rules. It can only raise a call to approval. While the run is tainted, every call above `read` needs the user's approval, whatever the floor. If the hook throws or gives a malformed answer, the call is denied (`decision-hook`). The `broker.decision` row records the tier and the `taint` reason at the moment of decision.
+- **Precedence by construction.** No standing grant, auto mode or always-allow exists yet. The hook overrides any approval floor. A future grant must be built as an input to `ToolPolicy.decide`, never as a path around it, so that the hook still runs last.
+- **Issue and consume.** `gate/run-approvals.ts` binds the flag into the challenge's request (`args.tainted`) at issue and reads it again at consume. If a challenge was issued untainted and approved after the run became tainted, it no longer matches its request. The manager burns it (`request_mismatch`), and the call is declined. The model's retry is then decided under the taint, and its card lists the sources.
+- **The card.** `approvalPreviewSchema.taint` (optional, present whenever the run is tainted) holds the 16 most recent sources, a `total` of every receipt (a malformed one included), and `earlier` when the run was already tainted as recorded when the daemon took it up. Those earlier sources are the run's `message.taint` audit rows. Each source has its type, sender kind, sender display name, the daemon's time of receipt, the hop and an opaque `ref` for a link. When the call is tier 4, its native dialog line shows only the daemon's count ("after untrusted input (N)", or "(earlier)"); most calls a taint raises to approval are tier 3, which has no native dialog, so the card is all the user sees.
+- **Audit.** `message.taint` keeps `runId`, `source`, `sourceId`, `senderKind` and `hop`, and never the content.
+- **Test source.** `AgentBindingDeps.taintSources` marks a tool's successful result as a source. It is asked for every call the broker ran, including a tool registered without a preview schema, which gets its raw input. The host passes none. The tests use it to drive every source through the real broker, approvals and loop.
+- **Residual.** A call the broker allowed without approval before the run became tainted is not re-checked when it runs. The composer loop runs calls one at a time, so no taint can arrive between that decision and its action. PV-M4's turn-boundary delivery keeps that order.
+
 ## 7. Limits
 
 ### 7.1 Size and rate
@@ -162,7 +175,7 @@ Values are proposed defaults; each is enforced in the daemon, and each refusal i
 | Sends per project | 300 per minute | `rate_limited` |
 | Reads per caller | 60 per minute; a read returns at most 50 messages and 256 KiB | `rate_limited` |
 | Hop depth | 8 | `hop_limit` |
-| Messages per thread kept | 2,000 (older ones archived, still in the journal until retention) | n/a |
+| Messages per thread | 2,000; a send past it is refused (start a new thread; archiving is a later decision) | `too_large` |
 | Retention | 30 days, user-configurable; audit events keep only keyed hashes | n/a |
 
 ### 7.2 Recipient queues (review S2)
@@ -236,7 +249,7 @@ TSK-2 (task text laundering taint) and PAG-3 (page script reaching the bridge) a
 - **Kill switch:** **Pause messaging** per project (and per group and agent), a user-only tier-2 call. The daemon refuses every send, every delivery and every endpoint call in that scope with `paused`, for agent, CLI and plugin senders alike; queued messages stay queued. **Resume** is also user-only. The UI copy says plainly that Pause **stops new deliveries only: a message a CLI or a composer has already read cannot be recalled** (review N8). Stopping runs is the separate existing action.
 - **Mute:** per agent, the user can stop seeing an agent's messages in the attention block without changing delivery.
 
-## 11. Proposed gate lines (for Phase 2a; not added to `ROADMAP.md`)
+## 11. Gate lines (Phase 2a; `ROADMAP.md` refers to them)
 
 1. A composer agent's `send_message` to an agent in another group is refused by default; the refusal is audited with sender and recipient ids.
 2. A body containing a challenge id, a digest or the word "approved" changes no approval; an agent connection calling `axis.approvals/1.resolve` is denied (DMN-3 re-run with messaging on).
@@ -256,6 +269,7 @@ TSK-2 (task text laundering taint) and PAG-3 (page script reaching the bridge) a
 16. **Retention:** a message older than the retention period is purged from the journal; its audit events remain with keyed hashes only.
 17. **Keyed hash:** the audit holds no plain SHA-256 of any body; a scan-refused send has no body hash.
 18. **Taint at consume:** a challenge issued before a run became tainted and consumed after it is re-checked and needs the user's approval under IAC-T; the consume of the old grant alone is refused.
+19. **Taint across a resume:** a composer run that received a source and is taken up again (after a restart, a resume or a wake) needs the user's approval for its first side-effecting call, with no new receipt.
 
 ## 12. Open questions for the owner
 

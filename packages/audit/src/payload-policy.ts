@@ -27,6 +27,10 @@ export const DEFAULT_PAYLOAD_ALLOWLIST: Readonly<Record<string, readonly string[
   "rpc.execute": [...POLICY_KEYS],
   // The field name is a fixed literal chosen by the journal, never a caller value: it says which record changed, not what it now holds.
   "journal.workspace.record": ["field"],
+  // Agents and groups (PV-G3): ids and a fixed field name only; a name the user typed is never stored verbatim.
+  "journal.agent.record": ["field", "agentId", "groupId", "projectId", "workspaceId", "kind", "reason", "count"],
+  // Plugin grants (schema v16, PV-K1b): ids and a fixed field, the permission from a closed set; never anything a plugin wrote.
+  "journal.plugin.record": ["field", "pluginId", "projectId", "permission"],
   "journal.recovery": ["from", "to", "reason", "kind", "workspaceId", "projectId", "count"],
 };
 

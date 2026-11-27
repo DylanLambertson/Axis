@@ -73,17 +73,17 @@ test("a refused removal falls back only to the state it started from", () => {
 test("projects: register, read, list; a duplicate id or path is a conflict and writes no audit event", () => {
   const { journal, audit } = setup();
   const p = journal.registerProject({ id: "proj-1", path: abs("repo"), displayName: "Repo", trusted: false, actor: "user" });
-  assert.deepEqual({ ...p, createdAt: "", updatedAt: "" }, { id: "proj-1", path: abs("repo"), displayName: "Repo", trusted: false, createdAt: "", updatedAt: "" });
+  assert.deepEqual({ ...p, createdAt: "", updatedAt: "", trustChangedAt: "" }, { id: "proj-1", path: abs("repo"), displayName: "Repo", trusted: false, commonDir: null, gitDirId: null, trustChangedAt: "", createdAt: "", updatedAt: "" });
   assert.equal(journal.getProject("proj-1")?.path, abs("repo"));
   assert.deepEqual(journal.listProjects().map((x) => x.id), ["proj-1"]);
   const head = audit.head();
-  assert.throws(() => journal.registerProject({ id: "proj-1", path: abs("other"), displayName: "x", trusted: true, actor: "user" }), code("E_CONFLICT"));
-  assert.throws(() => journal.registerProject({ id: "proj-2", path: abs("repo"), displayName: "x", trusted: true, actor: "user" }), code("E_CONFLICT"));
+  assert.throws(() => journal.registerProject({ id: "proj-1", path: abs("other"), displayName: "x", trusted: false, actor: "user" }), code("E_CONFLICT"));
+  assert.throws(() => journal.registerProject({ id: "proj-2", path: abs("repo"), displayName: "x", trusted: false, actor: "user" }), code("E_CONFLICT"));
   assert.deepEqual(audit.head(), head);
   for (const path of ["relative/dir", `${abs("a")}${"/".repeat(2)}b`, `${abs("a")}\u0000`, "", "x".repeat(5000)]) {
-    assert.throws(() => journal.registerProject({ id: "proj-3", path, displayName: "x", trusted: true, actor: "user" }), code("E_INVALID_ARGUMENT"), path.slice(0, 20));
+    assert.throws(() => journal.registerProject({ id: "proj-3", path, displayName: "x", trusted: false, actor: "user" }), code("E_INVALID_ARGUMENT"), path.slice(0, 20));
   }
-  assert.throws(() => journal.registerProject({ id: "p", path: abs("z"), displayName: "x", trusted: true, actor: "someone" as never }), code("E_INVALID_ARGUMENT"));
+  assert.throws(() => journal.registerProject({ id: "p", path: abs("z"), displayName: "x", trusted: false, actor: "someone" as never }), code("E_INVALID_ARGUMENT"));
 });
 
 test("worktree path is recorded once, only while creating or ready, and is audited without its value", () => {

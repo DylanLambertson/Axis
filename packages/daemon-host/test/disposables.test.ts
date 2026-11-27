@@ -4,7 +4,7 @@ import { EventEmitter } from "node:events";
 import { test } from "node:test";
 import { AxisError } from "@axis/audit";
 import { Disposables } from "../src/index.js";
-import { processSnapshot, wait } from "./helpers.js";
+import { drain, processSnapshot, untilTrue, wait } from "./helpers.js";
 
 test("disposes in reverse order of registration", async () => {
   const d = new Disposables();
@@ -86,7 +86,7 @@ test("an abandoned disposer that rejects later does not become an unhandled reje
   try {
     d.add(async () => { await wait(40); throw new Error("late failure"); }, "slow");
     await d.dispose();
-    await wait(80);
+    await drain(); // a rejection nobody handled is reported by the process within these turns
   } finally {
     process.off("unhandledRejection", onRejection);
   }
@@ -110,7 +110,8 @@ test("itemTimeoutMs 0 means the default (5 s), never unbounded; bad options are 
 });
 
 test("a disposer that calls dispose() does not wait for itself", async () => {
-  for (const itemTimeoutMs of [0, 5_000, 200]) {
+  // A disposer that waited for itself would stall until its item timeout (0 means the 5 s default), so every timeout here is above the bound below.
+  for (const itemTimeoutMs of [0, 5_000, 8_000]) {
     const d = new Disposables({ itemTimeoutMs });
     const order: string[] = [];
     let nested: unknown;
@@ -124,7 +125,7 @@ test("a disposer that calls dispose() does not wait for itself", async () => {
     }, "shutdown");
     const started = Date.now();
     const r = await d.dispose();
-    assert.ok(Date.now() - started < 150, `stalled ${Date.now() - started} ms (timeout ${itemTimeoutMs})`);
+    assert.ok(Date.now() - started < 3_000, `stalled ${Date.now() - started} ms (timeout ${itemTimeoutMs})`);
     assert.deepEqual(order, ["shutdown", "first"]);
     assert.deepEqual(nested, { disposed: 0, failures: [] });
     assert.deepEqual(r, { disposed: 2, failures: [] });
@@ -207,8 +208,7 @@ test("timers are unref'ed, fire normally and are cleared on dispose", async () =
   d.setInterval(() => void fired++, 5);
   d.setTimeout(() => { throw new Error("never fires"); }, 60_000);
   d.setInterval(() => { throw new Error("never fires"); }, 60_000);
-  await wait(40);
-  assert.ok(fired >= 2);
+  await untilTrue(() => fired >= 2, "the timer and the interval fired", 10_000);
   await d.dispose();
   const after = fired;
   await wait(30);

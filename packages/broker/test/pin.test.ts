@@ -95,6 +95,15 @@ test("R4-B: the approved line is unambiguous and has no control character", asyn
   assert.ok(r.requests[2]?.commands[0]?.includes("\\u001b") && r.requests[2].commands[0].includes("\\u2028"));
 });
 
+test("review c3 r1 SF-2: a program that is neither a bare name nor absolute on this platform is refused before any approval", { skip: process.platform === "win32" }, async () => {
+  const r = rig({ approve: (q) => grant(q) });
+  // `C:/x` is a relative path on POSIX: it would resolve against the daemon's working directory.
+  const bad = ["C:/prog", "C:\\prog", "bin/prog", "./prog"];
+  bad.forEach((c, i) => r.broker.register(def({ name: `t${i}`, tier: "network", args: z.strictObject({}), argv: () => [c], run: async () => 1 })));
+  for (let i = 0; i < bad.length; i++) assert.equal(await why(r.broker.invoke(call(`t${i}`, {}))), "E_INVALID_ARGUMENT/invalid-command", bad[i]);
+  assert.equal(r.requests.length, 0);
+});
+
 test("R4-B: a git line is a JSON array", async () => {
   const g = gitRig({ approve: (q) => grant(q) });
   const c = { command: "add", paths: ["a.txt", "b.txt"] } as const;

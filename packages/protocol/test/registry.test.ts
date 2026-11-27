@@ -51,6 +51,7 @@ const EXPECTED: readonly Row[] = [
   ["axis.git", "push", "network", 4, "required", 30_000],
   ["axis.git", "compareUrl", "read", 0, "none", 10_000],
   ["axis.review", "diff", "read", 1, "none", 30_000],
+  ["axis.review", "content", "read", 1, "none", 30_000],
   ["axis.review", "complete", "write", 2, "required", 15_000],
   ["axis.runs", "start", "write", 2, "required", 30_000],
   ["axis.runs", "cancel", "write", 2, "required", 15_000],
@@ -59,6 +60,50 @@ const EXPECTED: readonly Row[] = [
   ["axis.runs", "events", "read", 0, "none", 5_000],
   ["axis.events", "subscribe", "read", 0, "none", 5_000],
   ["axis.events", "unsubscribe", "read", 0, "none", 5_000],
+  ["axis.messages", "send", "write", 2, "required", 15_000],
+  ["axis.messages", "thread", "read", 1, "none", 10_000],
+  ["axis.messages", "threads", "read", 0, "none", 10_000],
+  ["axis.messages", "read", "read", 1, "none", 10_000],
+  ["axis.messages", "markRead", "write", 1, "none", 5_000],
+  ["axis.messages", "pause", "write", 2, "none", 5_000],
+  ["axis.messages", "resume", "write", 2, "none", 5_000],
+  ["axis.messages", "settings", "read", 0, "none", 5_000],
+  ["axis.messages", "updateSettings", "write", 2, "none", 10_000],
+  ["axis.forge", "pullRequests", "read", 0, "none", 30_000],
+  ["axis.forge", "pinRepository", "write", 1, "none", 10_000],
+  ["axis.agents", "list", "read", 0, "none", 5_000],
+  ["axis.agents", "get", "read", 0, "none", 5_000],
+  ["axis.agents", "create", "write", 2, "required", 30_000],
+  ["axis.agents", "update", "write", 2, "none", 5_000],
+  ["axis.agents", "archive", "write", 1, "none", 5_000],
+  ["axis.agents", "restore", "write", 1, "none", 5_000],
+  ["axis.agents", "start", "write", 2, "required", 30_000],
+  ["axis.agent-groups", "list", "read", 0, "none", 5_000],
+  ["axis.agent-groups", "create", "write", 1, "required", 5_000],
+  ["axis.agent-groups", "rename", "write", 1, "none", 5_000],
+  ["axis.agent-groups", "reorder", "write", 1, "none", 5_000],
+  ["axis.agent-groups", "delete", "write", 1, "none", 5_000],
+  ["axis.agent-groups", "assign", "write", 2, "none", 5_000],
+  ["axis.attention", "summary", "read", 0, "none", 5_000],
+  ["axis.usage", "summary", "read", 0, "none", 5_000],
+  ["axis.pages", "list", "read", 0, "none", 5_000],
+  ["axis.pages", "get", "read", 0, "none", 5_000],
+  ["axis.pages", "versions", "read", 0, "none", 5_000],
+  ["axis.pages", "create", "write", 1, "required", 10_000],
+  ["axis.pages", "update", "write", 1, "none", 10_000],
+  ["axis.pages", "restore", "write", 1, "none", 10_000],
+  ["axis.pages", "markReviewed", "write", 4, "none", 30_000],
+  ["axis.pages", "delete", "destructive", 4, "none", 30_000],
+  ["axis.tasks", "list", "read", 0, "none", 5_000],
+  ["axis.tasks", "get", "read", 0, "none", 5_000],
+  ["axis.tasks", "revisions", "read", 0, "none", 5_000],
+  ["axis.tasks", "create", "write", 1, "required", 10_000],
+  ["axis.tasks", "update", "write", 1, "none", 10_000],
+  ["axis.tasks", "setStatus", "write", 1, "none", 5_000],
+  ["axis.tasks", "assign", "write", 1, "none", 5_000],
+  ["axis.tasks", "link", "write", 1, "none", 5_000],
+  ["axis.tasks", "unlink", "write", 1, "none", 5_000],
+  ["axis.tasks", "delete", "destructive", 4, "none", 30_000],
 ];
 
 function actualRows(): Row[] {
@@ -264,7 +309,7 @@ test("methods that need approval: tier 3 and above, an optional approval field, 
   }
   // Every method added by P1a and P1c is tier 2 or below. `axis.git.push` (P1b) is tier 4 and has a pinned digest vector in
   // test/packages/protocol-copies.test.mjs.
-  assert.deepEqual(needing.sort(), ["axis.git.push", "axis.worktrees.finalise", "axis.worktrees.remove"]);
+  assert.deepEqual(needing.sort(), ["axis.git.push", "axis.pages.delete", "axis.pages.markReviewed", "axis.tasks.delete", "axis.worktrees.finalise", "axis.worktrees.remove"]);
   const push = lookupMethod("axis.git", 1, "push") as MethodSpec;
   const pushBody = { workspaceId: "ws-1", remote: "origin", confirmedPlan: { tip: "a".repeat(40), digest: "d".repeat(64) } };
   assert.equal(push.request.safeParse({ ...pushBody, approval: { challengeId: "A".repeat(22) } }).success, true);

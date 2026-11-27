@@ -1,4 +1,5 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
+import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import type { Clock } from "../src/index.js";
 
@@ -25,7 +26,32 @@ export function processSnapshot(): { resources: string[]; listeners: Record<stri
   return { resources: process.getActiveResourcesInfo().filter((r) => r === "Timeout" || r === "Immediate").sort(), listeners };
 }
 
+/**
+ * "Nothing extra is alive after cleanup" is a negative claim, so it is asserted ONCE after letting what must terminate by
+ * itself do so (closing handles finish within a couple of macrotasks): never polled, or a leak that expires on its own
+ * inside a polling window would be waited out and pass.
+ */
+export async function settledTo(before: ReturnType<typeof processSnapshot>, message?: string): Promise<void> {
+  await drain();
+  assert.deepEqual(processSnapshot(), before, message);
+}
+
+/** Two macrotasks: every promise continuation and every process-level rejection report queued so far has run. Not a duration. */
+export const drain = async (): Promise<void> => {
+  await new Promise((r) => setImmediate(r));
+  await new Promise((r) => setImmediate(r));
+};
+
 export const wait = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+/** Wait by condition (event loop turns); the bound only turns a stuck test into a failure, and a busy host reaches the condition late, not wrongly. */
+export async function untilTrue(pred: () => boolean, what: string, guardMs = 60_000): Promise<void> {
+  const deadline = Date.now() + guardMs;
+  while (!pred()) {
+    if (Date.now() > deadline) throw new Error(`condition not reached: ${what}`);
+    await new Promise((r) => setImmediate(r));
+  }
+}
 
 /**
  * Count the timers created and not yet fired or cleared while it is installed. `getActiveResourcesInfo` does not

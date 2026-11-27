@@ -1,4 +1,5 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
+import { ticketFor } from "../testing/open-gate.js";
 import assert from "node:assert/strict";
 import * as path from "node:path";
 import { test } from "node:test";
@@ -54,11 +55,11 @@ test("the git port's runner routes by context: pty only to the pty runner, never
 test("the git operations refuse a port without a scanner and a mode, and expose the mode the scan runs with", () => {
   const port = createGitPort({ ...base, scanner });
   const runs = { hasActiveRun: () => false };
-  assert.equal(createGitOperations({ git: port, runs }).scanMode, "refuse");
+  assert.equal(createGitOperations({ git: port, now: () => performance.now(), runs }).scanMode, "refuse");
   const { scanner: _s, ...noScanner } = port;
   const { scanMode: _m, ...noMode } = port;
   for (const git of [noScanner, noMode, { ...port, scanMode: "off" }, { ...port, scanner: "scan" }]) {
-    assert.throws(() => createGitOperations({ git: git as never, runs }), TypeError);
+    assert.throws(() => createGitOperations({ git: git as never, now: () => performance.now(), runs }), TypeError);
   }
 });
 
@@ -155,10 +156,18 @@ test("executePush sends only the confirmed plan: a tip or digest that is not the
   const call = { workspaceId: r.workspaceId, worktree: { workTree: r.repo, gitDir: path.join(r.repo, ".git") }, remote: "origin", branch: "axis/feat", baseSha: r.baseSha };
   const plan = await r.handlerDeps.ops.planPush(call);
   for (const wrong of [{ tip: r.baseSha, digest: plan.digest }, { tip: plan.tip, digest: "f".repeat(64) }]) {
-    await assert.rejects(r.handlerDeps.ops.executePush(call, wrong), (e: unknown) => (e as { code?: string; reason?: string }).code === "E_CONFLICT" && (e as { reason?: string }).reason === "plan_changed");
+    await assert.rejects(r.handlerDeps.ops.executePush({ ...call, projectId: "p" }, wrong, await ticketFor("p", call.workspaceId)), (e: unknown) => (e as { code?: string; reason?: string }).code === "E_CONFLICT" && (e as { reason?: string }).reason === "plan_changed");
   }
   assert.equal(r.remoteTip(), null);
-  await r.handlerDeps.ops.executePush(call, { tip: plan.tip, digest: plan.digest });
+  // No ticket, a forged one, or one for another workspace or project: refused at the port's entry, before any git (mutant: not spent).
+  const isUntrusted = (e: unknown) => (e as { code?: string; reason?: string }).code === "E_POLICY_DENIED" && (e as { reason?: string }).reason === "untrusted";
+  const ok = { tip: plan.tip, digest: plan.digest };
+  for (const ticket of [undefined, {}, await ticketFor("p", "another-workspace"), await ticketFor("q", call.workspaceId)]) {
+    await assert.rejects(r.handlerDeps.ops.executePush({ ...call, projectId: "p" }, ok, ticket), isUntrusted);
+  }
+  await assert.rejects(r.handlerDeps.ops.executeCommit({ workspaceId: call.workspaceId, projectId: "p", assertFresh: async () => undefined }, {} as never, undefined), isUntrusted);
+  assert.equal(r.remoteTip(), null, "nothing was pushed");
+  await r.handlerDeps.ops.executePush({ ...call, projectId: "p" }, { tip: plan.tip, digest: plan.digest }, await ticketFor("p", call.workspaceId));
   assert.equal(r.remoteTip(), plan.tip);
 });
 
@@ -183,4 +192,20 @@ test("a drift refusal other than git_drift, and a DaemonError git_drift only, re
   await assert.rejects(drift(plain), (e: unknown) => e === plain);
   const raw = new Error("x");
   await assert.rejects(drift(raw), (e: unknown) => e === raw);
+});
+
+test("S4 part 1: runHooks on over a pty process that cannot run pre-push refuses pushPlan and push E_UNAVAILABLE before any git call", async () => {
+  const calls: string[] = [];
+  const ptyRunner = { run: async (r: GitRunRequest): Promise<GitRunResult> => (calls.push(r.context), { code: 0, stdout: "", stderr: "" }) };
+  const call = { workspaceId: "w", worktree: { workTree: path.resolve("/w"), gitDir: path.resolve("/w/.git") }, remote: "origin", branch: "axis/feat", baseSha: "a".repeat(40) };
+  const isHooks = (e: unknown): boolean => (e as { code?: string; reason?: string }).code === "E_UNAVAILABLE" && (e as { reason?: string }).reason === "hooks_unavailable";
+  const runs = { hasActiveRun: () => false };
+  const on = createGitOperations({ git: createGitPort({ ...base, runHooks: true, scanner, ptyRunner }), now: () => performance.now(), runs, pushHooksUnavailable: true });
+  await assert.rejects(on.planPush(call), isHooks);
+  await assert.rejects(on.executePush({ ...call, projectId: "p" }, { tip: "a".repeat(40), digest: "b".repeat(64) }, await ticketFor("p", call.workspaceId)), isHooks);
+  assert.deepEqual(calls, [], "nothing ran");
+  // Hooks off, or a runner that can run them (a test fake): not refused here (the plan then fails on the missing repository instead).
+  for (const ops of [createGitOperations({ git: createGitPort({ ...base, scanner, ptyRunner }), now: () => performance.now(), runs, pushHooksUnavailable: true }), createGitOperations({ git: createGitPort({ ...base, runHooks: true, scanner, ptyRunner }), now: () => performance.now(), runs })]) {
+    await assert.rejects(ops.planPush(call), (e: unknown) => !isHooks(e));
+  }
 });
