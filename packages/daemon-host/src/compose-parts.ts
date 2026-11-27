@@ -10,7 +10,8 @@ import type { RunsBindingDeps } from "./bindings/runs.js";
 import type { HandlerRegistrar } from "./handlers/anchor-guard.js";
 import type { Clock } from "./ports/clock.js";
 import type { RunsService } from "./ports/runs.js";
-import type { ProjectMutex } from "./worktrees/project-mutex.js";
+import { ProjectMutex } from "./worktrees/project-mutex.js";
+import type { CliEndpointSwitchDeps } from "./handlers/messages-switch.js";
 import type { MockProviderOptions, RunBudgetLimits } from "@axis/providers";
 import type { CommandLimits } from "./bindings/agent-command.js";
 import type { ToolCaps } from "./composer/loop.js";
@@ -267,13 +268,16 @@ export function wireCliEndpoints(
   if (on !== true || typeof port.onRelay !== "function" || typeof port.relay !== "function") return undefined;
   const send = port.relay.bind(port);
   const sub = port.onRelay((m) => void endpoints.relay.onRelay(endpoints.source, m).then((outs) => outs.forEach((out) => send(out)), () => undefined));
-  // Slice 3: a worker's messaging turned off revokes its endpoints; a pause drops the connections of the senders it pauses.
-  const unsettle = endpoints.onSettings?.((e) => (e.kind === "cliMessagingOff" ? endpoints.relay.revokeWorker(e.agentId) : endpoints.relay.dropPaused(e.projectId)).forEach((out) => send(out)));
+  // The cleanup is registered before anything else can throw (review switch-live 1 N3), so a failing subscription below never
+  // leaves the relay subscription behind.
+  let unsettle: (() => void) | undefined;
   cleanups.push(() => {
     endpoints.relay.flush();
     sub.dispose();
     unsettle?.();
   });
+  // Slice 3: a worker's messaging turned off revokes its endpoints; a pause drops the connections of the senders it pauses.
+  unsettle = endpoints.onSettings?.((e) => (e.kind === "cliMessagingOff" ? endpoints.relay.revokeWorker(e.agentId) : endpoints.relay.dropPaused(e.projectId)).forEach((out) => send(out)));
   return {
     mint: (runId) => endpoints.relay.mint(runId),
     revoke: (runId) => {
@@ -281,6 +285,62 @@ export function wireCliEndpoints(
       if (out !== undefined) send(out);
     },
   };
+}
+
+/** The CLI endpoint wiring, live (PV-M7 slice 2 part 2): what the user's switch turns on and off in a running host. */
+export interface CliEndpointLive {
+  /** The endpoints a CLI run's spawn mints from while wired; undefined while off. */
+  current(): CliEndpoints | undefined;
+  /** Wire the relay (idempotent): the next CLI run started gets an endpoint, without a restart. */
+  on(): void;
+  /** Revoke every live endpoint at once (each close sent on the pty channel), then unwire the relay (idempotent). */
+  off(): void;
+}
+
+/**
+ * The live CLI endpoint wiring over `wireCliEndpoints`: `on` wires it (a pty port that does not relay is never wired), `off`
+ * revokes every live endpoint at once and disposes the relay subscription, and shutdown unwires it. The relay itself still reads
+ * the switch at every mint and every relayed message, so a failure here never lets an endpoint serve after the switch is off.
+ */
+export function cliEndpointLive(pty: unknown, endpoints: Parameters<typeof wireCliEndpoints>[2], cleanups: (() => void)[]): CliEndpointLive {
+  let wired: { readonly cli: CliEndpoints; readonly cleanups: (() => void)[] } | undefined;
+  const port = pty as Partial<PtyRelayPort>;
+  const unwire = (): void => {
+    const w = wired;
+    wired = undefined;
+    w?.cleanups.forEach((c) => c());
+  };
+  cleanups.push(unwire);
+  return {
+    current: () => wired?.cli,
+    on() {
+      if (wired !== undefined) return;
+      const own: (() => void)[] = [];
+      let cli: CliEndpoints | undefined;
+      try {
+        cli = wireCliEndpoints(true, pty, endpoints, own);
+      } catch (e) {
+        own.forEach((c) => c()); // a half-made wiring is undone, never left subscribed
+        throw e;
+      }
+      if (cli !== undefined) wired = { cli, cleanups: own };
+    },
+    off() {
+      if (wired === undefined) return;
+      for (const out of endpoints.relay.revokeAll()) port.relay?.(out);
+      unwire();
+    },
+  };
+}
+
+/**
+ * The switch handlers' dependencies as the host builds them: a committed enable turns the live wiring on, a committed disable
+ * turns it off. `live` is required, so the composition cannot leave the eager revocation out. The action holds the mint.
+ */
+export function hostCliSwitch(d: Omit<CliEndpointSwitchDeps, "mutex" | "onChanged"> & { readonly live: CliEndpointLive }): CliEndpointSwitchDeps {
+  // `onLiveError` (review switch-live 1 N2): the host logs a closed line when turning the wiring on or off failed.
+  const { live, ...rest } = d;
+  return { ...rest, mutex: new ProjectMutex(), onChanged: (on) => (on ? live.on() : live.off()) };
 }
 
 /**
