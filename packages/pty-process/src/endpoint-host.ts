@@ -110,6 +110,11 @@ export function createEndpointHost(
   const hosted = new Map<string, Hosted>();
   /** Ids being opened (review 1 N2): a second open of the same id while the first awaits is refused. */
   const opening = new Set<string>();
+  /**
+   * Ids closed while their listener was still opening (PV-M7 slice 2 review 1 S1): the daemon's close is remembered, and the open
+   * then shuts and removes its socket as soon as the listen finishes and answers no endpoint, so a close is never lost.
+   */
+  const closedWhileOpening = new Set<string>();
   const writeCap = deps.limits?.writeBufferBytes ?? ENDPOINT_HOST_LIMITS.writeBufferBytes;
   const slowMs = deps.limits?.slowReaderMs ?? ENDPOINT_HOST_LIMITS.slowReaderMs;
   let seq = 0;
@@ -221,7 +226,10 @@ export function createEndpointHost(
 
   const close = (endpoint: string): void => {
     const h = hosted.get(endpoint);
-    if (h === undefined) return;
+    if (h === undefined) {
+      if (opening.has(endpoint)) closedWhileOpening.add(endpoint);
+      return;
+    }
     hosted.delete(endpoint);
     for (const c of h.conns.values()) {
       deps.clock.clearTimeout(c.timer);
@@ -268,6 +276,11 @@ export function createEndpointHost(
       rmSync(path, { force: true });
       return undefined;
     }
+    if (closedWhileOpening.has(endpoint)) {
+      h.stop();
+      rmSync(path, { force: true });
+      return undefined;
+    }
     hosted.set(endpoint, h);
     return path;
   }
@@ -281,6 +294,7 @@ export function createEndpointHost(
         return await openOn(endpoint);
       } finally {
         opening.delete(endpoint);
+        closedWhileOpening.delete(endpoint);
       }
     },
     close,
