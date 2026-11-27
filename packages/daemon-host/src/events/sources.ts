@@ -105,15 +105,34 @@ export function createEventSources(deps: EventSourcesDeps): EventSources {
     head = now;
   };
 
-  /** One hint per project whose tasks changed, in first-change order. The cursor is the last row read, never the head. */
+  /** The cursor at which the audit read last failed: that position is reported once, not every tick (the cursor only moves
+   *  forward, so a later failure is at a new position and is reported again). */
+  let stuckAt: number | undefined;
+  /**
+   * One hint per project whose tasks changed, in first-change order. The cursor is the last row read, never the head.
+   * - Nothing is read while no subscription has the `tasks` topic (the cursor moves to the head, as when nobody is
+   *   subscribed at all) or when no row was appended since the cursor.
+   * - A row the audit log cannot read (`list` throws: the chain is already broken, `verify` says where) stops the source at
+   *   that position, failing closed: no row is skipped, so no change is lost once it reads again. It is reported once per
+   *   stuck position.
+   */
   const tasks = (quiet: boolean): void => {
     if (deps.auditSince === undefined) return;
-    if (quiet || taskCursor === undefined) {
+    if (quiet || taskCursor === undefined || hub.windowsFor("tasks").size === 0) {
       taskCursor = Math.max(taskCursor ?? 0, deps.auditHead());
       return;
     }
+    if (deps.auditHead() <= taskCursor) return;
+    let rows: ReturnType<NonNullable<EventSourcesDeps["auditSince"]>>;
+    try {
+      rows = deps.auditSince(taskCursor, EVENT_ROWS_PER_TICK);
+    } catch {
+      if (stuckAt !== taskCursor) deps.onError?.("events_source");
+      stuckAt = taskCursor;
+      return;
+    }
     const projects = new Set<string>();
-    for (const row of deps.auditSince(taskCursor, EVENT_ROWS_PER_TICK)) {
+    for (const row of rows) {
       taskCursor = row.seq;
       const id = taskProject(row);
       if (id !== undefined) projects.add(id);
