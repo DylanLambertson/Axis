@@ -1,0 +1,35 @@
+{
+  "name": "@axis/desktop",
+  "version": "0.0.0",
+  "private": true,
+  "license": "UNLICENSED",
+  "type": "module",
+  "main": "dist/app/main.cjs",
+  "engines": {
+    "node": "24.22.1"
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc --noEmit -p .",
+    "bundle": "node scripts/bundle.mjs",
+    "notices": "node scripts/notices.mjs --write",
+    "test": "tsc -b && node --test \"dist/tsc/test/**/*.test.js\" \"test/**/*.test.mjs\"",
+    "smoke": "node scripts/bundle.mjs && node --test \"smoke/*.test.mjs\""
+  },
+  "dependencies": {
+    "@axis/shell-core": "0.0.0",
+    "@axis/shell-sdk": "0.0.0",
+    "@axis/ui": "0.0.0",
+    "@axis/ui-editor": "0.0.0",
+    "@xterm/xterm": "6.0.0",
+    "monaco-editor": "0.57.0",
+    "react": "19.2.9",
+    "react-dom": "19.2.9"
+  },
+  "devDependencies": {
+    "@types/react": "19.2.18",
+    "@types/react-dom": "19.2.7",
+    "electron": "45.3.1",
+    "esbuild": "0.28.2"
+  }
+}
