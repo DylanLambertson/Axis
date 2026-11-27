@@ -73,6 +73,7 @@ export async function deliveryRig(t: TestContext, options: { cliEndpointOff?: bo
     cliAgentOf: (runId) => runAgent.get(runId),
     cliEndpointOn: () => c.journal.cliEndpoint.enabled(),
     runLive: (runId) => c.journal.getRun(runId)?.state === "RUNNING",
+    runLeftRunning: (runId) => c.journal.transitions("run", runId).some((t) => t.from === "RUNNING"), // as the host's (audit B F3)
     ...(options.maxText === undefined ? {} : { deliveryLimits: { maxText: options.maxText } }),
     ...(options.limits === undefined ? {} : { limits: options.limits }),
     onInternalError: (code) => {

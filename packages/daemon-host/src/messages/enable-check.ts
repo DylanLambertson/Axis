@@ -1,5 +1,5 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
-import { lstatSync, realpathSync } from "node:fs";
+import { closeSync, lstatSync, openSync, readSync, realpathSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import type { Journal } from "@axis/journal";
 import { resolveCliAgentsSetting } from "@axis/pty-policy";
@@ -43,6 +43,20 @@ export const realOf = (exe: string): string | null | undefined => {
   }
 };
 
+/** Audit B F1: whether a file begins with `#!` (a script). A file that cannot be read counts as one (fail closed). */
+export const isScript = (path: string): boolean => {
+  let fd: number | undefined;
+  try {
+    fd = openSync(path, "r");
+    const head = Buffer.alloc(2);
+    return readSync(fd, head, 0, 2, 0) === 2 && head[0] === 0x23 && head[1] === 0x21;
+  } catch {
+    return true;
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
+};
+
 /** The launch entry of a CLI worker as main has it now, and its home's worktree path; undefined for any gap. */
 export async function cliWorkerLaunch(deps: EnableCheckDeps, agentId: string, signal: AbortSignal): Promise<{ readonly argv: readonly string[]; readonly bypassesPrompts: boolean; readonly root: string } | undefined> {
   const worker = deps.journal.agents.get(agentId);
@@ -69,7 +83,7 @@ export function hostEnableCheck(deps: EnableCheckDeps): (agentId: string, signal
     if (launch === undefined) return { allowed: false, rule: "no_entry" };
     const real = realOf(launch.argv[0] ?? "");
     if (real === null) return { allowed: false, rule: "real_path_unresolved" };
-    return decideCliMessaging({ argv: launch.argv, ...(real === undefined ? {} : { executableReal: real }), bypassesPrompts: launch.bypassesPrompts, exists: (segments) => exists(join(launch.root, ...segments)) });
+    return decideCliMessaging({ argv: launch.argv, ...(real === undefined ? {} : { executableReal: real, executableScript: isScript(real) }), bypassesPrompts: launch.bypassesPrompts, exists: (segments) => exists(join(launch.root, ...segments)) });
   };
 }
 
@@ -91,7 +105,7 @@ export function hostMintRecheck(deps: EnableCheckDeps & { readonly agentOfRun: (
         ? { allowed: false as const, rule: "no_entry" }
         : real === null
           ? { allowed: false as const, rule: "real_path_unresolved" }
-          : decideCliMessaging({ argv: spec.argv, ...(real === undefined ? {} : { executableReal: real }), bypassesPrompts: launch.bypassesPrompts, exists: (segments) => exists(join(launch.root, ...segments)) });
+          : decideCliMessaging({ argv: spec.argv, ...(real === undefined ? {} : { executableReal: real, executableScript: isScript(real) }), bypassesPrompts: launch.bypassesPrompts, exists: (segments) => exists(join(launch.root, ...segments)) });
     // A project-configuration file present now that the user did not acknowledge at enable (it appeared since): messaging
     // is suspended for this run until the user confirms again (endpoint design section 6; review 1 SF3).
     // By path: each listed path belongs to exactly one CLI (CLI_PROJECT_CONFIG), so path alone identifies the warning the user

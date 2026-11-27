@@ -66,6 +66,12 @@ export interface EnableFacts {
   readonly argv: readonly string[];
   /** The executable's real path when the host resolved it (a link to a versioned binary): its base name counts too. */
   readonly executableReal?: string;
+  /**
+   * Audit B F1: the real file begins with `#!` (a script), as the host read it (a read that fails counts as a script). A known
+   * name is trusted only when its real file is that CLI: a script with that name is a wrapper, unless it is exactly one of the
+   * two npm package scripts.
+   */
+  readonly executableScript?: boolean;
   readonly bypassesPrompts: boolean;
   /** Whether the root-relative path (folded segments) exists in the worker's workspace. */
   readonly exists: (segments: readonly string[]) => boolean;
@@ -271,7 +277,11 @@ export function decideCliMessaging(facts: EnableFacts, config: readonly CliProje
     const realNamed = KNOWN_CLIS.has(cliOf(real));
     const versioned = dirs.includes(nameOnly) && /^[0-9]+(\.[0-9]+)+$/.test(file);
     const npmClaude = nameOnly === "claude" && /\/@anthropic-ai\/claude-code\/cli\.js$/.test(real);
+    const npmCodex = nameOnly === "codex" && /\/@openai\/codex\/bin\/codex\.js$/.test(real);
     if (!realNamed && !versioned && !npmClaude) return { allowed: false, rule: "wrapper_unparsed" };
+    // Audit B F1: a script that merely has the name (a shell wrapper can run the real CLI with any flag) is not the CLI; the two
+    // npm package scripts, by their exact paths, are the only scripts accepted.
+    if (facts.executableScript === true && !npmClaude && !npmCodex) return { allowed: false, rule: "wrapper_unparsed" };
   }
   const knownNames = realIsWrapper ? [] : [...new Set(exes.map(cliOf).filter((n) => KNOWN_CLIS.has(n)))];
   const clis: ReadonlySet<string> = knownNames.length === 0 ? KNOWN_CLIS : new Set(knownNames);
