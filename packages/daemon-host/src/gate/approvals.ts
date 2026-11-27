@@ -113,6 +113,11 @@ export interface Approvals {
 }
 
 const TERMINAL: ReadonlySet<string> = new Set(["DENIED", "EXPIRED", "BURNED", "CONSUMED"]);
+/**
+ * Methods whose native line must come from their content hook's note (audit A, L4): for a plugin grant or enable the target alone
+ * (`plugin:<project>/<plugin>`) does not name the permission, so a missing note (an evicted one) refuses the challenge instead.
+ */
+const LINE_REQUIRED: ReadonlySet<string> = new Set(["axis.plugins/1.grant", "axis.plugins/1.enable"]);
 const GATE_CODES: ReadonlySet<string> = new Set(["E_POLICY_DENIED", "E_CONFLICT", "E_BACKPRESSURE", "E_INVALID_ARGUMENT"]);
 type GateCode = "E_POLICY_DENIED" | "E_CONFLICT" | "E_BACKPRESSURE" | "E_INVALID_ARGUMENT";
 
@@ -286,6 +291,11 @@ export function createApprovals(deps: ApprovalsDeps): Approvals {
       try {
         if (challenge.nativeConfirmationRequired) {
           // Once, right after issue and before the challenge reaches anyone: the proof goes to the supervisor only.
+          const action = `${input.contract}/${input.contractVersion}.${input.method}`;
+          const line = describe(input, content);
+          // Fail closed before the proof is taken: the catch below withdraws the challenge, which nobody has seen.
+          // An empty, blank or zero-width-only note counts as missing too (review of the audit-A fix, N2).
+          if (LINE_REQUIRED.has(action) && (line === undefined || line.replace(/[\p{Z}\p{Cc}\p{Cf}\s]/gu, "") === "")) throw new Error("no native line");
           const proof = manager.takeNativeProof(challenge.challengeId);
           if (proof === null) throw new Error("no native proof");
           await bridge.start({
@@ -294,7 +304,7 @@ export function createApprovals(deps: ApprovalsDeps): Approvals {
             windowId: input.identity.windowId,
             connectionId: input.connectionId,
             actor: input.actor,
-            summary: nativeSummary(`${input.contract}/${input.contractVersion}.${input.method}`, challenge.targetSummary, describe(input, content)),
+            summary: nativeSummary(action, challenge.targetSummary, line),
           }, reservation);
         }
         // The connection may have closed during the wait: `withdrawConnection` already ended the challenge.

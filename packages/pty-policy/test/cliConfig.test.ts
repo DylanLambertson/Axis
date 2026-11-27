@@ -24,6 +24,7 @@ test("the CLI project-configuration list: frozen, every row names its source, lo
     "claude:.claude-plugin",
     "codex:.codex/config.toml",
     "codex:.codex/hooks",
+    "codex:.codex/hooks.json",
   ]);
   for (const r of CLI_PROJECT_CONFIG) {
     assert.ok(Object.isFrozen(r) && Object.isFrozen(r.segments), r.segments.join("/"));

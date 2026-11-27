@@ -9,6 +9,7 @@
     "npm": ">=11"
   },
   "workspaces": [
+    "apps/*",
     "packages/*"
   ],
   "scripts": {
@@ -24,6 +25,7 @@
     "typescript6": "npm:@typescript/typescript6@6.0.2"
   },
   "overrides": {
-    "@typescript/old": "npm:typescript@6.0.3"
+    "@typescript/old": "npm:typescript@6.0.3",
+    "dompurify": "3.4.17"
   }
 }

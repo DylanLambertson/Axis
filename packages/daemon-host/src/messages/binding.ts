@@ -36,6 +36,8 @@ export interface MessagingBindingDeps {
   readonly cliEndpointOn?: () => boolean;
   /** True while a run is RUNNING (the journal's state); default: never. */
   readonly runLive?: (runId: string) => boolean;
+  /** Audit B F3: true once the run has ever left RUNNING (the CLI endpoint stays revoked); default never. */
+  readonly runLeftRunning?: (runId: string) => boolean;
   /** True while the supervisor launches the run (QUEUED): the CLI endpoint is minted in the spawn, before RUNNING. */
   readonly runLaunching?: (runId: string) => boolean;
   /** Bounds of one delivered block (defaults in `delivery.ts`). */
@@ -79,6 +81,7 @@ export function createMessagingBinding(deps: MessagingBindingDeps): MessagingBin
     cliEndpointOn: deps.cliEndpointOn ?? (() => false),
     runLive: deps.runLive ?? (() => false),
     runLaunching: deps.runLaunching ?? (() => false),
+    runLeftRunning: deps.runLeftRunning ?? (() => false),
     random: deps.random,
     audit: deps.audit,
     ...(deps.noteWrite === undefined ? {} : { noteWrite: deps.noteWrite }),
@@ -98,7 +101,7 @@ export function createMessagingBinding(deps: MessagingBindingDeps): MessagingBin
 /** What the composition root has for messaging; `logger` is required (possibly undefined), so it cannot be left out. */
 export interface HostMessaging {
   /** The journal, and of the CLI endpoint switch only its reader (`enabled`). */
-  readonly journal: Pick<Journal, "messages" | "getProject" | "getRun" | "agents"> & { readonly cliEndpoint: Pick<Journal["cliEndpoint"], "enabled"> };
+  readonly journal: Pick<Journal, "messages" | "getProject" | "getRun" | "agents" | "transitions"> & { readonly cliEndpoint: Pick<Journal["cliEndpoint"], "enabled"> };
   readonly audit: MessageAuditSink;
   readonly monotonic: () => number;
   readonly scan: (text: string) => Promise<readonly unknown[]>;
@@ -132,6 +135,7 @@ export function hostMessagingDeps(host: HostMessaging): MessagingBindingDeps {
     holdsSecret: host.holdsSecret,
     runLive: (id) => journal.getRun(id)?.state === "RUNNING",
     runLaunching: (id) => journal.getRun(id)?.state === "QUEUED",
+    runLeftRunning: (id) => journal.transitions("run", id).some((t) => t.from === "RUNNING"),
     onInternalError: (code) => logger?.warn("request.failed", { reason: `delivery_${code}` }),
   };
 }
