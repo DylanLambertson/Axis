@@ -14,6 +14,11 @@ export type PluginIssueResult = { readonly ok: true } | { readonly ok: false; re
 
 type Row = Record<string, unknown>;
 
+/** A time the table can hold (a whole millisecond from 0 to the last valid date), else a closed RangeError, never a database error. */
+function checkTime(now: number): void {
+  if (!Number.isSafeInteger(now) || now < 0 || now > PLUGIN_ISSUE_LIMITS.maxMs) throw new RangeError("issue time is out of range");
+}
+
 export class PluginIssueRecords {
   readonly #db: DatabaseSync;
 
@@ -23,12 +28,13 @@ export class PluginIssueRecords {
 
   /** Issues of the plugin in the project within the hour ending at `now` (clamped to the newest row). */
   inLastHour(pluginId: string, projectId: string, now: number): number {
+    checkTime(now);
     return this.#count(pluginId, projectId, this.#clamp(now));
   }
 
   /** Count and record one issue at `now` (epoch milliseconds), or refuse with a closed reason and record nothing. */
   record(pluginId: string, projectId: string, now: number): PluginIssueResult {
-    if (!Number.isSafeInteger(now) || now < 0) throw new RangeError("issue time is out of range");
+    checkTime(now);
     return withTransaction(this.#db, (): PluginIssueResult => {
       if (this.#db.prepare("SELECT 1 FROM plugin_enablement WHERE plugin_id = ? AND project_id = ?").get(pluginId, projectId) === undefined) return { ok: false, reason: "unknown_plugin" };
       // The newest row is the clock: a system clock that stepped back is taken forward to it, so no hour starts over.

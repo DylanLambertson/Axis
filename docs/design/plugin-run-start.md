@@ -40,6 +40,20 @@ Slices, released in this order (each inert until the next):
 - **PV-K1e-b must not merge before a2-2**: it is the first producer of plugin challenges, and today's strict listing reader would
   refuse a listing carrying `requester`.
 
+### 2.1 The counter's residual (RR-94) and what an operator does
+
+- **A row dated in the future.** The newest row is the counter's clock, so if the host clock is stepped forward (days or years)
+  for one call and then corrected, every later issue of every plugin is recorded at that future time: each plugin and project gets
+  at most 6 more challenges, and then none until the real time passes the future row. This fails closed: plugins are blocked,
+  user approvals are not. No plugin can move the host clock.
+- **The shared row cap.** The 16,384 rows are shared by every plugin and project, so about 114 plugin-project pairs at the full
+  rate for a day hold every other plugin at `issue_cap` until the prune catches up. Also fail closed.
+- **No in-product repair, on purpose.** The triggers refuse to delete or change a row that may still count, so no code path (and no
+  bug) can reopen a plugin's hour. Recovery is the operator's: wait until the real time passes the future row (or a day passes for
+  the cap); or, with the daemon stopped, repair the journal offline (a copy of the database, the issue table's rows deleted with
+  its triggers dropped and recreated from the v17 migration). That offline step is not shipped in the product and is not a
+  supported command.
+
 ## 3. PV-K1e-b: the handler (waits for a2)
 
 `forcedScope` in the same PR, the project trust gate through the host window, the grant's generation bound into the challenge, the

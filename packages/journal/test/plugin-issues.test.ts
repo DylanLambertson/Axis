@@ -97,6 +97,9 @@ test("record: 6 per plugin and project in any hour, the 7th refused with nothing
   assert.deepEqual(journal.pluginIssues.record("nobody.here", "p1", T0 + H), { ok: false, reason: "unknown_plugin" });
   assert.throws(() => journal.pluginIssues.record("acme.board", "p1", -1), RangeError);
   assert.throws(() => journal.pluginIssues.record("acme.board", "p1", 1.5), RangeError);
+  // Past the table's last valid date, and any time inLastHour is given that record would refuse: a closed RangeError.
+  assert.throws(() => journal.pluginIssues.record("acme.board", "p1", PLUGIN_ISSUE_LIMITS.maxMs + 1), RangeError);
+  for (const bad of [Number.NaN, -1, 1.5, Number.POSITIVE_INFINITY, PLUGIN_ISSUE_LIMITS.maxMs + 1]) assert.throws(() => journal.pluginIssues.inLastHour("acme.board", "p1", bad), RangeError, String(bad));
 });
 
 test("a disable and enable, and a revoke, do not reset the count", () => {
@@ -150,4 +153,37 @@ test("a system clock that steps back across a prune opens no fresh hour: the tim
   // Another plugin's issue during the step back is recorded at the clamped time, never before the newest row.
   assert.deepEqual(journal.pluginIssues.record("other.tool", "p1", T0 - DAY), { ok: true });
   assert.equal(Number((db.prepare("SELECT issued_at AS t FROM plugin_challenge_issues WHERE plugin_id = 'other.tool'").get() as Row)["t"]), T0 + DAY + H + 5);
+});
+
+test("a row between one hour and a day old is kept by a record call, which succeeds", () => {
+  const { db, journal } = setup();
+  fill(journal, T0, 1);
+  // Two hours on: the row no longer counts for the hour, but it is less than a day old, so the prune must leave it.
+  assert.deepEqual(journal.pluginIssues.record("acme.board", "p1", T0 + 2 * H), { ok: true });
+  assert.equal(n(db, `issued_at = ${T0}`), 1, "the two-hour-old row stays");
+  assert.equal(journal.pluginIssues.inLastHour("acme.board", "p1", T0 + 2 * H), 1);
+});
+
+test("no cascade: the counter's foreign key is NO ACTION, and a plugin row with issues can never be deleted", () => {
+  const { db, journal } = setup();
+  fill(journal, T0, 1);
+  const fks = (db.prepare("PRAGMA foreign_key_list(plugin_challenge_issues)").all() as Row[]).map((r) => [r["table"], r["on_delete"], r["on_update"]]);
+  assert.deepEqual(fks, [["plugin_enablement", "NO ACTION", "NO ACTION"], ["plugin_enablement", "NO ACTION", "NO ACTION"]]);
+  assert.throws(() => db.prepare("DELETE FROM plugin_enablement WHERE plugin_id = 'acme.board'").run(), /never deleted/);
+  assert.equal(n(db), 1);
+});
+
+test("residual RR-94 pinned: a row dated in the future holds every later issue at its time, fails closed, and cannot be repaired in product", () => {
+  const { db, journal } = setup();
+  const FUTURE = T0 + 400 * DAY; // the host clock stepped forward for one call
+  assert.deepEqual(journal.pluginIssues.record("other.tool", "p1", FUTURE), { ok: true });
+  // The clock is back: every later issue of every plugin is clamped to FUTURE, so acme gets six in total, then nothing.
+  fill(journal, T0 + 10);
+  assert.deepEqual(journal.pluginIssues.record("acme.board", "p1", T0 + 2 * DAY), { ok: false, reason: "hourly_limit" });
+  assert.equal(n(db, `plugin_id = 'acme.board' AND issued_at = ${FUTURE}`), 6);
+  // No in-product repair: the future row and the held rows cannot be deleted or moved.
+  assert.throws(() => db.prepare("DELETE FROM plugin_challenge_issues WHERE issued_at = ?").run(FUTURE), /only rows more than 24 hours/);
+  assert.throws(() => db.prepare("UPDATE plugin_challenge_issues SET issued_at = ?").run(T0), /never changes/);
+  // Once the real time passes the future row by an hour, the plugin is counted afresh.
+  assert.deepEqual(journal.pluginIssues.record("acme.board", "p1", FUTURE + H + 6), { ok: true });
 });

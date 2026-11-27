@@ -12,14 +12,19 @@ import { SQL_RULES } from "./schema-pages.js";
  * - A row never changes. The one delete is the prune of rows more than 24 hours older than the newest row: the window is one
  *   hour, so a prune can never remove a row that still counts. Every other delete is refused.
  * - At most 16,384 rows; an insert past that is refused (the store answers `issue_cap` first).
+ * - Residual RR-94: a row dated in the future (the host clock stepped forward for one call, then back) holds every later
+ *   issue at that time, so each plugin gets at most 6 more until the real time passes it; and the 16,384 rows are shared, so
+ *   about 114 busy plugin-project pairs can hold the rest at `issue_cap` for a day. Both fail closed; the triggers refuse an
+ *   in-product repair on purpose (`docs/design/plugin-run-start.md` section 2.1 has the operator's procedure).
  * - Ids only: the plugin and project, no content. A row needs the plugin's `plugin_enablement` row (PV-K1b). The daemon is the
  *   only writer (the challenge gate); there is no actor column because no person writes it.
  */
 
 const { id, pluginId } = SQL_RULES;
 
-export const PLUGIN_ISSUE_LIMITS = Object.freeze({ perHour: 6, windowMs: 3_600_000, keepMs: 86_400_000, rows: 16_384 });
-const MAX_MS = 8_640_000_000_000_000;
+/** `maxMs`: the last valid date (8.64e15 ms), the table's own bound on `issued_at`. */
+export const PLUGIN_ISSUE_LIMITS = Object.freeze({ perHour: 6, windowMs: 3_600_000, keepMs: 86_400_000, rows: 16_384, maxMs: 8_640_000_000_000_000 });
+const MAX_MS = PLUGIN_ISSUE_LIMITS.maxMs;
 
 export const PLUGIN_ISSUES_MIGRATION: Migration = {
   version: 17,
