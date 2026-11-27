@@ -29,12 +29,14 @@ The renderer packages import only `@axis/protocol`, each other and their pinned 
 |---|---|---|---|---|
 | OS-1 | Scaffold `apps/desktop` and the four packages. Pin exact versions of Electron, React, React DOM, esbuild, Monaco and xterm.js; generate the notice file from the lockfile; wire build, typecheck and gate | M | gate, tsconfig | ADR 0011 accepted as direction |
 | OS-2 | **Opus.** Main window and session hardening: window registry, privileged app scheme (path-traversal-safe bundle root, MIME map), CSP and Trusted Types header, navigation, window-open and permission denials, the `webRequest` scheme filter, G-28 refusal of debugging flags, the fixed preload and its source pin | M | ADR 0003 D1.3 rules | OS-1 |
-| OS-3 | **Opus.** Port main's seam: daemon supervisor start, `axis:connect` over our registry (`checkSender` unchanged in substance), answers (anchor, `native.confirm`, `trust.check` without Workspace Trust, settings), pty supervisor and hand-over, project actions, the secret store. Rewrite of `axisMainSeam.ts`, `axisMainPorts.ts` and `axisMainPty.ts` only | L | `daemon-host/src/main/*` unchanged | OS-2 |
+| OS-3 | **Opus.** Port main's seam: daemon supervisor start, `axis:connect` over our registry (`checkSender` unchanged in substance), answers (anchor, `native.confirm`, settings), pty supervisor and hand-over, project actions, the secret store. Rewrite of `axisMainSeam.ts`, `axisMainPorts.ts` and `axisMainPty.ts`. The window registry prunes rate buckets, in-flight actions, a waiting dialog and the status on `closed`, and uses the status answer's `projectId` (PV-D1-0) as the window-to-project map. Native-dialog acceptance: Cancel is the default on every OS, focus returns to the window afterwards, one dialog per window, and closing the window cancels it. Main never destroys a GTK dialog's window from outside (that crashes Electron main); Linux tests without a window manager close dialogs with `WM_DELETE_WINDOW`. On macOS a dialog is a sheet per window | L | `daemon-host/src/main/*` | OS-2 |
+| OS-3b | **Opus.** Remove the Workspace Trust half (T3) end to end: `connect-broker`'s `windowTrusted` and the identity's `trusted` (with `@axis/daemon`'s identity schema and the attestation's canonical text); `project-actions`' `workspaceTrusted` (the add dialog always offers "Add and trust to run", and Trust is no longer refused for lack of Workspace Trust); `trust-model.ts`; `trust.check` answered from the live window and main's registered path; the S1b gate path; tests and mutants proving that no renderer message alone trusts a project | M | `project-registration-and-trust.md` §2, §4.2 | OS-3 |
 | OS-4 | Main settings store (user, application and machine scope; replaces `IConfigurationService.inspect`); native confirmation for `axis.cliAgents` changes; our own login-shell environment resolver for macOS PATH (replaces `getResolvedShellEnv`) | M | `settings-scope.ts` | OS-3 |
-| OS-5 | Port the renderer logic to `@axis/shell-core` with `node:test`: daemon client, reconnect, replies, event frames and subscription, event and refresh drivers, snapshot loader, workspace model, notices, approvals, project actions, changes model, ordered children, reveal input, view state, focus memory, side-panel rules | M | overlay `common/` files and tests | OS-1 (parallel with OS-2) |
-| OS-6 | Core frame: top bar, labelled navigation rail (direction C), router, command palette, notifications, focus and announcement rules, tokens from `theme-axis` values, brand constants in one place | M | `UX.md`, `ui/tokens.md` | OS-1 |
+| OS-5 | Port the 27 `common/` modules to `@axis/shell-core`, with a small shim for each Code OSS primitive they import (`Emitter`, `Disposable`, `CancellationToken`, `localize`, DI; 26 of the 27 need one). Rewrite the harness of the 19 mocha TDD suites for `node:test`, keeping their assertions, fixtures and mutants. Covers the daemon client, reconnect, replies, event frames and subscription, event and refresh drivers, snapshot loader, workspace model, notices, approvals, project actions, changes model, ordered children, reveal input, view state, focus memory, side-panel rules | M | overlay `common/` files and tests | OS-1 (parallel with OS-2) |
+| OS-6 | Core frame: top bar, labelled navigation rail (direction C), router, notifications, tokens from `theme-axis` values. It also owns what Code OSS gave for free: a command registry, keybinding resolution (Cmd mapped to Ctrl on macOS), F6 region cycling, polite `aria` status announcements, roving tab stops, focus fallback and i18n (`localize`). Brand constants live in `@axis/ui` from the first commit, and main's dialog texts use them | L | `UX.md`, `ui/tokens.md` | OS-1 |
 | OS-7 | Module system: manifest, registry, lazy `import()`, intents (`openFile`, `openDiff`, `openTerminal`), per-module contract allow-list in the client, settings to switch modules off; lint rule "the core imports no module" | M | ADR 0011 D3 | OS-6 |
-| OS-20 | Move the import scanner and web/egress rules to `scripts/lint/`, keep their `test/packages` runs; re-target `check-daemon-graph` to the new daemon bundle; add the renderer bundle-graph check (core chunk reaches no module chunk; renderer reaches no `node:*`); re-target the `test/code-oss` source pins to the new paths | M | `stage-ast.mjs`, `web-rules.mjs`, `egress-rules.mjs`, `egress-client-imports.mjs`, `check-daemon-graph.mjs` | OS-1, OS-7 |
+| OS-20 | **First, before any renderer code:** port the renderer boundary pins (the daemon-call allow-list scanner `test/code-oss/daemon-call-rule.mjs`, "only one module opens the port", the project-action IPC pins) to the new renderer paths. They are renderer-agnostic and guard the new renderer from day one, and they replace what the PV-X3 overlay tests guarded. Then move the import scanner and web/egress rules to `scripts/lint/`, keep their `test/packages` runs; re-target `check-daemon-graph` to the new daemon bundle; add the renderer bundle-graph check (core chunk reaches no module chunk; renderer reaches no `node:*`); re-target the `test/code-oss` source pins to the new paths | M | `stage-ast.mjs`, `web-rules.mjs`, `egress-rules.mjs`, `egress-client-imports.mjs`, `check-daemon-graph.mjs` | OS-1 (pins), OS-7 (bundle check) |
+| OS-27 | Secure storage: a development and CI keyring rig (a pinned user-space keyring under a private D-Bus session), the in-app "No secure storage: Axis is read only" state (degraded means no add or trust), a macOS Keychain denial read as degraded, and a pinned test of the data-directory derivation (`XDG_DATA_HOME` and `LOCALAPPDATA` move it) | M | OS-3 |
 
 ### Wave B: first demo (existing contracts only)
 
@@ -45,9 +47,11 @@ The renderer packages import only `@axis/protocol`, each other and their pinned 
 | OS-10 | Workspaces: create (base branch, branch name), finalise and remove (tier 4, main's native dialog), the uncommitted-work refusal shown | M | `axis.worktrees/1` | OS-8 |
 | OS-11 | Approvals: pending list and cards as core components; tier 1 to 3 resolved in the renderer, tier 4 and up routed to main's dialog, never labelled native below tier 4 | S | `axis.approvals/1` | OS-8 |
 | OS-12 | Composer panel: Ask, Edit and Agent, model choice within the connection, activity stream from events, stop. Mock provider first, then Anthropic | M | `axis.composer-runs/1`, `axis.providers/1`, `axis.events/1` | OS-11; Anthropic needs the vault key path (PV-N0 remaining slices, below) |
+| DC-3 | **Moved here from wave C (decided: the owner wants a terminal, and without DC-3 the own shell has none).** See wave C for the contract | L | `pty-process` grant and attach | OS-3 |
+| OS-16 | Terminal module (moved here from wave D; see there) | M | DC-3, the pty data port | OS-7 |
 | OS-13 | Changes module v0: file list, protected-path flags, whole-file view from `review.content`, commit of the full reviewed tree, push plan and push (tier 4), compare URL | M | `axis.review/1` diff/content, `axis.git/1` | OS-7, OS-10 |
 
-**Demo 1 = OS-1 to OS-13 with OS-20:** open Axis, see projects and workspaces, add and trust a project, create a workspace, run the mock composer in Agent mode, approve a request, see the changed files, commit, push to a local bare remote. No file manager, hunks or terminal yet.
+**Demo 1 = OS-1 to OS-13 with OS-3b, OS-20, OS-27, DC-3 and OS-16:** open Axis, see projects and workspaces, add and trust a project, create a workspace, open a terminal in it, run the mock composer in Agent mode, approve a request, see the changed files, commit, push to a local bare remote. No file manager or hunks yet. Create workspace, the composer, approvals and commit and push have never existed in any GUI (the interim Code OSS demo has add and trust, Changes and diff, and a terminal), so this is new UI, not a port.
 
 ### Wave C: the missing daemon contracts (start in parallel with wave A)
 
@@ -55,9 +59,10 @@ The renderer packages import only `@axis/protocol`, each other and their pinned 
 |---|---|---|---|---|
 | DC-1 | **Opus.** `axis.files/1`: `list` (one directory, bounded, sorted, symlinks shown as links, never followed out of the worktree, FT-1), `stat`, `read` (bounded bytes, binary detection, escaped names), then `write` (user principal, tier 2, only in a registered worktree of a trusted project, WT-1-style canonicalisation, marks a user edit for drift), `create`, `rename`, `delete` (to a backup ref like `discard`, tier 2) | L | Reads first (DC-1a), writes after (DC-1b). Policy rows, coverage check, gate lines in the contract note | OS-14, OS-17 |
 | DC-2 | **Opus.** `axis.review/1` additions: `hunks { workspaceId, fileId }` (from `@axis/review`'s `loadHunks`) and `build { workspaceId, head, selection: [{ fileId, whole } or { fileId, hunkIds }] }` returning a `treeHash` that `axis.git/1.commit` takes unchanged. Additive within major 1 | M | review-core already has per-hunk accept and build; only the wire is missing ("no hunk API" in `review.ts`) | OS-15 |
-| DC-3 | **Opus.** `axis.terminals/1`: `open { workspaceId }` for a plain terminal, `list`, `close`; `attach` for a CLI run's terminal; main's pty-data broker to a window (the PV-X1b remainder): the renderer asks with `terminalPort(nonce, terminalId)`, main checks the sender, the daemon grants the id to the new `conn` | L | `pty-process` already has `grant`, `attach`, credit flow and PTY-7 [V] | OS-16 |
+| DC-3 | **Opus. Built in wave B (above).** `axis.terminals/1`: `open { workspaceId }` for a plain terminal, `list`, `close`; `attach` for a CLI run's terminal; main's pty-data broker to a window (the PV-X1b remainder): the renderer asks with `terminalPort(nonce, terminalId)`, main checks the sender, the daemon grants the id to the new `conn` | L | `pty-process` already has `grant`, `attach`, credit flow and PTY-7 [V] | OS-16 |
 | DC-4 | `axis.worktrees/1.discardHunks` (tier 2, backed up to a ref like `discard`) | M | after DC-2 | OS-15 (discard per hunk) |
 | DC-5 | `axis.search/1`: bounded text search in a worktree, run in the daemon over git's file list, with no program spawned; caps on matches and time | M | | OS-17 (project search) |
+| DC-7 | A `worktrees.list` row (or a project field) for the repository's own checkout, so the agent home can show the local checkout (a gap found in the interim demo) | S | | OS-8 |
 | DC-6 | `files.changed` events for the tree and open buffers (the E1 family; the watcher only hints, a re-read decides, as for drift) | M | | OS-14 live refresh (polling works before it) |
 
 ### Wave D: the modules the owner asked for
@@ -67,10 +72,10 @@ The renderer packages import only `@axis/protocol`, each other and their pinned 
 | OS-18 | Editor kit: Monaco lazy chunk, workers as bundled files, the exact Trusted Types policy names at the pin added to CSP, token theme, one model per file per window, read-only mode | M | `@axis/ui-editor` | OS-2, OS-6 |
 | OS-14 | Files module: lazy tree, open in a single-file viewer (editor kit), edit and save for trusted projects, read only for untrusted, create, rename, delete, "Open in code" intent | M | DC-1 | OS-7, OS-18, DC-1a (read), DC-1b (edit) |
 | OS-15 | Changes module v1: **+ / -** per file and per hunk ("Staged for commit" and "Changes", with the note that this is not `git add`), Monaco diff view, discard per file and per hunk, commit of the built tree | M | DC-2, DC-4, `axis.git/1` | OS-13, OS-18 |
-| OS-16 | Terminal module: xterm.js over the data port, splits, layout kept per workspace, attach to CLI runs, "not managed" never shown (all terminals are Axis-managed now), PTY-5 unchanged in the pty process | M | DC-3 | OS-7 |
+| OS-16 | **Built in wave B.** Terminal module: xterm.js over the data port, splits, layout kept per workspace, attach to CLI runs, "not managed" never shown (all terminals are Axis-managed now), PTY-5 unchanged in the pty process | M | DC-3 | OS-7 |
 | OS-17 | Code module (IDE view): tabs, split, find and replace, project search, go to line, outline, open at file:line from files and changes, return keeps buffers and selection (C1′) | L | DC-1, DC-5, editor kit | OS-14 |
 
-**Demo 2 = demo 1 plus OS-14 to OS-18:** the file manager, + and - per file and hunk, terminals, CLI runs in terminals, and the code editor.
+**Demo 2 = demo 1 plus OS-14, OS-15, OS-17 and OS-18:** the file manager, + and - per file and hunk, CLI runs attached in terminals, and the code editor.
 
 ### Wave E: to the Phase 1 slice
 
@@ -80,8 +85,8 @@ The renderer packages import only `@axis/protocol`, each other and their pinned 
 | OS-21 | Packaging per OS (signing on macOS later), and the packaged NET-GATE half re-done against this build (replaces `check-net-packaged.mjs`'s Code OSS assumption) | M | OS-3 |
 | OS-24 | 1c UI on the own shell: All agents lanes (5, 20, 50), side panel with Agents and Code tabs (editor kit), New agent, groups, pull request section (`axis.forge/1`), usage (`axis.usage/1`) | L | OS-8, OS-14, OS-15 |
 | OS-25 | Messaging, tasks and pages surfaces on the core shell (2a; contracts on main) | L | OS-8 |
-| OS-26 | Mac run and evidence: all of the above on macOS, the Electron-only checks `main-answers.md` §5 lists as unverifiable on Linux | M | OS-19, OS-21 |
-| OS-23 | Docs: `ROADMAP.md` gate rewrite (ADR 0011 "Roadmap gate changes"), `PRODUCT.md`, `UX.md`, `ARCHITECTURE.md`, `LICENSING.md`, the threat model revision (new surfaces in ADR 0011 Decision 5 item 7) | M | ADR accepted; before the 1a gate review |
+| OS-26 | Mac run and evidence: all of the above on macOS, the Electron-only checks `main-answers.md` §5 lists as unverifiable on Linux, the first-use Keychain prompt, dialog sheets and focus, and the Cmd key mapping | M | OS-19, OS-21 |
+| OS-23 | Docs: `ROADMAP.md` gate rewrite (ADR 0011 "Roadmap gate changes"), `PRODUCT.md`, `UX.md`, `ARCHITECTURE.md`, `LICENSING.md`, the threat model revision (new surfaces in ADR 0011 Decision 5 item 8) | M | ADR accepted; before the 1a gate review |
 | OS-22 | Retire Code OSS: delete the overlay, patches, removals, replacements, the pin, the Code OSS scripts, the extension matrix and the overlay-tests CI job | S to M | G0 passed |
 
 Composer prerequisites that already exist or are in flight and stay valid: PV-N0 (main secret broker; slice a merged, the rest open), C6 (vault wiring), the Anthropic adapter. The Anthropic part of OS-12 waits on them; the mock part does not.
@@ -89,29 +94,34 @@ Composer prerequisites that already exist or are in flight and stay valid: PV-N0
 ## 3. Dependency picture
 
 ```text
-OS-1 ─┬─ OS-2 ── OS-3 ── OS-4
-      ├─ OS-5 ─────────┐
-      ├─ OS-6 ── OS-7 ─┼─ OS-8 ─┬─ OS-9, OS-10, OS-11 ── OS-12 ;  OS-13   => demo 1
-      └─ OS-20         │        └─ OS-24, OS-25
+OS-1 ─┬─ OS-20 (pins first)
+      ├─ OS-2 ── OS-3 ─┬─ OS-3b, OS-4, OS-27
+      ├─ OS-5 ─────────┤
+      ├─ OS-6 ── OS-7 ─┼─ OS-8 ─┬─ OS-9, OS-10, OS-11 ── OS-12 ;  OS-13
+      │                │        └─ OS-24, OS-25
+DC-3 ─ OS-16 ──────────┘                                                  => demo 1
 DC-1a/b ─ OS-18 ─ OS-14 ─ OS-17 (+DC-5)
 DC-2 ─ DC-4 ─ OS-15                                                       => demo 2
-DC-3 ─ OS-16
 OS-19, OS-21 ─ OS-26 ;  OS-23 ;  G0 ─ OS-22
 ```
 
-The DC tickets are daemon work in packages that already have builders and review history. They start on day 1, in parallel with wave A, so wave D does not wait on them.
+The DC tickets are daemon work in packages that already have builders and review history. They start on day 1, in parallel with wave A; DC-3 first, because demo 1 needs it.
 
 ## 4. Estimates (honest)
 
-The assumptions: three to five builders in parallel, each ticket reviewed independently, the review loop adding one to three days per Opus-reviewed ticket, and no long builder stalls. The last two weeks had about two days of stalled builders; a repeat adds directly to these numbers.
+The assumptions, taken from the last month of tickets:
+- three to five builders work in parallel;
+- an Opus-reviewed ticket takes two to four review rounds;
+- each ticket with GUI evidence costs about a day for that evidence (keychain, dialogs, window manager);
+- builders do not stall for long. The last two weeks had about two days of stalled builders, and a repeat adds directly to these numbers.
 
-| Milestone | Estimate | What drives it |
-|---|---|---|
-| (i) **Demo 1**, click-through (agent home, project add and trust, workspaces, mock composer, approvals, file-level changes and commit) | **about 7 to 10 working days** | OS-2 and OS-3 (Opus) are the critical path; everything after them uses contracts that exist |
-| (i′) **Demo 2** (file manager, + and - per hunk, terminals, code editor) | **about 3 to 4 weeks** from the start | DC-1 and DC-3 (Opus, L) and the editor kit |
-| (ii) **Phase 1 slice** (1a, 1b and 1c gates re-stated and passing on the own shell, on macOS with Linux and Windows CI smoke) | **about 9 to 13 weeks** from the start | the Mac evidence (OS-26), the threat model revision, the 1a gate lines that need real GUI runs, the Anthropic key path (PV-N0, C6) and 1c UI density work. Daemon-side 1a to 1c work is largely merged, which is why this is not longer |
+| Milestone | Likely | Range | What drives it |
+|---|---|---|---|
+| (i) **Demo 1**, click-through (agent home, add and trust, workspaces, a terminal, mock composer, approvals, file-level changes, commit and push) | **3 to 4 weeks** | 2.5 to 5 weeks | OS-2, OS-3, OS-3b and DC-3 (all Opus) on the critical path; all of the demo's UI is new; OS-6's keyboard and a11y services; the secure-storage rig (OS-27) before anything can be added or trusted |
+| (i′) **Demo 2** (file manager, + and - per hunk, CLI runs in terminals, code editor) | **5 to 6 weeks** from the start | 4.5 to 7 weeks | DC-1 (L, Opus), DC-2, and Monaco under Trusted Types and the CSP (OS-18) |
+| (ii) **Phase 1 slice** (1a, 1b and 1c gates re-stated and passing on the own shell, on macOS with Linux and Windows CI smoke) | **12 to 16 weeks** from the start | 11 to 18 weeks | the Mac evidence (OS-26), the threat model revision, the 1a gate lines that need real GUI runs, the Anthropic key path (PV-N0, C6) and 1c UI density work. Daemon-side 1a to 1c work is largely merged, which is why this is not longer |
 
-These are ranges, not commitments. The biggest single risk is OS-3 meeting an Electron behaviour on macOS that the Linux package tests could not see. `main-answers.md` §5 lists the candidates.
+These are ranges, not commitments. The first draft said 7 to 10 days for demo 1, which assumed the demo's UI could be ported. It cannot: create workspace, the composer, approvals, and commit and push have never existed in any GUI. The biggest single risk is OS-3 meeting an Electron behaviour on macOS that the Linux package tests could not see. `main-answers.md` §5 lists the candidates.
 
 ## 5. What continues and what stops
 
