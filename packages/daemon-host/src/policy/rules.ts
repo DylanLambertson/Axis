@@ -38,6 +38,7 @@ export const RULES: Readonly<Record<string, Rule>> = Object.freeze({
   "axis.projects/1.list": userRule(0),
   "axis.approvals/1.resolve": userRule(2),
   "axis.approvals/1.pending": userRule(0),
+  "axis.approvals/1.detail": userRule(0), // PV-K1e-a2: never a web client (WEB_ALLOWED) or a plugin (the deny list)
   "axis.audit/1.status": userRule(0),
   "axis.audit/1.list": userRule(1),
   "axis.audit/1.verify": userRule(1),

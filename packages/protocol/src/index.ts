@@ -8,6 +8,7 @@ export * from "./worktrees.js";
 export * from "./guard.js";
 export * from "./projects.js";
 export * from "./approvals.js";
+export * from "./approvals-detail.js";
 export * from "./audit.js";
 export * from "./cliRuns.js";
 export * from "./providers.js";
