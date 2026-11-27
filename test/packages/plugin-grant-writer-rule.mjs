@@ -175,9 +175,12 @@ export function grantWriterProblems(program, root, checked) {
           if (g !== undefined && calleeFile !== g.actionFile && rel !== g.storeFile && rel !== FILES.journal) at(arg, `the ${g.store} passed to a function outside its action`);
         }
       }
-      // Tokens, mints and the grant action, wherever a value of their type is declared, read or made.
-      if (ts.isCallExpression(node) || ts.isVariableDeclaration(node) || ts.isParameter(node) || ts.isPropertyDeclaration(node) || ts.isPropertySignature(node) || ts.isPropertyAccessExpression(node) || ts.isBindingElement(node)) {
-        const target = ts.isCallExpression(node) || ts.isPropertyAccessExpression(node) ? node : node.name;
+      // Tokens, mints and the actions, wherever a value of their type is declared, read or made: by property access, by element
+      // access with a literal or computed key (review switch-contract 1 S1: `d["action"]`, `d[k]`, `d?.["action"]`), and through a
+      // cast to their type (N4). Only an `any` cast stays outside what a static rule sees (the reviewed boundary).
+      const read = ts.isCallExpression(node) || ts.isPropertyAccessExpression(node) || ts.isElementAccessExpression(node) || ts.isAsExpression(node) || ts.isTypeAssertionExpression(node);
+      if (read || ts.isVariableDeclaration(node) || ts.isParameter(node) || ts.isPropertyDeclaration(node) || ts.isPropertySignature(node) || ts.isBindingElement(node)) {
+        const target = read ? node : node.name;
         const type = checker.getTypeAtLocation(target);
         for (const g of GUARDED) {
           if ((isNamed(type, g.token) || returnsNamed(type, g.token)) && !g.tokenFiles.has(rel)) {

@@ -40,7 +40,8 @@ export function createCliEndpointSwitchAction(s: Pick<CliEndpointSwitchRecords, 
   [FILES.switchHandler]: `
 import type { CliEndpointSwitchAction } from "../messages/cli-endpoint-action.js";
 import type { CliEndpointSwitchRecords } from "../../../journal/src/cli-endpoint-store.js";
-export function handlers(d: { action: CliEndpointSwitchAction; store: Pick<CliEndpointSwitchRecords, "enabled" | "switchOff"> }) {
+export interface SwitchDeps { action: CliEndpointSwitchAction; store: Pick<CliEndpointSwitchRecords, "enabled" | "switchOff"> }
+export function handlers(d: SwitchDeps) {
   return { on: () => d.action.switchOn(), off: () => d.store.switchOff(), state: () => d.store.enabled() };
 }`,
   [FILES.auditDb]: `export function openDatabase(path: string): unknown { return path; }`,
@@ -65,7 +66,8 @@ export function wire(j: Journal) {
 import type { GrantAction } from "../plugins/grant-action.js";
 import type { Journal } from "../../../journal/src/journal.js";
 export function revoke(j: Journal, a?: GrantAction) { j.plugins.setEnabled("x", "p", false); a?.grant("x", "p", "runs.start"); }
-export function registerPluginsHandlers(deps: { journal: { plugins: { setEnabled(a: string, b: string, e: false): void } } }): unknown { return deps; }`,
+export function registerPluginsHandlers(deps: { journal: { plugins: { setEnabled(a: string, b: string, e: false): void } } }): unknown { return deps; }
+export interface GrantDeps { action: GrantAction }`,
   [FILES.host]: `
 import { Journal } from "../../journal/src/journal.js";
 export const journal = Journal.open();`,
@@ -153,6 +155,16 @@ const PLANTED = [
   ["a switch token held elsewhere", `${JS}export function f(m: () => CliEndpointSwitchWrite) { return typeof m; }`],
   ["the switch action held elsewhere", `import type { CliEndpointSwitchAction } from "./messages/cli-endpoint-action.js";\nexport function f(a: CliEndpointSwitchAction) { return a.switchOn(); }`],
   ["a forged local CliEndpointSwitchAction cast", `${JS}interface CliEndpointSwitchAction { switchOff(): unknown }\nexport function f(j: Journal) { return (j.cliEndpoint as unknown as CliEndpointSwitchAction).switchOff(); }`],
+  // Review switch-contract 1 S1: the action reached by element access, from a file holding the exported deps type.
+  ["the switch action by a literal bracket key", `import type { SwitchDeps } from "./handlers/messages-switch.js";\nexport function f(d: SwitchDeps) { return d["action"].switchOn(); }`],
+  ["the switch action by a const computed key", `import type { SwitchDeps } from "./handlers/messages-switch.js";\nconst k = "action" as const;\nexport function f(d: SwitchDeps) { return d[k].switchOn(); }`],
+  ["the switch action by an optional bracket key", `import type { SwitchDeps } from "./handlers/messages-switch.js";\nexport function f(d?: SwitchDeps) { return d?.["action"].switchOn(); }`],
+  ["the grant action by a literal bracket key", `import type { GrantDeps } from "./handlers/plugins.js";\nexport function f(d: GrantDeps) { d["action"].grant("a", "b", "c"); }`],
+  ["the grant action by a const computed key", `import type { GrantDeps } from "./handlers/plugins.js";\nconst k = "action" as const;\nexport function f(d: GrantDeps) { d[k].grant("a", "b", "c"); }`],
+  // N4: a cast to the action or the token type outside their files (an \`any\` cast stays the recorded boundary).
+  ["a cast to the switch action", `import type { CliEndpointSwitchAction } from "./messages/cli-endpoint-action.js";\nexport function f(x: unknown) { return (x as CliEndpointSwitchAction).switchOn(); }`],
+  ["a cast to the grant action", `import type { GrantAction } from "./plugins/grant-action.js";\nexport function f(x: unknown) { (x as GrantAction).grant("a", "b", "c"); }`],
+  ["a cast to a switch token", `${JS}export function f(j: Journal, x: unknown) { return j.cliEndpoint.enabled() ? (x as CliEndpointSwitchWrite) : undefined; }`],
   ["new CliEndpointSwitchRecords outside the journal", `import { CliEndpointSwitchRecords } from "../../journal/src/cli-endpoint-store.js";\nexport const s = new CliEndpointSwitchRecords();`],
 ];
 

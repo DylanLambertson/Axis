@@ -13,7 +13,7 @@ import { createMessagingBinding, createWorktreesApprovals, InMemoryTrustRegistry
 import type { NativeConfirmRequest } from "../src/control/client.js";
 import { createMessagesHandlers, registerMessagesHandlers } from "../src/handlers/messages.js";
 import { createCliEndpointSwitchAction } from "../src/messages/cli-endpoint-action.js";
-import { CLI_ENDPOINT_LINE, CLI_ENDPOINT_TARGET, cliEndpointDigest } from "../src/messages/cli-endpoint-content.js";
+import { CLI_ENDPOINT_LINE, CLI_ENDPOINT_LOCK, CLI_ENDPOINT_TARGET } from "../src/messages/cli-endpoint-content.js";
 import { ProjectMutex } from "../src/worktrees/project-mutex.js";
 import { Client, type Msg } from "./approvals-rig.js";
 import { fakeClock } from "./helpers.js";
@@ -136,11 +136,10 @@ test("enable: refused before any challenge or dialog when already on, and on Win
   assert.equal(win.dialogs.length, 0);
 });
 
-test("enable: switched on between the dialog and the spend, the spend is refused (the digest is over the state, read under the switch mutex)", async (t) => {
+test("enable: switched on between the dialog and the spend, the spend is refused (the in-lock already_enabled check)", async (t) => {
   const s = await setup(t);
   const user = await s.connect("user#Uone#w1");
   const challenge = await s.ask(user);
-  assert.notEqual(cliEndpointDigest(false), cliEndpointDigest(true), "the digest is over the state");
   switchOnForTests(s.journal.cliEndpoint); // another enable got there first
   s.dialogs[0]?.answer(true);
   await new Promise((r) => setImmediate(r));
@@ -201,4 +200,20 @@ test("the handlers refuse again behind the policy: another caller, no approval, 
   // With no switch wired, both refuse.
   const none = createMessagesHandlers({ service: s.m.service, settings: s.m.settings });
   assert.equal(await code(none.disableCliEndpoint(ctx({}), {} as never)), "E_UNAVAILABLE:endpoint_unavailable");
+});
+
+test("the disable takes the switch mutex: it waits while the enable's spend holds it", async (t) => {
+  const s = await setup(t);
+  switchOnForTests(s.journal.cliEndpoint);
+  const user = await s.connect("user#Uone#w1");
+  let release: () => void = () => undefined;
+  const held = s.cliSwitch.mutex.run(CLI_ENDPOINT_LOCK, () => new Promise<void>((r) => (release = r)));
+  let answered = false;
+  const off = user.call("axis.messages", "disableCliEndpoint", {}).then((m) => ((answered = true), m));
+  for (let i = 0; i < 50; i++) await new Promise((r) => setImmediate(r));
+  assert.equal(answered, false, "not answered while the mutex is held");
+  assert.equal(s.journal.cliEndpoint.enabled(), true, "and nothing written");
+  release();
+  await held;
+  assert.deepEqual((await off).result, { enabled: false, changed: true });
 });

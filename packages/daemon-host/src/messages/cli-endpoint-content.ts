@@ -10,9 +10,11 @@ import type { ProjectMutex } from "../worktrees/project-mutex.js";
  *
  * - **Refused before any challenge** on Windows (`E_UNAVAILABLE`, `endpoint_unavailable`: no endpoint exists there in 2a) and
  *   when the switch is already on (`E_CONFLICT`, `already_enabled`). No dialog is shown for either.
- * - **Bound to the switch's state.** The digest is the SHA-256 of `["axis.cli-endpoint/1", "enable", enabled]`, read under the
- *   switch mutex, which the disable takes too. At the spend the state is read again under the same hold: if it was switched on
- *   in between, the digest differs and the spend is refused; the handler's write runs inside that hold.
+ * - **Refused if on, under the lock.** Under the switch mutex (which the disable takes too) the hook reads the switch and refuses
+ *   `already_enabled` when it is on, at issue and again at the spend; the handler's write runs inside that hold. So switched on
+ *   in between (another enable) is refused by that check. The content digest, `SHA-256(["axis.cli-endpoint/1", "enable",
+ *   enabled])`, is therefore always made over `false` (effectively constant, review 1 N3): it binds the approval to this action,
+ *   the challenge binds it to the method and the target, and it is not what refuses a change in between.
  * - **The dialog line** is fixed words (no daemon or user text), so nothing can be smuggled into main's dialog.
  */
 export const CLI_ENDPOINT_TARGET = "messaging:cli_endpoint";
