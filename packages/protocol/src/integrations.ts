@@ -128,7 +128,7 @@ export const netSendResponseSchema = netReadResponseSchema;
 export const INTEGRATIONS_REFUSALS = {
   E_NOT_FOUND: ["not_found"],
   E_INVALID_ARGUMENT: ["argument_refused", "origin_refused", "path_refused", "request_too_large", "operation_kind_mismatch"],
-  E_CONFLICT: ["not_connected", "needs_reconnect", "already_connecting", "scope_refused", "busy", "audit_unavailable"],
+  E_CONFLICT: ["not_connected", "needs_reconnect", "already_connecting", "scope_refused", "busy", "audit_unavailable", "untrusted"],
   E_UNAVAILABLE: [
     "network_unavailable", "address_refused", "redirect_refused", "response_too_large", "response_depth_exceeded", "headers_too_large",
     "encoding_refused", "response_invalid", "upstream_status", "credential_echoed", "rate_limited",
