@@ -115,6 +115,14 @@ interface Live {
 export const DEFAULT_COMPOSER_BUDGET: RunBudgetLimits = Object.freeze({ maxTokens: 200_000, maxRequests: 50 });
 export const DEFAULT_WORKSPACE_BUDGET: RunBudgetLimits = Object.freeze({ maxTokens: 2_000_000, maxRequests: 500 });
 const OPEN: readonly Run["state"][] = ["QUEUED", "RUNNING"];
+/** A synchronous check that throws is a refusal. */
+const holdsNow = (check: () => boolean): boolean => {
+  try {
+    return check() === true;
+  } catch {
+    return false;
+  }
+};
 
 /** Live composer runs at once unless the composition says otherwise. */
 export const DEFAULT_MAX_ACTIVE = 8;
@@ -260,6 +268,9 @@ export function createComposerService(deps: ComposerServiceDeps): ComposerServic
       // A plugin's grant is checked again here, after every wait of the start (PV-K1e-b); a plugin start without the check is refused.
       if ("pluginId" in by && input.grantHolds === undefined) throw composerFailure("E_UNAVAILABLE", "plugin_starts_unavailable");
       if (input.grantHolds !== undefined && input.grantHolds() !== true) throw composerFailure("E_CONFLICT", "grant_changed");
+      // And its host window's lifetime, the one pinned when the challenge was issued (PV-K2 K2-g4b): required for a plugin start.
+      if ("pluginId" in by && input.hostAlive === undefined) throw composerFailure("E_UNAVAILABLE", "plugin_starts_unavailable");
+      if (input.hostAlive !== undefined && !holdsNow(input.hostAlive)) throw composerFailure("E_CONFLICT", "host_window_closed");
       // The active-run check comes before the journal's own idempotency replay: a retry whose daemon-side key entry is gone
       // while its run is still RUNNING answers `active_run`, not `replayed` (review r1 N5). The daemon's store normally
       // answers such a retry first; after a restart the run is BLOCKED and the replay works.
