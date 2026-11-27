@@ -140,15 +140,16 @@ step("typecheck", "typecheck", () => {
 
 // The whole tests step has its own limit (each suite keeps its own 20 minute one in scripts/gate/run-suite.mjs): at a load of 20 to 37 the
 // run took about 20 minutes, and the fixed 20 minutes of `sh` killed it before its summary, leaving a failure with no suite named.
+const MAX_TIMER_MS = 2 ** 31 - 1;
 const TESTS_LIMIT_MS = (() => {
   const raw = process.env.AXIS_GATE_TESTS_TIMEOUT_MS;
   if (raw === undefined) return 3 * 60 * 60 * 1000;
-  return /^[1-9][0-9]*$/.test(raw) ? Number(raw) : raw;
+  return /^[1-9][0-9]*$/.test(raw) && Number(raw) <= MAX_TIMER_MS ? Number(raw) : raw; // above this a timer fires at once
 })();
 
 let packageCounts = [];
 step("test", "tests", () => {
-  if (typeof TESTS_LIMIT_MS !== "number") return { status: "fail", detail: `AXIS_GATE_TESTS_TIMEOUT_MS must be a positive integer, got ${JSON.stringify(TESTS_LIMIT_MS)}` };
+  if (typeof TESTS_LIMIT_MS !== "number") return { status: "fail", detail: `AXIS_GATE_TESTS_TIMEOUT_MS must be a positive integer of at most ${MAX_TIMER_MS}, got ${JSON.stringify(TESTS_LIMIT_MS)}` };
   const dir = mkdtempSync(join(tmpdir(), "axis-gate-"));
   const file = join(dir, "tests.json");
   let keep = false;
@@ -156,7 +157,10 @@ step("test", "tests", () => {
     // ADR 0009's first test (PV-N1d) may skip on a dev machine without openssl, never under the gate.
     const r = sh(process.execPath, [join(root, "scripts", "test-all.mjs"), "--json", file], { cwd: root, timeout: TESTS_LIMIT_MS, env: { ...process.env, AXIS_REQUIRE_PINNING_TEST: "1" } });
     try { packageCounts = JSON.parse(readFileSync(file, "utf8")); } catch { /* summary missing */ }
-    if (r.ok) return { status: "pass", detail: `${packageCounts.length} suites` };
+    if (!Array.isArray(packageCounts)) packageCounts = [];
+    // A run that exits 0 with no summary, or with a summary of no suite, ran nothing: that is a failure, never "pass, 0 suites".
+    if (r.ok && packageCounts.length > 0) return { status: "pass", detail: `${packageCounts.length} suites` };
+    if (r.ok) { return { status: "fail", detail: "the test run ended without a summary of any suite (zero suites ran, or no summary was written)" }; }
     const bad = packageCounts.filter((s) => !s.ok).map((s) => s.name);
     // Passing suites stay quiet. A failing one prints its failing tests' names and first error lines here and
     // keeps its whole output in a file, because a flake that cannot be named cannot be chased.
