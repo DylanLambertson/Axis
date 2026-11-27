@@ -1,5 +1,7 @@
 # Project registration and the run-trust record
 
+> **To be amended by ADR 0011** (`docs/adr/0011-own-shell-ide-as-optional-feature.md`, Proposed 2026-11-26; takes effect when it is accepted): with no Code OSS workbench, T3 (the Workspace Trust half, §2) is dropped and main's `trust.check` answers only that the window is live; the §4.2 rule that "Add and trust" needs Workspace Trust goes, and main takes the folder from its own picker; the window's project binding is scoping, not trust (§4.3 still holds: main keeps no project store); the §8 threat rows and §9 mutants are redone in plan ticket OS-3b.
+
 Status: design for review (security-relevant), revision 3, after design reviews 1 and 2. It is decided by `owner-decisions-2026-11-21.md` §5; this note specifies it and cuts the slices. Nothing here is built yet.
 
 ## 1. Why
