@@ -15,7 +15,8 @@ import { SQL_RULES } from "./schema-pages.js";
  *   plugin is disabled (the policy then refuses: disabling keeps the grants, enabling again restores them without a new grant
  *   dialog). A grant never changes; revoking deletes it and bumps the generation.
  * - Every writer is the user: `set_by` and `granted_by` are always `user`, and the store's methods take no actor. The contract
- *   methods that will call them (PV-K2) must be tier 4 or main-owned; K1b adds no contract or handler for them.
+ *   methods that will call them (PV-K2): `grant` and `enable` at tier 4 or main-owned, `revoke` and `disable` at tier 2 (a decrease
+ *   applies at once; `docs/design/plugin-grant-contract.md`). K1b adds no contract or handler for them.
  * - Every table refuses an INSERT of a key that exists, before any conflict clause (INSERT OR REPLACE, REPLACE, OR IGNORE and
  *   an upsert all abort: the PV-G1 lesson); ids are the NUL-safe rules of `SQL_RULES`.
  */
