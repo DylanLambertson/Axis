@@ -67,7 +67,7 @@ Mutants:
 
 ## 5. What it leaves (RR-93, narrowed)
 
-- A worker in an untainted run can still **create** tasks without asking (up to the project's 1,000). That is noise, not an overwrite: every task it creates is untrusted and attributed.
+- A worker in an untainted run can still **create** tasks without asking: at most 25 per run, and never into the share kept for the user (`tasks-store.md` §4.1). That is noise, not an overwrite: every task it creates is untrusted and attributed.
 - The user can approve an overwrite without reading it. The card shows the change whole, as for every write.
 
 ## 6. What PV-T2 (the shell side of Start) needs from the daemon
