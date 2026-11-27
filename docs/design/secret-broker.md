@@ -100,8 +100,8 @@ Daemon → main requests, each with a `requestId`, strict schemas, closed types;
 | Slice | Content | Size | Proves |
 |---|---|---|---|
 | **PV-N0a** | Control schemas for the six requests and answers; the main-side pure module (folder checks, file names, record format, framing, atomic store, temporary-file cleanup, prefix check, bounds, closed errors) under `daemon-host/src/main/`, tested with a fake cipher and a real temporary directory | M | 2, 3, 4 (logic), 5, 7, 8 |
-| **PV-N0c-1** | The daemon side, behind a composition option that is off in production (§6.1): the `secrets.*` requests on the control client (timeouts, field validation, bounds), the `SecretBackend` over it, `weakPolicy: "refuse"` and the raised rollback timeout, one backend for both bindings, the startup reveal with a tolerant list, and the test supervisor's answers | M | 6, 7, 8, at daemon level |
-| **PV-N0c-2** | Main's adapter in the own shell's main (ADR 0011): `safeStorage`, paths and folder modes, with source pins; main answers `secrets.*`; the one-line flip that turns the option on in the entry | S to M | 1 to 5, in a built app |
+| **PV-N0c-1** | The daemon side, behind a composition option that is off in production (§6.1): the `secrets.*` requests on the control client (timeouts, field validation, bounds), the `SecretBackend` over it, `weakPolicy: "refuse"` and the raised rollback timeout, the provider reveal gate (§6.1), one backend for both bindings, the startup reveal with a tolerant list, and the test supervisor's answers | M | 5 (the vault's refusal), 6, 7 and 8, at daemon level |
+| **PV-N0c-2** | Main's adapter in the own shell's main (ADR 0011): `safeStorage`, paths and folder modes, with source pins; main answers `secrets.*`; the one-line flip that turns the option on in the entry | S to M | 1 to 5 in a built app (4 as restated in §6.1), and main's share of 7 before the flip |
 
 Each is a large-builder slice with an independent security review and mutation testing of the refusal paths; PV-N0c-1 follows PV-N0a, and PV-N0c-2 follows PV-N0c-1 and the own shell's main. Revision 1's PV-N0b (the upstream patch) is dropped with section 3.2.
 
@@ -122,13 +122,49 @@ Each is a large-builder slice with an independent security review and mutation t
   - gate line 6: a hung `get` fails within its timeout, and other connections stay usable;
   - gate line 7: no log line or error carries a canary;
   - gate line 8: a malformed or oversized answer is `backend_failed`, and a bad name in the startup list is skipped and reported;
-  - the read slice's canary test, run again with the token reaching the vault through the broker path, not a test backend.
+  - gate line 5, the vault's refusal (the provider reveal gate below);
+  - the read slice's canary test, run again with the token reaching the vault through the broker path, not a test backend;
+  - zero sends with the option off, shown by behaviour in the real default composition as well as by the entry pin. The test must fail if the backend's construction or the startup reveal moves outside the option's guard.
+
+**The provider reveal gate (PV-N0c-1).**
+- **A pre-existing gap, fixed here.** `weakPolicy` governs stores, not reveals. The vault checks an entry's own metadata on reveal only for integration purposes (PV-N1f). So a provider entry whose stored metadata reports protection `none`, such as a Linux `v10` record that main truthfully reports as `none` (§3.3, gate 5), is returned today to both `validate_connection` at startup and `provider_request`.
+- **The change.** The broker wiring applies the same same-read check to provider reveals: the metadata of the `get` result that carries the secret, against the current backend, refused with `weak_entry`. It covers startup validation and normal provider use. The backend keeps reporting each entry's real protection, and the integrations mapping of `weak_entry` (`needs_reconnect`) is unchanged.
+- **The consent path.** A weak provider entry stored with consent is no longer revealed under the broker wiring. This matches §3.3 and §7: there is no consent path in 4a.
+- **Tests:**
+  - a test supervisor case that answers a provider entry with protection `none`: the startup validation and a provider request are both refused, and the key is never registered or sent;
+  - a mutant that removes the refusal must fail it.
+- The real Linux `v10`-to-provider refusal stays PV-N0c-2's built-app evidence.
+
+**Other N0c-1 checkpoints** (from the design review; not new decisions):
+- **Timeouts and limits.** Silence is a fixed `backend_failed`. A timeout, an abort or a dispose clears its pending entry, timer and listener. A late answer is ignored, and its id is never reused. The secrets limit of 8 outstanding requests is its own, not the client's general pending limit.
+- **A `put` that failed or timed out is "unknown"** (§3.4). Reconciliation, same-name ordering and failure containment are tested with delayed writes, not inferred from the timer settings.
+- **The tolerant startup list** cannot reuse the strict whole-list answer schema (`secrets-messages.ts`). It filters bad names first, and still refuses oversized or malformed metadata.
 
 **PV-N0c-2: the flip.**
 - Main's adapter in the own shell answers `secrets.*`.
 - The same pull request turns the option on in the entry: a one-line change, reviewed with the adapter.
-- It proves gate lines 1 to 5 in a built app.
-- Until it lands, no production code path reads a key through the broker.
+- It proves gate lines 1 to 5 in a built app. Gate 4 is proven as restated below.
+- **Main's share of gate 7 is a prerequisite of the flip.** A canary is run through the real main-to-daemon path, capturing main's diagnostics and errors as well as the daemon's logs. It covers a cipher failure and late or failing answers. A mutant that leaks the canary at the main adapter's boundary must fail. N0c-1's daemon-level proof and N0a's pure-module tests stay; they do not exercise this adapter.
+- **Gate 4 in the own shell.** The own renderer has no upstream `encryption` channel, so the `setUsePlainTextEncryption(true)` case cannot be run as written. Instead:
+  - the real Linux `basic_text` refusal is kept: the store is refused, nothing is written, and the UI shows the reason;
+  - a test shows that the own renderer cannot reach the mode-switch API (no preload entry or channel exposes it);
+  - the refusal after a `v10` report is exercised through a main-side test seam, or kept as N0a's logic evidence.
+
+  No production renderer API is added for this test.
+- Until it lands, no production code path reads a key through the broker, and the integrations read stays `not_connected`.
+
+**Gate lines by slice:**
+
+| Gate | Evidence |
+|---|---|
+| 1 | N0c-2: a built-app store read back by the providers binding; no daemon file, journal or renderer state holds it |
+| 2 | N0a: file, atomic-write and cleanup logic. N0c-2: the real paths, modes and restart |
+| 3 | N0a: frame and name binding. N0c-2: the real cipher and app path |
+| 4 | N0a: weak and prefix refusal logic. N0c-2: the Linux built-app refusal and its visible reason, restated as above |
+| 5 | N0a: the prefix reported truthfully. N0c-1: the vault's provider reveal gate. N0c-2: the real Linux, macOS and Windows behaviour |
+| 6 | N0c-1: a bounded hung `get` with other connections usable, and a locked-after-store answer giving "needs reconnect" with the record kept, at daemon level. The test supervisor is not a real keyring |
+| 7 | N0a: main's pure-module errors and events. N0c-1: the daemon's logs and errors. N0c-2: main's adapter, before the flip |
+| 8 | N0a: folder, file and canonical-name logic. N0c-1: answer validation, the oversized refusal and the tolerant startup list. N0c-2: the adapter's path selection, with gates 1 and 2 |
 
 **EXT-4.** The residual of §3.2 (any renderer can decrypt any `safeStorage` ciphertext through upstream's `encryption` channel) stands only while the Code OSS shell ships. The own shell's renderer has no such channel (ADR 0011 Decision 5 item 1), so PV-N0c-2's built-app evidence is taken in a shell without it.
 
