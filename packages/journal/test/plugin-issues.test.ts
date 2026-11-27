@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { AuditLog, openDatabase, runMigrations, schemaVersion, type DatabaseSync } from "@axis/audit";
 import { JOURNAL_MIGRATIONS, JOURNAL_SCHEMA_VERSION, Journal, PLUGIN_ISSUE_LIMITS } from "../src/index.js";
+import { grantForTests, enableForTests } from "./plugin-grants-for-tests.js";
 
 // The plugin challenge counter (PV-K1e-a2, schema version 17): the table rules, each with a refusing case next to the closest
 // accepted value, and the store's hourly count across a disable and enable, a reopen, a prune and a clock that steps back.
@@ -104,13 +105,13 @@ test("record: 6 per plugin and project in any hour, the 7th refused with nothing
 
 test("a disable and enable, and a revoke, do not reset the count", () => {
   const { journal } = setup();
-  journal.plugins.setEnabled("acme.board", "p1", true);
-  journal.plugins.grant("acme.board", "p1", "runs.start");
+  enableForTests(journal.plugins, "acme.board", "p1");
+  grantForTests(journal.plugins, "acme.board", "p1", "runs.start");
   fill(journal, T0);
   journal.plugins.setEnabled("acme.board", "p1", false);
-  journal.plugins.setEnabled("acme.board", "p1", true);
+  enableForTests(journal.plugins, "acme.board", "p1");
   journal.plugins.revoke("acme.board", "p1", "runs.start");
-  journal.plugins.grant("acme.board", "p1", "runs.start");
+  grantForTests(journal.plugins, "acme.board", "p1", "runs.start");
   assert.deepEqual(journal.pluginIssues.record("acme.board", "p1", T0 + 100), { ok: false, reason: "hourly_limit" });
   assert.equal(journal.pluginIssues.inLastHour("acme.board", "p1", T0 + 100), 6);
 });

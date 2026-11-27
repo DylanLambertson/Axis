@@ -25,7 +25,20 @@ const PERMS: ReadonlySet<string> = new Set(PLUGIN_PERMISSIONS);
 
 const bad = (reason: string): AxisError => new AxisError("E_INVALID_ARGUMENT", "The plugin record was refused", { reason });
 
+declare const GRANT_WRITE: unique symbol;
+/**
+ * A single-use permission to write one increase (a grant, or switching a plugin on) through ONE `PluginGrantRecords` instance
+ * (PV-K2 K2-g3, `docs/design/plugin-grant-contract.md` section 8.4). Only that instance's minting function makes one, and the
+ * instance hands that function out once (`takeGrantMint`): the host composition takes it at startup for the approved grant action.
+ */
+export interface PluginGrantWrite {
+  readonly [GRANT_WRITE]: true;
+}
+
 export class PluginGrantRecords {
+  /** The tokens this instance minted and has not yet spent: private, never exported, never enrolled from outside. */
+  readonly #brand = new WeakSet<object>();
+  #mintTaken = false;
   readonly #db: DatabaseSync;
   readonly #audit: AuditLog;
   readonly #ts: () => string;
@@ -73,9 +86,35 @@ export class PluginGrantRecords {
     });
   }
 
-  /** Turn the plugin on or off in the project; off bumps its generation (the table's trigger checks the step). */
-  setEnabled(pluginId: string, projectId: string, enabled: boolean): void {
+  /**
+   * This instance's minting function, ONCE: a second call throws. The host composition takes it at startup and hands it to the
+   * approved grant action alone, so if anything else took it first the host fails to start (a visible failure, never a silent
+   * second writer). The function takes no argument: it creates a fresh frozen token and enrols it here, so nothing can enrol an
+   * object it brings.
+   */
+  takeGrantMint(): () => PluginGrantWrite {
+    if (this.#mintTaken) throw new AxisError("E_INTERNAL", "The plugin grant mint was already taken", { reason: "mint_taken" });
+    this.#mintTaken = true;
+    return () => {
+      const token = Object.freeze(Object.create(null) as object);
+      this.#brand.add(token);
+      return token as PluginGrantWrite;
+    };
+  }
+
+  /** Spends a token of this instance (before any write), or refuses: a forged object, another instance's token, a spent one. */
+  #spend(token: unknown): void {
+    if (typeof token !== "object" || token === null || !this.#brand.has(token)) throw bad("token");
+    this.#brand.delete(token);
+  }
+
+  /**
+   * Turn the plugin on or off in the project; off bumps its generation (the table's trigger checks the step). Turning it ON is an
+   * increase and needs a token of this instance (spent here, before the write); turning it off needs none.
+   */
+  setEnabled(pluginId: string, projectId: string, enabled: boolean, token?: PluginGrantWrite): void {
     if (typeof enabled !== "boolean") throw bad("enabled");
+    if (enabled) this.#spend(token);
     withTransaction(this.#db, () => {
       const r = this.#db.prepare("SELECT enabled FROM plugin_enablement WHERE plugin_id = ? AND project_id = ?").get(pluginId, projectId) as Row | undefined;
       if (r === undefined) throw bad("unknown");
@@ -88,9 +127,13 @@ export class PluginGrantRecords {
     });
   }
 
-  /** Grant one permission of the closed set. A grant needs the plugin added; granting twice is refused by the table. */
-  grant(pluginId: string, projectId: string, permission: PluginPermission): void {
+  /**
+   * Grant one permission of the closed set, with a token of this instance (spent here, before the write). A grant needs the
+   * plugin added; granting twice is refused by the table.
+   */
+  grant(pluginId: string, projectId: string, permission: PluginPermission, token: PluginGrantWrite): void {
     if (!PERMS.has(permission)) throw bad("permission");
+    this.#spend(token);
     withTransaction(this.#db, () => {
       this.#db.prepare("INSERT INTO plugin_grants (plugin_id, project_id, permission, granted_by, granted_at) VALUES (?, ?, ?, 'user', ?)").run(pluginId, projectId, permission, this.#ts());
       this.#note("granted", pluginId, projectId, { permission });
