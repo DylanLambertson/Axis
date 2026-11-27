@@ -40,3 +40,25 @@ test("gate tests step: a run inside the limit passes (the limit is not read as t
   const r = runGate([ok], { AXIS_GATE_TESTS_TIMEOUT_MS: "60000" });
   assert.match(r.out, /PASS +tests/, r.out); // the verdict is INCOMPLETE because the other steps are skipped here
 });
+
+test("gate tests step: a run that exits 0 but ran no suite FAILS by name, never 'pass, 0 suites'", () => {
+  const r = runGate([]);
+  assert.match(r.out, /FAIL +tests +the test run ended without a summary of any suite \(zero suites ran/, r.out);
+  assert.doesNotMatch(r.out, /PASS +tests/, r.out);
+});
+
+test("gate tests step: a test runner killed by a signal is named with the signal and the suite", () => {
+  // The suite is a direct child of the runner, so its parent is the runner: it kills it outright (no handler runs for SIGKILL).
+  const killer = ["@fake/killer", process.execPath, ["-e", 'process.kill(process.ppid, "SIGKILL"); setTimeout(() => {}, 30000)']];
+  const r = runGate([killer]);
+  assert.match(r.out, /ended without a summary \(killed by SIGKILL\) while running @fake\/killer/, r.out);
+});
+
+test("gate tests step: a limit above what the timer can hold is refused by name, the largest one is accepted", () => {
+  for (const bad of ["2147483648", "9007199254740993", "99999999999999999999"]) {
+    const r = runGate([ok], { AXIS_GATE_TESTS_TIMEOUT_MS: bad });
+    assert.match(r.out, /AXIS_GATE_TESTS_TIMEOUT_MS[^\n]*2147483647/, `${bad}: ${r.out}`);
+    assert.doesNotMatch(r.out, /PASS +tests/, bad);
+  }
+  assert.match(runGate([ok], { AXIS_GATE_TESTS_TIMEOUT_MS: "2147483647" }).out, /PASS +tests/);
+});

@@ -1,5 +1,6 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 // Pure helpers for scripts/gate.mjs: no process, file system or git access.
+import { dirname, join, resolve } from "node:path";
 
 /** Number of lines in a text, counting a final line that has no newline. */
 export function countLines(text) {
@@ -180,12 +181,49 @@ export function formatReport({ branch, head, results, packageCounts }) {
 
 /**
  * The one line a gate run on the wrong Node prints first, or undefined when Node is the pinned one (or no pin is given: the
- * node-version step reports that). `hints` are directories that hold the pinned Node, in order of preference.
+ * node-version step reports that). `hints` are directories that hold the pinned Node, in order of preference; `unusable` are
+ * NODE24_BIN values that name no node binary.
  */
-export function wrongNodeLine({ running, pinned, execPath, hints }) {
+export function wrongNodeLine({ running, pinned, execPath, hints, unusable = [] }) {
   if (typeof pinned !== "string" || running === `v${pinned}`) return undefined;
   const where = hints.length > 0
     ? `put ${hints[0]} first on PATH`
     : "no pinned Node found: set NODE24_BIN to its bin directory or run scripts/code-oss/build.sh --toolchain-only";
-  return `gate: wrong Node: running ${running} (${execPath}), expected v${pinned} (pinned in code-oss/upstream.json); ${where}`;
+  const note = unusable.map((u) => `; NODE24_BIN=${u} holds no node binary`).join("");
+  return `gate: wrong Node: running ${running} (${execPath}), expected v${pinned} (pinned in code-oss/upstream.json); ${where}${note}`;
+}
+
+/**
+ * Where the pinned Node may be, as { hints, unusable }: NODE24_BIN (a directory, or the binary itself, as scripts/code-oss/lib.sh accepts)
+ * and the Code OSS tools directory (AXIS_CODE_OSS_TOOLS_DIR when set and not empty, else <root>/.tools), each only when it holds a `node`.
+ * `fs` is { exists, isFile }; a file system that throws gives no hints, because the line is advice and must never stop the gate.
+ */
+export function pinnedNodeHints({ env, root, pinned, platform, arch, fs }) {
+  const hints = [];
+  const unusable = [];
+  try {
+    const named = env.NODE24_BIN;
+    if (typeof named === "string" && named !== "") {
+      const bin = resolve(named); // relative to the working directory, as scripts/code-oss/lib.sh uses it; the advice must print an absolute path
+      const dir = fs.exists(bin) && fs.isFile(bin) ? dirname(bin) : bin;
+      if (fs.exists(join(dir, "node"))) hints.push(dir);
+      else unusable.push(named);
+    }
+    if (typeof pinned === "string") {
+      const dist = `node-v${pinned}-${platform === "darwin" ? "darwin" : "linux"}-${arch === "arm64" ? "arm64" : "x64"}`;
+      const tools = resolve(root, env.AXIS_CODE_OSS_TOOLS_DIR || ".tools");
+      const dir = join(tools, dist, "bin");
+      if (fs.exists(join(dir, "node"))) hints.push(dir);
+    }
+  } catch {
+    return { hints: [], unusable: [] };
+  }
+  return { hints, unusable };
+}
+
+/** True for a parsed summary of the test run: a non-empty list whose every entry is { name, ok, pass, fail } of the right types. */
+export function validSummary(counts) {
+  const count = (n) => Number.isInteger(n) && n >= 0;
+  return Array.isArray(counts) && counts.length > 0
+    && counts.every((s) => s !== null && typeof s === "object" && typeof s.name === "string" && s.name !== "" && typeof s.ok === "boolean" && count(s.pass) && count(s.fail));
 }

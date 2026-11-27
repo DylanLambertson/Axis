@@ -185,16 +185,26 @@ export const messagesSettingsResponseSchema = z.strictObject({ settings: messagi
  * updateSettings (write, tier 2, user only): one setting per call, so the audit row (`message.settings`) names exactly
  * one change with its before and after. Enabling a CLI agent is refused for a bypass entry (`bypass_entry`).
  */
+/** A CLI project-configuration file the user confirms when enabling (the second step of an enable with warnings, M-3). */
+const enableFileSchema = { path: z.string().min(1).max(64).regex(/^[a-z0-9._/-]+$/), cli: z.string().min(1).max(16).regex(/^[a-z0-9-]+$/) };
+export const messagesAcknowledgedFileSchema = z.strictObject(enableFileSchema);
 export const messagesUpdateSettingsRequestSchema = z.discriminatedUnion("setting", [
   z.strictObject({ setting: z.literal("crossGroup"), projectId: projectIdSchema, value: z.boolean() }),
   z.strictObject({ setting: z.literal("crossGroupPair"), projectId: projectIdSchema, groups: groupPairSchema, value: z.boolean() }),
   z.strictObject({ setting: z.literal("secretScan"), projectId: projectIdSchema, value: z.enum(["refuse", "warn"]) }),
   z.strictObject({ setting: z.literal("retentionDays"), projectId: projectIdSchema, value: z.number().int().min(1).max(MAX_RETENTION_DAYS) }),
   z.strictObject({ setting: z.literal("acceptsFrom"), agentId: agentIdSchema, value: z.enum(ACCEPTS_FROM) }),
-  z.strictObject({ setting: z.literal("cliMessaging"), agentId: agentIdSchema, value: z.boolean() }),
+  // `acknowledged`: the second step of an enable that returned warnings, naming every file it warned about (PV-M7 slice 1).
+  z.strictObject({ setting: z.literal("cliMessaging"), agentId: agentIdSchema, value: z.boolean(), acknowledged: z.array(messagesAcknowledgedFileSchema).max(8).optional() }),
   z.strictObject({ setting: z.literal("muted"), agentId: agentIdSchema, value: z.boolean() }),
 ]);
-export const messagesUpdateSettingsResponseSchema = z.strictObject({ settings: messagingSettingsSchema, changed: z.boolean() });
+/**
+ * Enabling a CLI worker's messaging (PV-M7 slice 1) may carry structured warnings: a CLI project-configuration file found in
+ * the worker's workspace that can make the CLI act without asking (endpoint design section 6). Codes, never prose: the
+ * dialog's words are the shell's.
+ */
+export const messagesEnableWarningSchema = z.strictObject({ code: z.literal("repo_config"), ...enableFileSchema });
+export const messagesUpdateSettingsResponseSchema = z.strictObject({ settings: messagingSettingsSchema, changed: z.boolean(), warnings: z.array(messagesEnableWarningSchema).max(8).optional() });
 
 const spec = <Req extends z.ZodType, Res extends z.ZodType>(
   request: Req,

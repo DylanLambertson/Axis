@@ -286,12 +286,15 @@ export function wireCliEndpoints(
  * (`messagesEndpoint`), and revoked when the spawn fails or the run's process exits (the endpoint closes at once, not at the
  * next relayed message). Without them (`endpoints()` undefined: the default) the port is used as it is.
  */
-export function cliEndpointPty(pty: PtyPort, endpoints: () => CliEndpoints | undefined): PtyPort {
+export function cliEndpointPty(pty: PtyPort, endpoints: () => CliEndpoints | undefined, recheck?: (spec: { readonly runId: string; readonly argv: readonly string[] }) => Promise<boolean>): PtyPort {
   return {
     async spawn(spec) {
       const e = endpoints();
-      const minted = e?.mint(spec.runId);
-      if (e === undefined || minted === undefined) return pty.spawn(spec);
+      if (e === undefined) return pty.spawn(spec);
+      // PV-M7 slice 1: the enable rule again, over the argv that runs; refused, the run starts without an endpoint.
+      if (recheck !== undefined && !(await recheck(spec))) return pty.spawn(spec);
+      const minted = e.mint(spec.runId);
+      if (minted === undefined) return pty.spawn(spec);
       try {
         const handle = await pty.spawn({ ...spec, messagesEndpoint: { endpoint: minted.endpointId, token: minted.token } });
         handle.onExit(() => e.revoke(spec.runId));
