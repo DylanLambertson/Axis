@@ -28,6 +28,10 @@ export const FILES = Object.freeze({
   host: "packages/daemon-host/src/host.ts",
   nodeStorage: "packages/daemon-host/src/storage/node-storage.ts",
   auditDb: "packages/audit/src/db.ts",
+  // The CLI endpoint switch (PV-M7 slice 2): the same single-use-token pattern, its own store, action and handler.
+  switchStore: "packages/journal/src/cli-endpoint-store.ts",
+  switchAction: "packages/daemon-host/src/messages/cli-endpoint-action.ts",
+  switchHandler: "packages/daemon-host/src/handlers/messages-switch.ts",
 });
 
 /** Who may use each member of the grant store. */
@@ -35,10 +39,30 @@ const MEMBER_FILES = new Map([
   ["grant", new Set([FILES.store, FILES.action])],
   ["setEnabled", new Set([FILES.store, FILES.action, FILES.handler])],
   ["takeGrantMint", new Set([FILES.store, FILES.compose])],
+  // Switching on only through the approved enable action; switching off only in the disable handler; the mint only in the composition.
+  ["switchOn", new Set([FILES.switchStore, FILES.switchAction])],
+  ["switchOff", new Set([FILES.switchStore, FILES.switchHandler])],
+  ["takeSwitchMint", new Set([FILES.switchStore, FILES.compose])],
 ]);
 /** Who may hold a token or a mint, and who may hold the grant action. */
 const TOKEN_FILES = new Set([FILES.store, FILES.action]);
 const ACTION_FILES = new Set([FILES.action, FILES.compose, FILES.handler]);
+/** Each guarded store: its token type, its action type, the files that may hold each, its action file and its mint. */
+const GUARDED = Object.freeze([
+  { store: "PluginGrantRecords", storeFile: FILES.store, token: "PluginGrantWrite", tokenFiles: TOKEN_FILES, action: "GrantAction", actionFile: FILES.action, actionFiles: ACTION_FILES, mint: "takeGrantMint", create: "createGrantAction" },
+  {
+    store: "CliEndpointSwitchRecords",
+    storeFile: FILES.switchStore,
+    token: "CliEndpointSwitchWrite",
+    tokenFiles: new Set([FILES.switchStore, FILES.switchAction]),
+    action: "CliEndpointSwitchAction",
+    actionFile: FILES.switchAction,
+    actionFiles: new Set([FILES.switchAction, FILES.compose, FILES.switchHandler]),
+    mint: "takeSwitchMint",
+    create: "createCliEndpointSwitchAction",
+  },
+]);
+const BY_MINT = new Map(GUARDED.map((g) => [g.mint, g]));
 
 const isNamed = (type, name) => {
   if (type === undefined) return false;
@@ -73,7 +97,9 @@ export function grantWriterProblems(program, root, checked) {
     if (!checked(rel)) continue;
     const at = (node, what) => out.push(`${rel}:${sf.getLineAndCharacterOfPosition(node.getStart(sf)).line + 1}: ${what}`);
     const atNode = at;
-    const isStore = (expr) => isNamed(checker.getTypeAtLocation(expr), "PluginGrantRecords");
+    /** The guarded store `expr` may be, or undefined. */
+    const storeOf = (expr) => GUARDED.find((g) => isNamed(checker.getTypeAtLocation(expr), g.store));
+    const isStore = (expr) => storeOf(expr) !== undefined;
     const knownOther = (_checker, expr) => knownOtherType(checker, checker.getTypeAtLocation(expr), relOf);
     // A destructured member: the pattern's source type is checked like a receiver.
     const destructured = (type, key, at) => {
@@ -103,7 +129,8 @@ export function grantWriterProblems(program, root, checked) {
         }
       }
     };
-    if (rel === FILES.action) {
+    const actionOf = GUARDED.find((g) => g.actionFile === rel);
+    if (actionOf !== undefined) {
       let values = 0;
       for (const st of sf.statements) {
         const exported = ts.getCombinedModifierFlags?.(st) & ts.ModifierFlags.Export || st.modifiers?.some((m) => m.kind === ts.SyntaxKind.ExportKeyword);
@@ -112,7 +139,7 @@ export function grantWriterProblems(program, root, checked) {
         if (ts.isExportDeclaration(st) && !st.isTypeOnly) values += st.exportClause === undefined ? 1 : ts.isNamedExports(st.exportClause) ? st.exportClause.elements.filter((e) => !e.isTypeOnly).length : 1;
         if (ts.isExportAssignment(st)) values++;
       }
-      if (values !== 1) at(sf, `grant-action.ts must export exactly one value (found ${values})`);
+      if (values !== 1) at(sf, `${rel.slice(rel.lastIndexOf("/") + 1)} must export exactly one value (found ${values})`);
     }
     const visit = (node) => {
       // Call sites (review K2-g3 round 2): outside the files allowed for each, ANY access, element access or destructuring of a
@@ -144,27 +171,33 @@ export function grantWriterProblems(program, root, checked) {
       if ((ts.isCallExpression(node) || ts.isNewExpression(node)) && node.arguments !== undefined) {
         const calleeFile = declFile(symbolOf(ts.isCallExpression(node) ? node.expression : node.expression));
         for (const arg of node.arguments) {
-          if (isStore(arg) && calleeFile !== FILES.action && rel !== FILES.store && rel !== FILES.journal) at(arg, "the grant store passed to a function outside the grant action");
+          const g = storeOf(arg);
+          if (g !== undefined && calleeFile !== g.actionFile && rel !== g.storeFile && rel !== FILES.journal) at(arg, `the ${g.store} passed to a function outside its action`);
         }
       }
       // Tokens, mints and the grant action, wherever a value of their type is declared, read or made.
       if (ts.isCallExpression(node) || ts.isVariableDeclaration(node) || ts.isParameter(node) || ts.isPropertyDeclaration(node) || ts.isPropertySignature(node) || ts.isPropertyAccessExpression(node) || ts.isBindingElement(node)) {
         const target = ts.isCallExpression(node) || ts.isPropertyAccessExpression(node) ? node : node.name;
         const type = checker.getTypeAtLocation(target);
-        if ((isNamed(type, "PluginGrantWrite") || returnsNamed(type, "PluginGrantWrite")) && !TOKEN_FILES.has(rel)) {
-          // The one allowed taking of the mint: `takeGrantMint()` (and its member reference) inside the composition.
-          const taking = (ts.isCallExpression(node) && isTakeMint(node)) || (ts.isPropertyAccessExpression(node) && node.name.text === "takeGrantMint");
-          if (!(rel === FILES.compose && taking)) at(node, "a grant token or mint");
+        for (const g of GUARDED) {
+          if ((isNamed(type, g.token) || returnsNamed(type, g.token)) && !g.tokenFiles.has(rel)) {
+            // The one allowed taking of the mint: `takeGrantMint()` / `takeSwitchMint()` (and its member reference) in the composition.
+            const taking = (ts.isCallExpression(node) && isTakeMint(node) === g.mint) || (ts.isPropertyAccessExpression(node) && node.name.text === g.mint);
+            if (!(rel === FILES.compose && taking)) at(node, `a ${g.token} token or mint`);
+          }
+          if (isNamed(type, g.action) && !g.actionFiles.has(rel)) at(node, `the ${g.action}`);
         }
-        if (isNamed(type, "GrantAction") && !ACTION_FILES.has(rel)) at(node, "the grant action");
       }
       // The mint is taken only in the composition, straight into the grant action; the action is made only there.
-      if (ts.isCallExpression(node) && isTakeMint(node) && isStore(node.expression.expression)) {
+      if (ts.isCallExpression(node) && isTakeMint(node) !== undefined && isStore(node.expression.expression)) {
+        const g = BY_MINT.get(isTakeMint(node));
         const parent = node.parent;
-        const direct = rel === FILES.compose && ts.isCallExpression(parent) && parent.arguments.includes(node) && ts.isIdentifier(parent.expression) && parent.expression.text === "createGrantAction";
-        if (!direct && rel !== FILES.store) at(node, "takeGrantMint() outside createGrantAction( in the composition");
+        const direct = rel === FILES.compose && ts.isCallExpression(parent) && parent.arguments.includes(node) && ts.isIdentifier(parent.expression) && parent.expression.text === g.create;
+        if (!direct && rel !== g.storeFile) at(node, `${g.mint}() outside ${g.create}( in the composition`);
       }
-      if (ts.isCallExpression(node) && symbolOf(node.expression)?.getName() === "createGrantAction" && declFile(symbolOf(node.expression)) === FILES.action && rel !== FILES.compose && rel !== FILES.action) at(node, "createGrantAction( outside the composition");
+      for (const g of GUARDED) {
+        if (ts.isCallExpression(node) && symbolOf(node.expression)?.getName() === g.create && declFile(symbolOf(node.expression)) === g.actionFile && rel !== FILES.compose && rel !== g.actionFile) at(node, `${g.create} outside the composition`);
+      }
       // Construction sites.
       if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)) {
         const name = node.expression.name.text;
@@ -176,7 +209,7 @@ export function grantWriterProblems(program, root, checked) {
         const from = declFile(symbolOf(node.expression)) ?? "";
         if ((from.includes("packages/audit/") || from.includes("@axis/audit")) && rel !== FILES.nodeStorage && rel !== FILES.auditDb) at(node, "the audit openDatabase outside the node storage");
       }
-      if (ts.isNewExpression(node) && symbolOf(node.expression)?.getName() === "PluginGrantRecords" && rel !== FILES.journal) at(node, "new PluginGrantRecords outside the journal");
+      for (const g of GUARDED) if (ts.isNewExpression(node) && symbolOf(node.expression)?.getName() === g.store && rel !== FILES.journal) at(node, `new ${g.store} outside the journal`);
       ts.forEachChild(node, visit);
     };
     ts.forEachChild(sf, visit);
@@ -184,7 +217,7 @@ export function grantWriterProblems(program, root, checked) {
   return out;
 }
 
-const STORE_INCREASES = ["grant", "setEnabled", "takeGrantMint"];
+const STORE_INCREASES = ["grant", "setEnabled", "takeGrantMint", "switchOn", "switchOff", "takeSwitchMint"];
 /** The receiver's member of that name is callable (or the receiver is untyped): the store's three are methods. A data field is not. */
 function callableMember(checker, receiver, name) {
   return callableMemberOf(checker, checker.getTypeAtLocation(receiver), name, receiver);
@@ -201,8 +234,8 @@ function knownOtherType(checker, type, fileOf) {
   const t = checker.getNonNullableType(type);
   if (t.isUnion()) return false;
   const sym = t.aliasSymbol ?? t.getSymbol();
-  // By declaration, never by name: only the GrantAction type DECLARED in plugins/grant-action.ts is known not to be the store.
-  return sym?.getName() === "GrantAction" && (sym.declarations ?? []).length > 0 && sym.declarations.every((d) => fileOf(d.getSourceFile()) === FILES.action);
+  // By declaration, never by name: only an action type DECLARED in its own action file is known not to be a store.
+  return GUARDED.some((g) => sym?.getName() === g.action && (sym.declarations ?? []).length > 0 && sym.declarations.every((d) => fileOf(d.getSourceFile()) === g.actionFile));
 }
 /** The element type of an array, a tuple or another iterable with a number index. */
 function elementTypeOf(checker, type) {
@@ -212,8 +245,9 @@ function elementTypeOf(checker, type) {
 /** `x.setEnabled(a, b, false)`: a decrease, allowed anywhere. */
 const isDecrease = (access) => access.name.text === "setEnabled" && ts.isCallExpression(access.parent) && access.parent.expression === access && access.parent.arguments[2]?.kind === ts.SyntaxKind.FalseKeyword;
 
+/** The mint's name when `call` takes a guarded store's mint (`takeGrantMint()` / `takeSwitchMint()`), else undefined. */
 function isTakeMint(call) {
-  return ts.isPropertyAccessExpression(call.expression) && call.expression.name.text === "takeGrantMint";
+  return ts.isPropertyAccessExpression(call.expression) && BY_MINT.has(call.expression.name.text) ? call.expression.name.text : undefined;
 }
 
 /** A type-checked program over `files`, the same options for the product walk and the planted fixtures. */

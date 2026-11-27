@@ -6,6 +6,7 @@ import { attestedWindow } from "../testing/attested.js";
 import { cliEndpointPty, createMessagingBinding, hostMessagingDeps, startCliRun, wireCliEndpoints, type CliEndpoints, type PtyPort, type RelayOut } from "../src/index.js";
 import { newKey } from "./approvals-rig.js";
 import { runsRig, until } from "./runs-rig.js";
+import { switchOnForTests } from "./cli-endpoint-for-tests.js";
 import { createWs, gitSkipReason } from "./worktrees-rig.js";
 
 // The CLI endpoint through the REAL run supervisor (not a rig that creates a RUNNING run first): the supervisor spawns while
@@ -26,11 +27,12 @@ async function setup(t: TestContext, spawnHook?: (spec: Parameters<PtyPort["spaw
   const ws = (await createWs(user, (_m, x) => (assert.equal(x.ok, true, JSON.stringify(x.error)), x))).id;
   r.journal.agents.create({ id: "w1", projectId: r.projectId, name: "W", launch: { kind: "cli", entryId: "fake" }, homeWorkspaceId: ws, groupId: null });
   r.journal.messages.setAgentSettings("w1", { acceptsFrom: "group", cliMessaging: true, muted: false }); // enabling is still refused: seeded
+  switchOnForTests(r.journal.cliEndpoint); // the user's switch (PV-M7 slice 2): the host's lookup and mint read it
   const m = createMessagingBinding(hostMessagingDeps({ journal: r.journal, audit: r.audit, monotonic: () => r.clock.monotonic(), scan: async () => [], logger: undefined, holdsSecret: () => false, enabled: true }));
   const sent: RelayOut[] = [];
   const cleanups: (() => void)[] = [];
   t.after(() => cleanups.forEach((c) => c()));
-  holder.cli = wireCliEndpoints({ enabled: true, cliEndpoint: true }, { onRelay: () => ({ dispose: () => undefined }), relay: (o: RelayOut) => (sent.push(o), true) }, m.endpoints, cleanups);
+  holder.cli = wireCliEndpoints(true, { onRelay: () => ({ dispose: () => undefined }), relay: (o: RelayOut) => (sent.push(o), true) }, m.endpoints, cleanups);
   const relay = (msg: Parameters<typeof m.endpoints.relay.onRelay>[1]) => m.endpoints.relay.onRelay(m.endpoints.source, msg);
   const reply = (outs: readonly RelayOut[]) => outs.map((o) => (o.t === "relay-reply" ? JSON.parse(o.frame) : o));
   const start = () => startCliRun(r.handlerDeps, { workspaceId: ws, entryId: "fake", worker: "w1" }, ctx);

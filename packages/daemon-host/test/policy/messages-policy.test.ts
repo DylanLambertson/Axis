@@ -10,6 +10,8 @@ import { InMemoryTrustRegistry, PLANNED_RULES, RULES, RuleTablePolicy, WEB_ALLOW
 /** The design's rows: every read method has its own (review B1), reads at tier 0 or 1, user-only writes at tier 2. */
 const EXPECTED: Array<[string, number]> = [
   ["send", 2], ["thread", 1], ["threads", 0], ["read", 1], ["markRead", 1], ["pause", 2], ["resume", 2], ["settings", 0], ["updateSettings", 2],
+  // The CLI endpoint switch (PV-M7 slice 2): on is tier 4 (main's native dialog), off is tier 1 (a decrease).
+  ["enableCliEndpoint", 4], ["disableCliEndpoint", 1],
 ];
 const key = (m: string): string => `axis.messages/1.${m}`;
 const identity = (over: Record<string, unknown> = {}): Identity =>
@@ -75,4 +77,18 @@ test("coverage: policySurface keeps the contract with its rows, or drops both", 
   assert.equal(Object.keys(without.rules).some((k) => k.startsWith("axis.messages/")), false);
   assert.deepEqual(coverageProblems(without), []);
   assert.match(coverageProblems({ ...without, rules: { ...without.rules, [key("send")]: userRule(2) } }).join("\n"), /send: policy rule for no served method/);
+});
+
+test("the CLI endpoint switch: both methods are on the plugin deny list, so no plugin set can hold them, and a plugin is denied", async () => {
+  const { PLUGIN_METHOD_SETS, pluginDenied, pluginCoverageProblems } = await import("../../src/policy/plugin-rules.js");
+  for (const m of ["enableCliEndpoint", "disableCliEndpoint"]) {
+    assert.equal(pluginDenied(key(m)), true, `${m} is not denied to plugins`);
+    assert.equal(Object.values(PLUGIN_METHOD_SETS).some((keys) => keys.includes(key(m))), false, `${m} in a plugin set`);
+    assert.match(pluginCoverageProblems(RULES, { "messages.send": [key(m)] }).join("\n"), /on the plugin deny list/, `${m}: a set naming it is caught`);
+  }
+  const trust = new InMemoryTrustRegistry();
+  const policy = new RuleTablePolicy(trust);
+  for (const m of ["enableCliEndpoint", "disableCliEndpoint"]) {
+    assert.equal(policy.evaluate(input(m, { actor: "plugin:acme.board", actorId: "plugin:acme.board", clientKind: "plugin" })).effect, "deny", `${m} as a plugin`);
+  }
 });

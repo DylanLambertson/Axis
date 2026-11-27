@@ -104,6 +104,8 @@ export const RULES: Readonly<Record<string, Rule>> = Object.freeze({
   "axis.messages/1.resume": userRule(2),
   "axis.messages/1.settings": userRule(0),
   "axis.messages/1.updateSettings": userRule(2),
+  "axis.messages/1.enableCliEndpoint": userRule(4), // PV-M7 slice 2: tier 4, main's native confirmation
+  "axis.messages/1.disableCliEndpoint": userRule(1), // a decrease, at once
   "axis.forge/1.pullRequests": userRule(0),
   "axis.forge/1.pinRepository": userRule(1),
   "axis.agents/1.list": userRule(0),

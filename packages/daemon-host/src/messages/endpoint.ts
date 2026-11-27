@@ -62,8 +62,13 @@ export const endpointFrame = z.discriminatedUnion("op", [
 export interface EndpointRelayDeps {
   readonly service: Pick<MessageService, "send" | "readWithheld" | "context">;
   readonly directory: MessagingDirectory;
-  /** The agent a run acts for (PV-G4 records it); none today. */
+  /** The worker a run acts for: the CLI endpoint path's own lookup, gated on the user's switch (PV-M7 slice 2 decision A). */
   readonly agentOf: (runId: string) => string | undefined;
+  /**
+   * The user's global CLI endpoint switch as stored now (journal v20). Read at every mint and every relayed message: off, nothing
+   * is minted and every endpoint is revoked at its next message, so none serves after the switch is turned off.
+   */
+  readonly cliEndpointOn: () => boolean;
   /** True while the run is RUNNING. */
   readonly runLive: (runId: string) => boolean;
   /**
@@ -192,6 +197,7 @@ export function createEndpointRelay(deps: EndpointRelayDeps): EndpointRelay {
 
   /** The worker's endpoint setting as stored now: off (or the worker gone) means the endpoint must not serve (slice 3 backstop). */
   function enabled(ep: Endpoint): boolean {
+    if (!deps.cliEndpointOn()) return false;
     const entry = deps.directory.agent(ep.agentId);
     return entry !== undefined && entry.projectId === ep.projectId && deps.service.context(ep.projectId).agentSettings(entry).cliMessaging;
   }
@@ -229,7 +235,7 @@ export function createEndpointRelay(deps: EndpointRelayDeps): EndpointRelay {
 
   return {
     mint(runId) {
-      if (deps.platform === "win32" || byRun.has(runId) || tombstoneRuns.has(runId) || byRun.size >= ENDPOINT_LIMITS.maxEndpoints || !(deps.runLive(runId) || launching(runId))) return undefined;
+      if (deps.platform === "win32" || !deps.cliEndpointOn() || byRun.has(runId) || tombstoneRuns.has(runId) || byRun.size >= ENDPOINT_LIMITS.maxEndpoints || !(deps.runLive(runId) || launching(runId))) return undefined;
       const agentId = deps.agentOf(runId);
       const entry = agentId === undefined ? undefined : deps.directory.agent(agentId);
       if (agentId === undefined || entry === undefined || entry.kind !== "cli") return undefined;
