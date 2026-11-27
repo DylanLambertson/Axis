@@ -11,6 +11,7 @@ export const VAULT_ERROR_CODES = [
   "invalid_name",
   "invalid_secret",
   "wrong_entry_kind",
+  "weak_entry",
 ] as const;
 export type VaultErrorCode = (typeof VAULT_ERROR_CODES)[number];
 
@@ -29,6 +30,7 @@ const CODE_INFO: Readonly<Record<VaultErrorCode, CodeInfo>> = {
   invalid_name: { axis: "E_INVALID_ARGUMENT", text: "The connection id is invalid." },
   invalid_secret: { axis: "E_INVALID_ARGUMENT", text: "The credential or its label is invalid." },
   wrong_entry_kind: { axis: "E_INVALID_ARGUMENT", text: "This credential cannot be read for that purpose." },
+  weak_entry: { axis: "E_CONFLICT", text: "This credential is not held in protected storage; connect again." },
 };
 
 /** The one error type the vault throws: fixed text, a code, nothing else. No `cause`. */
