@@ -12,7 +12,8 @@
  * everything below it. Root-anchored on purpose: a copy in a subdirectory (`sub/.claude/settings.json`) is not matched,
  * although a CLI started in that subdirectory would read it (a residual: the worktree root is where Axis starts CLI runs).
  *
- * Not listed, deliberately: instruction ("memory") files, `.claude/rules/` and `CLAUDE.local.md`, which the CLI also reads.
+ * Not listed, deliberately: instruction ("memory") files, `.claude/rules/`, `CLAUDE.local.md`, and the instruction-like
+ * `.claude/output-styles/` and `.claude/loop.md` (both in the CLI's own protected-path table), which the CLI also reads.
  * They instruct rather than run or pre-approve, the same class as `CLAUDE.md` and `AGENTS.md`, which are not protected
  * either; protecting instruction files is one decision for the whole class (owner decisions OD-1). In review, git-snapshot
  * shows `CLAUDE.local.md` as an `instruction-file` and `.claude/rules/` as `hidden-config` (its generic dot-name rule).
@@ -43,6 +44,11 @@ export const CLI_PROJECT_CONFIG: readonly CliProjectConfig[] = Object.freeze([
   Object.freeze({ cli: "claude", segments: Object.freeze([".claude", "plugins"]), severity: "warn", source: "precautionary: Claude Code 2.1.330's binary shows only the user-level ~/.claude/plugins, not a project one" }),
   Object.freeze({ cli: "claude", segments: Object.freeze([".claude", "commands"]), severity: "warn", source: `${CLAUDE}: slash commands (marked deprecated there, still loaded)` }),
   Object.freeze({ cli: "claude", segments: Object.freeze([".claude", "workflows"]), severity: "warn", source: `${CLAUDE}: a project workflow is ".claude/workflows/<name>.js", which "resolves to a self-contained script"` }),
+  // Named in the CLI's own table of project paths it protects (it joins ".claude" with each name): a preview launch
+  // configuration, routines and durable scheduled tasks all run something.
+  Object.freeze({ cli: "claude", segments: Object.freeze([".claude", "launch.json"]), severity: "warn", source: `${CLAUDE}: its own protected-path table (the preview launch configuration)` }),
+  Object.freeze({ cli: "claude", segments: Object.freeze([".claude", "routines"]), severity: "warn", source: `${CLAUDE}: its own protected-path table` }),
+  Object.freeze({ cli: "claude", segments: Object.freeze([".claude", "scheduled_tasks.json"]), severity: "warn", source: `${CLAUDE}: its own protected-path table (durable scheduled jobs)` }),
   Object.freeze({ cli: "claude", segments: Object.freeze([".claude-plugin"]), severity: "warn", source: `precautionary, ${CLAUDE}: a folder with ".claude-plugin/plugin.json" is a plugin whose skills it auto-loads` }),
   Object.freeze({ cli: "codex", segments: Object.freeze([".codex", "config.toml"]), severity: "warn", source: `${CODEX}, whose text reads "Project \`.codex/config.toml\`: settings for a trusted repository, including sandbox, MCP, hooks"` }),
   Object.freeze({ cli: "codex", segments: Object.freeze([".codex", "hooks"]), severity: "warn", source: `${CODEX}: the path string is in its code` }),
