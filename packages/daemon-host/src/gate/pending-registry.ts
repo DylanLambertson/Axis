@@ -1,5 +1,5 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
-import { listedChallengeSchema, MAX_LISTED_SUMMARY, MAX_PENDING_CHALLENGES, type Challenge } from "@axis/protocol";
+import { listedChallengeSchema, MAX_LISTED_SUMMARY, MAX_PENDING_CHALLENGES, type Challenge, type ChallengeRequester } from "@axis/protocol";
 
 /**
  * What `axis.approvals/1.pending` lists. `@axis/challenge` has no listing call, so the host remembers the wire
@@ -13,6 +13,8 @@ interface Entry {
   readonly challenge: Challenge;
   readonly windowId: string;
   readonly connectionId: string;
+  /** Present only on a challenge a plugin caused (PV-K1e-a2): listed as the challenge's closed `requester`. */
+  readonly requester?: ChallengeRequester;
   /** Monotonic deadline, from the same clock the manager uses. */
   readonly expiresAt: number;
 }
@@ -62,7 +64,7 @@ export class PendingRegistry {
     return this.#evicted;
   }
 
-  add(challenge: Challenge, windowId: string, connectionId: string): void {
+  add(challenge: Challenge, windowId: string, connectionId: string, requester?: ChallengeRequester): void {
     const now = this.#monotonic();
     this.#sweep(now);
     while (this.#entries.size >= this.#cap) {
@@ -71,7 +73,13 @@ export class PendingRegistry {
       this.#entries.delete(oldest.value);
       this.#evicted++;
     }
-    this.#entries.set(challenge.challengeId, { challenge, windowId, connectionId, expiresAt: now + this.#ttlMs });
+    this.#entries.set(challenge.challengeId, { challenge, windowId, connectionId, ...(requester === undefined ? {} : { requester }), expiresAt: now + this.#ttlMs });
+  }
+
+  /** Whether the challenge is still listed (open and not expired). */
+  has(challengeId: string): boolean {
+    this.#sweep(this.#monotonic());
+    return this.#entries.has(challengeId);
   }
 
   remove(challengeId: string): void {
@@ -92,7 +100,7 @@ export class PendingRegistry {
     const out: Challenge[] = [];
     for (const e of this.#entries.values()) {
       if (e.windowId !== windowId) continue;
-      const listed = listedChallengeSchema.safeParse({ ...e.challenge, targetSummary: shortenSummary(e.challenge.targetSummary) });
+      const listed = listedChallengeSchema.safeParse({ ...e.challenge, targetSummary: shortenSummary(e.challenge.targetSummary), ...(e.requester === undefined ? {} : { requester: { ...e.requester } }) });
       // A challenge that cannot be shown in the contract's shape is left out, not repaired.
       if (listed.success) out.push(listed.data);
     }
