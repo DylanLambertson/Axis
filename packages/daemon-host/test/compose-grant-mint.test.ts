@@ -25,3 +25,17 @@ test("after startup the composed host holds the grant mint: a later takeGrantMin
     fix.cleanup();
   }
 });
+
+test("PV-M7 slice 2: after startup the composed host holds the CLI endpoint switch mint too: a later takeSwitchMint throws", async () => {
+  const fix = hostFixture();
+  const { control: _control, ...ports } = fix.ports as typeof fix.ports & { control: unknown };
+  const composed = composeDaemonHost({ config: fix.config, control: fix.client, ports, pty, ptyGitRunner: runner, snapshotter, process: new EventEmitter(), exit: () => undefined });
+  try {
+    const s = await composed.start();
+    assert.equal(s.degraded, undefined);
+    assert.throws(() => must(s.journal).cliEndpoint.takeSwitchMint(), (e: unknown) => (e as { detail?: { reason?: string } }).detail?.reason === "mint_taken");
+  } finally {
+    await composed.stop();
+    fix.cleanup();
+  }
+});

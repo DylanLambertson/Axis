@@ -307,6 +307,19 @@ test("PV-M7 slice 2: the user's switch off: nothing is minted even for an enable
   assert.equal(f.r.m.endpoints.relay.mint(f.r.run("c1")), undefined, "nothing new is minted");
 });
 
+test("PV-M7 slice 2: revokeAll revokes every live endpoint at once (one close each), later frames answer revoked, and nothing is left", async (t) => {
+  const f = await fx(t);
+  const conn = await f.authed();
+  const second = f.r.m.endpoints.relay.mint(f.r.run("c1"));
+  assert.ok(second !== undefined, "a second run of the worker has its own endpoint");
+  const outs = f.r.m.endpoints.relay.revokeAll();
+  assert.deepEqual(outs.map((o) => o.t === "endpoint-close" && o.endpoint).sort(), [f.ep, second.endpointId].sort());
+  assert.ok(outs.every((o) => o.t === "endpoint-close" && o.reason === "revoked"));
+  assert.deepEqual(f.r.m.endpoints.relay.revokeAll(), [], "nothing is left to revoke");
+  const late = await f.frame(conn, { op: "read", id: "r1" });
+  assert.deepEqual(afterRevoke(f.ep, late), { ok: false, reason: "revoked" });
+});
+
 test("PV-M6 slice 3: dropPaused drops the connections of an endpoint whose sender a pause now covers (worker, group, project), and no other", async (t) => {
   for (const scope of [{ agent: "c1" }, { group: "g1" }, { project: "p" }] as const) {
     const f = await fx(t);
