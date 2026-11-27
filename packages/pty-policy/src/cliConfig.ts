@@ -17,14 +17,13 @@
  * class (owner decisions OD-1). In review, git-snapshot shows `CLAUDE.local.md` as an `instruction-file` and
  * `.claude/rules/` as `hidden-config` (its generic dot-name rule).
  *
- * Not listed yet, recommended (OD-1): `.claude/output-styles/` and `.claude/loop.md`. The CLI's own protected-path table
- * (Claude Code 2.1.332) protects them with the same fixed flag as `skills`, `commands`, `agents`, `hooks`, `settings.json`
- * and `.mcp.json`, all of which are listed here; the recommendation is to list them too.
+ * Listed by the OD-1 decision (2026-11-27): `.claude/output-styles/` and `.claude/loop.md`, which the CLI's own
+ * protected-path table (Claude Code 2.1.332) protects with the same fixed flag as `skills`, `commands`, `agents`, `hooks`,
+ * `settings.json` and `.mcp.json`; and `.lsp.json`, precautionary, read at a plugin's root (a repository that is itself a
+ * plugin has one there: language-server commands the CLI launches).
  *
- * Not listed, residuals: `.lsp.json`, which Claude Code 2.1.332 reads only at a PLUGIN's root (language-server commands it
- * launches), not at a project's; a repository that is itself a plugin (`.claude-plugin/`) has one at its root, so it is
- * a candidate for a precautionary row like `.claude-plugin/`. Codex's exec policies, which its text names among
- * "project-local config, hooks, and exec policies" without a path this environment shows.
+ * Not listed, residual: Codex's exec policies, which its text names among "project-local config, hooks, and exec
+ * policies" without a path this environment shows.
  */
 export interface CliProjectConfig {
   readonly cli: "claude" | "codex";
@@ -54,6 +53,10 @@ export const CLI_PROJECT_CONFIG: readonly CliProjectConfig[] = Object.freeze([
   Object.freeze({ cli: "claude", segments: Object.freeze([".claude", "launch.json"]), severity: "warn", source: `${CLAUDE}: its own protected-path table (the preview launch configuration)` }),
   Object.freeze({ cli: "claude", segments: Object.freeze([".claude", "routines"]), severity: "warn", source: `${CLAUDE}: its own protected-path table` }),
   Object.freeze({ cli: "claude", segments: Object.freeze([".claude", "scheduled_tasks.json"]), severity: "warn", source: `${CLAUDE}: its own protected-path table (durable scheduled jobs)` }),
+  // The OD-1 decision: what the CLI's own table protects like skills and settings, and a plugin root's language servers.
+  Object.freeze({ cli: "claude", segments: Object.freeze([".claude", "output-styles"]), severity: "warn", source: `${CLAUDE}: its own protected-path table, the same flag as skills and settings` }),
+  Object.freeze({ cli: "claude", segments: Object.freeze([".claude", "loop.md"]), severity: "warn", source: `${CLAUDE}: its own protected-path table, the same flag as skills and settings` }),
+  Object.freeze({ cli: "claude", segments: Object.freeze([".lsp.json"]), severity: "warn", source: `precautionary, ${CLAUDE}: read at a plugin's root (language-server commands); a repository that is itself a plugin has one` }),
   Object.freeze({ cli: "claude", segments: Object.freeze([".claude-plugin"]), severity: "warn", source: `precautionary, ${CLAUDE}: a folder with ".claude-plugin/plugin.json" is a plugin whose skills it auto-loads` }),
   Object.freeze({ cli: "codex", segments: Object.freeze([".codex", "config.toml"]), severity: "warn", source: `${CODEX}, whose text reads "Project \`.codex/config.toml\`: settings for a trusted repository, including sandbox, MCP, hooks"` }),
   Object.freeze({ cli: "codex", segments: Object.freeze([".codex", "hooks"]), severity: "warn", source: `${CODEX}: the path string is in its code` }),
