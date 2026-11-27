@@ -83,6 +83,8 @@ export interface ServingContext {
   readonly logger: Logger | undefined;
   readonly runHooks: boolean;
   readonly sshSpawn: SshSpawn | undefined;
+  /** PV-K2 K2-g2: serve plugin grant and enable (`ComposeOptions.pluginGrants`); false in production until K2-enable. */
+  readonly pluginGrants?: boolean;
   /** Stops the project's live CLI and composer runs (a revoke or a lost binding). */
   readonly stopProjectRuns: (projectId: string) => void;
   /** The CLI run trust minter (made by the composition root, the only module that may import it). */
@@ -125,7 +127,13 @@ export function registerServing(registrar: HandlerRegistrar, services: HostServi
     pluginStarts: journal }; // PV-K1e-b: a plugin's start reads its scope and grant from the journal
   registerComposerRunsHandlers(registrar, composerRuns);
   // PV-K2 K2-g1: the user's plugin list, revoke and disable; a decrease ends the plugin's open challenges at once.
-  registerPluginsHandlers(registrar, { journal, mutex: worktrees.mutex, endPlugin: (pluginId, projectId) => approvals.endPlugin(pluginId, projectId) });
+  registerPluginsHandlers(registrar, {
+    journal,
+    mutex: worktrees.mutex,
+    endPlugin: (pluginId, projectId) => approvals.endPlugin(pluginId, projectId),
+    grantsEnabled: ctx.pluginGrants === true,
+    onPreview: approvals.onPreview ?? (() => undefined),
+  });
   if (built.messaging === undefined) throw new AxisError("E_INTERNAL", "The host composition is incomplete", { reason: "not_built" });
   // PV-M7 slice 1: enabling a CLI worker's messaging checks its launch entry (from main, as a CLI start does) and workspace.
   registerMessagesHandlers(registrar, { ...built.messaging, checkEnable: hostEnableCheck({ journal, settingsGet: (k, o) => control.settingsGet(k, o), platform: config.platform }) });

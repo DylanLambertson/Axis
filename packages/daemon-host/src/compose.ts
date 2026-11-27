@@ -124,6 +124,12 @@ export interface ComposeOptions {
   readonly eventPumpMs?: number;
   /** Messaging: `enabled` for agent runs (delivery, the send and read tools; `HostMessaging.enabled`) and `cliEndpoint` for the CLI endpoint (PV-M6, needs `enabled`); both off by default. */
   readonly messaging?: MessagingOptions;
+  /**
+   * PV-K2 K2-g2: serve `axis.plugins/1.grant` and `enable` (tier 4, native confirmation). Off by default and in production until
+   * K2-enable, which merges only once all six conditions of `plugin-grant-contract.md` section 1 hold; off, both are refused
+   * before any challenge (`plugin_grants_off`).
+   */
+  readonly pluginGrants?: boolean;
 }
 
 export interface ComposedHost {
@@ -338,7 +344,7 @@ export function composeDaemonHost(options: ComposeOptions): ComposedHost {
     registrar.register(PROJECTS_CONTRACT, PROJECTS_VERSION, createProjectsHandlers({ projects: () => services.journalRead.listProjects() }));
     // A revoke (a gesture, or the gate's lost binding) stops the project's live runs (project-registration-and-trust.md §5.4).
     const stopProjectRuns = createProjectRunStopper({ mutex: () => built.worktrees?.mutex, journal: () => services.journal, runs: () => built.runs?.service, composer: () => built.composer });
-    if (writable) registerServing(registrar, services, { built, config, control, ports, pty, scanner, ptyGitRunnerFor, logger, runHooks: options.runHooks ?? false, sshSpawn: options.sshSpawn, stopProjectRuns, minter: createRunTrustMinter(ports.clock) });
+    if (writable) registerServing(registrar, services, { built, config, control, ports, pty, scanner, ptyGitRunnerFor, logger, runHooks: options.runHooks ?? false, sshSpawn: options.sshSpawn, pluginGrants: options.pluginGrants === true, stopProjectRuns, minter: createRunTrustMinter(ports.clock) });
     if (events !== undefined) {
       registrar.register(EVENTS_CONTRACT, EVENTS_VERSION, events.handlers());
       const approvals = built.approvals;
