@@ -106,7 +106,8 @@ test("binding: a change between issue and resolve ends the challenge; resolve an
   assert.deepEqual(r.approvals.port.pending("w1"), [], "ended, not left listed");
   assert.equal(r.approvals.port.detail(user(), c.challengeId), undefined);
   r.setValid(() => true);
-  await refuses(r.approvals.gate.execute(r.plugin(), { challengeId: c.challengeId }, r.content, () => Promise.reject(new Error("must not run"))), "E_POLICY_DENIED");
+  // The binding is no longer tracked, so the spend is refused before the manager (review a2-1b S1).
+  await refuses(r.approvals.gate.execute(r.plugin(), { challengeId: c.challengeId }, r.content, () => Promise.reject(new Error("must not run"))), "E_CONFLICT");
 });
 
 test("binding TOCTOU: a change after the user approved and before the approval is spent refuses the spend; the action never runs", async () => {
@@ -253,4 +254,34 @@ test("defence in depth: the plugin branch's own detail read refuses a binding th
   assert.deepEqual(branch.detail(user(), "C".repeat(43), true), detailOf("acme.board"));
   valid = false;
   assert.equal(branch.detail(user(), "C".repeat(43), true), undefined);
+});
+
+test("review a2-1b S1: an approval given near the end of the challenge's life is still spent with its binding checked", async () => {
+  const r = rig();
+  const c = (await r.approvals.gate.issue(r.plugin(), r.content)) as Challenge;
+  r.clock.advance(60_000 - 1); // the last moment the challenge can be answered
+  assert.equal(r.approvals.port.resolve({ actor: "user", windowId: "w1" }, { challengeId: c.challengeId, decision: "approve", digest: c.digest }).state, "approved");
+  r.clock.advance(30_000 - 2); // the approval's own token has not expired yet
+  let ran = 0;
+  await r.approvals.gate.execute(r.plugin(), { challengeId: c.challengeId }, r.content, async () => void ran++);
+  assert.equal(ran, 1, "the binding was still tracked, so the spend went ahead");
+});
+
+test("review a2-1b N4: the plugin's own spend that ends the challenge frees its slot at once; a spend before the answer frees nothing", async () => {
+  const r = rig();
+  const early = (await r.approvals.gate.issue(r.plugin(), r.content)) as Challenge;
+  // Before the user answered: refused, and the challenge is still open, so the plugin still has no second slot.
+  await assert.rejects(Promise.resolve(r.approvals.gate.execute(r.plugin(), { challengeId: early.challengeId }, r.content, () => Promise.reject(new Error("must not run")))));
+  await refuses(r.approvals.gate.issue(r.plugin(), r.content), "E_BACKPRESSURE");
+  assert.equal(r.approvals.port.pending("w1").length, 1);
+  assert.equal(r.approvals.port.resolve({ actor: "user", windowId: "w1" }, { challengeId: early.challengeId, decision: "approve", digest: early.digest }).state, "approved");
+  // The content changed since the approval: the manager burns it without running, and the slot is free again.
+  await assert.rejects(Promise.resolve(r.approvals.gate.execute(r.plugin(), { challengeId: early.challengeId }, { ...r.content, contentDigest: "f".repeat(64) }, () => Promise.reject(new Error("must not run")))));
+  await r.approvals.gate.issue(r.plugin(), r.content);
+});
+
+test("review a2-1b N1: a request whose actor is not the identity's is refused before the binding is built", async () => {
+  const r = rig();
+  await refuses(r.approvals.gate.issue({ ...r.plugin(), actor: "plugin:other.tool" } as ApprovalInput, r.content), "E_POLICY_DENIED");
+  assert.deepEqual(r.records, []);
 });

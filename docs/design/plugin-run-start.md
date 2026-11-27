@@ -1,6 +1,6 @@
 # Runs started by a plugin (ticket PV-K1e)
 
-- **Status:** PV-K1e-a built (service level, inert). PV-K1e-a2 (approval routing) and PV-K1e-b (the handler) are not built.
+- **Status:** PV-K1e-a, a2-1a and a2-1b built (inert). PV-K1e-b (the handler) in progress. a2-2 (the card) on hold for the own-shell plan (ADR 0011).
 - **Date:** 2026-11-22. Implements ADR 0008 decision 6, rules 1 and 2, and criterion 14 in three slices.
 
 ## 1. PV-K1e-a: the service (built)

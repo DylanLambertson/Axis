@@ -86,6 +86,7 @@ export class PluginChallenges {
   prepare(input: ApprovalInput, content: ApprovalContent): PreparedPluginChallenge {
     const deps = this.#deps;
     const host = input.identity.hostWindowId;
+    // `input.actor` against the identity is defence in depth behind the bind check below (review a2-1b N1; tested).
     if (deps === undefined || input.tier >= 4 || host === undefined || input.actor !== input.identity.actor) throw new ApprovalError("E_POLICY_DENIED");
     let binding: PluginChallengeBinding | undefined;
     try {
@@ -157,6 +158,13 @@ export class PluginChallenges {
       return undefined; // a read that cannot be audited is not answered
     }
     return structuredClone(t.detail);
+  }
+
+  /** The requester of a tracked plugin challenge, or undefined; nothing is ended or checked here. */
+  tracked(challengeId: string): { readonly actor: string; readonly connectionId: string } | undefined {
+    this.#sweep();
+    const t = this.#live.get(challengeId);
+    return t === undefined ? undefined : { actor: t.actor, connectionId: t.connectionId };
   }
 
   forget(challengeId: string): void {
