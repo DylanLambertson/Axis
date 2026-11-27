@@ -1,6 +1,6 @@
 # Main's secret broker (ticket PV-N0)
 
-- **Status:** design (security-relevant), revision 2 after design review 1. **Built:** PV-N0a (the control schemas in `daemon-host/src/control/secrets-messages.ts`; main's store and record folder in `daemon-host/src/main/secret-store.ts` and `secret-files.ts`). Not built: PV-N0c (the daemon backend, the Electron adapter, the wiring).
+- **Status:** design (security-relevant), revision 2 after design review 1; revision 3 (2026-11-27) splits PV-N0c for ADR 0011 (§6.1). **Built:** PV-N0a (the control schemas in `daemon-host/src/control/secrets-messages.ts`; main's store and record folder in `daemon-host/src/main/secret-store.ts` and `secret-files.ts`). Not built: PV-N0c-1 (the daemon side) and PV-N0c-2 (main's adapter in the own shell).
 - **Date:** 2026-11-22. **Code baseline:** `origin/main` at `9642e46`; upstream Code OSS `1.144.0` at `2c33b50` (the vendor tree).
 - **Decides:** how the daemon's vault (`@axis/vault`) gets a production `SecretBackend`. ADR 0003 D1.6 sketches a privileged main port carrying `secrets.decrypt(handle, purpose)`; this note fixes the shape. It needs no ADR amendment: D1.6 stands, and section 3.4 says how the messages map to it.
 - **Builds on:** ADR 0003 (D1.6; the renderer holds the upstream `encryption` channel), ADR 0009 decision 5 (vault namespaces, the production backend as a prerequisite), `docs/design/anthropic-adapter.md` §10 (the vault and the `SecretBackend` contract), `docs/design/main-answers.md` §3.1 (the audit anchor: the pattern copied here), `docs/design/product-vision-v2-tickets.md` §5.1 (PV-N0), threat model PRV-1, PRV-2, EXT-1, EXT-4, A10.
@@ -63,7 +63,7 @@ Daemon → main requests, each with a `requestId`, strict schemas, closed types;
 
 ### 3.5 Wiring [D]
 
-- The daemon entry passes the control-channel backend to the composition (`composer.anthropic.backend`), and the integrations binding gets the same backend (PV-N1f).
+- The daemon entry passes the control-channel backend to the composition (`composer.anthropic.backend`), and the integrations binding gets the same backend (PV-N1f). Until PV-N0c-2 this is behind a composition option that production does not set (§6.1).
 - **Integration names.** The vault's name rule has no `:`, so an `integration:<id>` name would fail it. PV-N1c changes the rule (the `integration:` prefix plus the existing id rule, within the 100-character cap) together with the namespaces; until then no such entry can be stored. Independently, PV-N0c makes the startup listing tolerate a bad name: the vault's `list` throws on any bad name [V, `vault/src/vault.ts` `list`], so the daemon's control-channel backend filters the answer **before** the vault sees it, dropping each name that fails the vault's rule and reporting it with a closed event; one bad file never fails the whole list. Main's own name rule (3.1, 3.4) widens with the vault's in PV-N1c, or main's `list` would ignore integration entries.
 - **At start** the daemon lists the entries and reveals each **provider** entry once with `validate_connection`, so the redactor knows every stored key before any request (`anthropic-adapter.md` §10.2, `knownSecrets`); a failure leaves that connection unusable, never the daemon. Each reveal is audited, one row per provider entry per start: that volume is accepted. Integration entries are **not** revealed at start; PV-N1f registers them with the redactor when it first reads them.
 - **Out of scope:** storing a key over the bridge (the "connect" flow with its tier and dialog), the consent grantor, and the UI; separate tickets.
@@ -100,9 +100,39 @@ Daemon → main requests, each with a `requestId`, strict schemas, closed types;
 | Slice | Content | Size | Proves |
 |---|---|---|---|
 | **PV-N0a** | Control schemas for the six requests and answers; the main-side pure module (folder checks, file names, record format, framing, atomic store, temporary-file cleanup, prefix check, bounds, closed errors) under `daemon-host/src/main/`, tested with a fake cipher and a real temporary directory | M | 2, 3, 4 (logic), 5, 7, 8 |
-| **PV-N0c** | The daemon `SecretBackend` over the control client (timeouts, field validation), `weakPolicy: "refuse"` and the raised rollback timeout, the entry and composition wiring, the startup reveal with a tolerant list; the Electron adapter in `axisMainPorts.ts` (`safeStorage`, paths) with source pins | M | 1, 6, 7, 8 (list) |
+| **PV-N0c-1** | The daemon side, behind a composition option that is off in production (§6.1): the `secrets.*` requests on the control client (timeouts, field validation, bounds), the `SecretBackend` over it, `weakPolicy: "refuse"` and the raised rollback timeout, one backend for both bindings, the startup reveal with a tolerant list, and the test supervisor's answers | M | 6, 7, 8, at daemon level |
+| **PV-N0c-2** | Main's adapter in the own shell's main (ADR 0011): `safeStorage`, paths and folder modes, with source pins; main answers `secrets.*`; the one-line flip that turns the option on in the entry | S to M | 1 to 5, in a built app |
 
-Each is a large-builder slice with an independent security review and mutation testing of the refusal paths; PV-N0c follows PV-N0a. Revision 1's PV-N0b (the upstream patch) is dropped with section 3.2.
+Each is a large-builder slice with an independent security review and mutation testing of the refusal paths; PV-N0c-1 follows PV-N0a, and PV-N0c-2 follows PV-N0c-1 and the own shell's main. Revision 1's PV-N0b (the upstream patch) is dropped with section 3.2.
+
+### 6.1 The split under ADR 0011 (revision 3) [D]
+
+**Why.** Revision 2 put the Electron adapter in the Code OSS overlay (`axisMainPorts.ts`). ADR 0011 replaces the Code OSS shell. The overlay's adapters are rewritten in the own shell's main (Decision 4), and no new overlay work is done. So the adapter moves to PV-N0c-2, and PV-N0c-1 builds everything on the daemon side that does not need it.
+
+**PV-N0c-1 changes no production behaviour.**
+- The broker path is built behind one composition option. The option is off by default, and the daemon entry does not set it. A test pins that, as `entry.ts` is pinned for the integrations seam (`net-read-slice.md` §7).
+- **With the option off,** which is production until PV-N0c-2, the composition is exactly what it is today:
+  - no provider backend is built, so the composer serves the mock only;
+  - the integrations binding has no backend: `list` and `status` show `available`, `read` is `not_connected`, and nothing is revealed or sent;
+  - no `secrets.*` request is ever sent.
+- **With the option on** (tests only, until the flip):
+  - the composition builds the control-channel backend once, and hands the same backend to the providers binding and the integrations binding;
+  - it runs the startup reveal of §3.5.
+- **What it proves, at daemon level** (with the test supervisor answering `secrets.*` from an in-memory store):
+  - gate line 6: a hung `get` fails within its timeout, and other connections stay usable;
+  - gate line 7: no log line or error carries a canary;
+  - gate line 8: a malformed or oversized answer is `backend_failed`, and a bad name in the startup list is skipped and reported;
+  - the read slice's canary test, run again with the token reaching the vault through the broker path, not a test backend.
+
+**PV-N0c-2: the flip.**
+- Main's adapter in the own shell answers `secrets.*`.
+- The same pull request turns the option on in the entry: a one-line change, reviewed with the adapter.
+- It proves gate lines 1 to 5 in a built app.
+- Until it lands, no production code path reads a key through the broker.
+
+**EXT-4.** The residual of §3.2 (any renderer can decrypt any `safeStorage` ciphertext through upstream's `encryption` channel) stands only while the Code OSS shell ships. The own shell's renderer has no such channel (ADR 0011 Decision 5 item 1), so PV-N0c-2's built-app evidence is taken in a shell without it.
+
+**Order.** PV-N0c-1 touches the vault and the bindings, as the integrations read slice (PV-N1f) does. Its code starts after that slice's review is closed.
 
 ## 7. Decided items
 
