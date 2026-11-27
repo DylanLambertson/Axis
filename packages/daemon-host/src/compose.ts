@@ -46,6 +46,8 @@ import { pluginRunStartChallenges } from "./gate/plugin-run-start.js";
 import { createWindowLifetimes, type WindowLifetimes } from "./plugins/window-lifetimes.js";
 import type { PtyExecPort, PtyForgePort, PtyPort, PtyPushPort } from "./ports/pty.js";
 import type { ChannelMux } from "./transport/mux.js";
+import { createEgressClient, type EgressClient } from "./net/egress-client.js";
+import type { SecretBackend } from "./bindings/integrations.js";
 
 /**
  * The composition root (ticket H12, design section 3 steps 10 and 11, plan section 1 and questions 18 and 19). It is the one
@@ -133,6 +135,11 @@ export interface ComposeOptions {
    * before any challenge (`plugin_grants_off`).
    */
   readonly pluginGrants?: boolean;
+  /**
+   * TEST ONLY (net-read-slice.md §7): the integrations' egress client and secret backend. The daemon entry passes neither:
+   * the client is then the production one, and with no backend (production until PV-N0c) nothing is revealed or sent.
+   */
+  readonly integrations?: { readonly client?: EgressClient; readonly vaultBackend?: SecretBackend };
 }
 
 export interface ComposedHost {
@@ -352,7 +359,12 @@ export function composeDaemonHost(options: ComposeOptions): ComposedHost {
     registrar.register(PROJECTS_CONTRACT, PROJECTS_VERSION, createProjectsHandlers({ projects: () => services.journalRead.listProjects() }));
     // A revoke (a gesture, or the gate's lost binding) stops the project's live runs (project-registration-and-trust.md §5.4).
     const stopProjectRuns = createProjectRunStopper({ mutex: () => built.worktrees?.mutex, journal: () => services.journal, runs: () => built.runs?.service, composer: () => built.composer });
-    if (writable) registerServing(registrar, services, { built, config, control, ports, pty, scanner, ptyGitRunnerFor, logger, runHooks: options.runHooks ?? false, sshSpawn: options.sshSpawn, pluginGrants: options.pluginGrants === true, stopProjectRuns, minter: createRunTrustMinter(ports.clock), hostWindows: windowLifetimes });
+    if (writable) {
+      const egress = options.integrations?.client ?? createEgressClient();
+      cleanups.push(() => egress.close());
+      const integrations = { sender: egress, backend: options.integrations?.vaultBackend };
+      registerServing(registrar, services, { built, config, control, ports, pty, scanner, ptyGitRunnerFor, logger, runHooks: options.runHooks ?? false, sshSpawn: options.sshSpawn, pluginGrants: options.pluginGrants === true, stopProjectRuns, minter: createRunTrustMinter(ports.clock), hostWindows: windowLifetimes, integrations });
+    }
     if (events !== undefined) {
       registrar.register(EVENTS_CONTRACT, EVENTS_VERSION, events.handlers());
       const approvals = built.approvals;

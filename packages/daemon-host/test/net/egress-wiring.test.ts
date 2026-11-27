@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 
 // PV-N1d slice B: the egress client's test seam (a CA, a resolver and a dial map) is not reachable from production code.
 // Nothing under src names the test factory or its seam except the client itself, and nothing under src imports the client
-// but the composition root (none does yet: PV-N1f wires it). The import lint enforces the import edge
+// but the composition root (PV-N1f's read slice wires it there). The import lint enforces the import edge
 // (scripts/code-oss/web-rules.mjs egressClientEdgeRefusal); this test pins the names.
 
 const src = fileURLToPath(new URL("../../../src/", import.meta.url));
@@ -36,8 +36,8 @@ test("no src file but the client names the test factory or its seam", () => {
   assert.deepEqual(srcFilesNaming(/createEgressClientForTest|EgressTestSeam/), []);
 });
 
-test("no src file imports the egress client yet (the composition root will, in PV-N1f)", () => {
-  assert.deepEqual(srcFilesNaming(/net\/egress-client(\.js)?["']|["']\.\/egress-client(\.js)?["']/), []);
+test("only the composition root imports the egress client (PV-N1f)", () => {
+  assert.deepEqual(srcFilesNaming(/net\/egress-client(\.js)?["']|["']\.\/egress-client(\.js)?["']/), ["compose.ts"]);
 });
 
 test("the scan finds a naming file when there is one", () => {

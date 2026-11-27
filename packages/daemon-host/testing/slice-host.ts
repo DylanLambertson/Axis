@@ -19,6 +19,7 @@ import {
 } from "../src/index.js";
 import { LocalPty, localPtyGitRunner } from "./fake-pty.js";
 import { sliceComposer } from "./slice-composer.js";
+import { sliceIntegrations } from "./slice-integrations.js";
 import { SLICE_SNAPSHOT_TAKE_MS, sliceSnapshotter } from "./slice-snapshotter.js";
 
 /**
@@ -90,6 +91,11 @@ client.onInit((raw) => {
       // By default a composer run's first turn writes the root Makefile (a protected path: it waits for the user's approval) and
       // later turns answer text; `AXIS_SLICE_COMPOSER` names a file of scripted scenarios and an Anthropic connection (C7).
       composer: sliceComposer(process.env),
+      // `AXIS_SLICE_INTEGRATIONS` names the integrations' test seam and canary backend (slice-integrations.ts); unset, none.
+      ...((): Pick<Parameters<typeof composeDaemonHost>[0], "integrations"> => {
+        const integrations = sliceIntegrations(process.env);
+        return integrations === undefined ? {} : { integrations };
+      })(),
       process,
       exit: (code, info) => {
         process.exitCode = code;

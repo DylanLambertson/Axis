@@ -30,6 +30,14 @@ function frozen<T extends Readonly<Record<string, MethodSpec>>>(methods: T): T {
   return Object.freeze(methods);
 }
 
+/**
+ * `axis.integrations/1` split by method (PV-N1f read slice, docs/design/net-read-slice.md §6): the three it serves, and the
+ * three that stay planned until their tickets (connect PV-N2, disconnect, write). A method is never in both tables.
+ */
+const { list, status, read, connect, disconnect, write } = integrationsMethods;
+const servedIntegrations = { list, status, read } as const;
+const plannedIntegrations = { connect, disconnect, write } as const;
+
 /** Every contract this build serves, keyed `<id>/<major>`. */
 export const contracts: Table = Object.freeze({
   [`${WORKTREES_CONTRACT}/${WORKTREES_VERSION}`]: frozen(worktreesMethods),
@@ -51,6 +59,7 @@ export const contracts: Table = Object.freeze({
   [`${PAGES_CONTRACT}/${PAGES_VERSION}`]: frozen(pagesMethods),
   [`${TASKS_CONTRACT}/${TASKS_VERSION}`]: frozen(tasksMethods),
   [`${PLUGINS_CONTRACT}/${PLUGINS_VERSION}`]: frozen(pluginsMethods),
+  [`${INTEGRATIONS_CONTRACT}/${INTEGRATIONS_VERSION}`]: frozen(servedIntegrations),
 });
 
 /**
@@ -58,11 +67,12 @@ export const contracts: Table = Object.freeze({
  * and no daemon can serve one; the daemon-host coverage check holds a planned policy row for each of their methods, at the
  * same tier. A contract moves to `contracts` in the change that registers its handlers, its rows moving with it
  * (`axis.messages/1` moved with ticket PV-M3, `axis.forge/1` with PV-D2 slice 2, `axis.agents/1` and `axis.agent-groups/1`
- * with PV-G3, `axis.pages/1` with PV-Q1 slice 2, `axis.tasks/1` with PV-T1 slice 2a). `axis.integrations/1` and `axis.net/1` (PV-N1a, ADR 0009) are planned until
- * PV-N1f serves them. A key is never in both tables.
+ * with PV-G3, `axis.pages/1` with PV-Q1 slice 2, `axis.tasks/1` with PV-T1 slice 2a). A contract may also be split by method:
+ * `axis.integrations/1` serves list, status and read (PV-N1f) and keeps connect, disconnect and write here; `axis.net/1`
+ * (PV-N1a, ADR 0009) is wholly planned. A method is never in both tables.
  */
 export const plannedContracts: Table = Object.freeze({
-  [`${INTEGRATIONS_CONTRACT}/${INTEGRATIONS_VERSION}`]: frozen(integrationsMethods),
+  [`${INTEGRATIONS_CONTRACT}/${INTEGRATIONS_VERSION}`]: frozen(plannedIntegrations),
   [`${NET_CONTRACT}/${NET_VERSION}`]: frozen(netMethods),
 });
 

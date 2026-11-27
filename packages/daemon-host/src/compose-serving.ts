@@ -11,6 +11,9 @@ import { registerForgeServing } from "./compose-forge.js";
 import { registerAttentionServing } from "./handlers/attention.js";
 import { registerUsageServing } from "./handlers/usage.js";
 import { usageServiceDeps } from "./usage/service.js";
+import { integrationsVault, type SecretBackend } from "./bindings/integrations.js";
+import { registerIntegrationsServing } from "./handlers/integrations.js";
+import { createIntegrationsService, type IntegrationsSender } from "./integrations/service.js";
 import { createCommitPreparer, createReviewService } from "./bindings/review.js";
 import { createTempIndexProvider } from "./bindings/review-tempindex.js";
 import { createSshResolver, unavailableSshResolver, type SshSpawn } from "./bindings/ssh-resolver.js";
@@ -93,6 +96,8 @@ export interface ServingContext {
   readonly minter: RunTrustMinter;
   /** The host windows' lifetimes (PV-K2 K2-g4b): a plugin's run start is checked against the one pinned at issue. */
   readonly hostWindows: Pick<WindowLifetimes, "alive">;
+  /** The integrations' authorized sender (the egress client, which only the root may import) and secret backend, if any. */
+  readonly integrations: { readonly sender: IntegrationsSender; readonly backend: SecretBackend | undefined };
 }
 
 /** The services of a healthy host, each registered through the registrar and nothing else. */
@@ -208,4 +213,18 @@ export function registerServing(registrar: HandlerRegistrar, services: HostServi
     composerRun: (id) => composer.get(id),
   });
   registerUsageServing(registrar, usageServiceDeps(journal, composer));
+  // axis.integrations/1 list, status and read (PV-N1f read slice): with no backend nothing is revealed, sent or audited.
+  const { backend } = ctx.integrations;
+  registerIntegrationsServing(registrar, {
+    service: createIntegrationsService({
+      vault: integrationsVault(backend),
+      sender: ctx.integrations.sender,
+      redactor: services.redactor,
+      audit: { append: (e) => (audit.append(e), services.anchors.noteWrite()) },
+      now: () => ports.clock.monotonic(),
+    }),
+    journal,
+    gate,
+    now: () => ports.clock.monotonic(),
+  });
 }

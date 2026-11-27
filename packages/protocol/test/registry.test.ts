@@ -72,6 +72,10 @@ const EXPECTED: readonly Row[] = [
   ["axis.messages", "updateSettings", "write", 2, "none", 10_000],
   ["axis.forge", "pullRequests", "read", 0, "none", 30_000],
   ["axis.forge", "pinRepository", "write", 1, "none", 10_000],
+  // axis.integrations/1, split by method (PV-N1f read slice): connect, disconnect and write stay planned.
+  ["axis.integrations", "list", "read", 0, "none", 5_000],
+  ["axis.integrations", "status", "read", 0, "none", 5_000],
+  ["axis.integrations", "read", "read", 0, "none", 30_000],
   ["axis.agents", "list", "read", 0, "none", 5_000],
   ["axis.agents", "get", "read", 0, "none", 5_000],
   ["axis.agents", "create", "write", 2, "required", 30_000],
