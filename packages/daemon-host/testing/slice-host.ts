@@ -18,6 +18,7 @@ import {
   type Clock,
 } from "../src/index.js";
 import { LocalPty, localPtyGitRunner } from "./fake-pty.js";
+import { endpointSlicePty } from "./slice-pty.js";
 import { sliceComposer } from "./slice-composer.js";
 import { SLICE_SNAPSHOT_TAKE_MS, sliceSnapshotter } from "./slice-snapshotter.js";
 
@@ -60,11 +61,14 @@ if (breakPut !== undefined) {
  * TEST ONLY (`AXIS_SLICE_FINAL_WAIT_MS=<n>`): how long the final anchor waits for its acknowledgement (the finalize bound moves with
  * it), so a test that holds the acknowledgement decides by condition when it arrives and a loaded host cannot time it out first.
  */
+const endpointRuntime = process.env["AXIS_SLICE_ENDPOINT_RUNTIME"];
 const finalWaitMs = /^[1-9][0-9]{0,8}$/.test(process.env["AXIS_SLICE_FINAL_WAIT_MS"] ?? "") ? Number(process.env["AXIS_SLICE_FINAL_WAIT_MS"]) : undefined;
 
 client.onInit((raw) => {
   const redactor = new Redactor();
   const fail = (e: unknown): void => {
+    // TEST ONLY: one diagnostic line, so a slice test can say why its host did not start.
+    process.stderr.write(`slice.start_failed ${String((e as { code?: unknown }).code ?? "")} ${String((e as { detail?: unknown }).detail === undefined ? "" : JSON.stringify((e as { detail?: unknown }).detail))} ${e instanceof Error ? e.message : String(e)}\n`);
     process.exitCode = exitCodeForStartupError(e);
     release();
     process.exit(process.exitCode);
@@ -82,7 +86,8 @@ client.onInit((raw) => {
       control: client,
       mux,
       ports: { clock, storage: createNodeStorage(), redactor, logger, env, cwd: process.cwd() },
-      pty: new LocalPty(),
+      // TEST ONLY (`AXIS_SLICE_ENDPOINT_RUNTIME=<dir>`): a pty port that can host CLI messaging endpoints (`slice-pty.ts`).
+      pty: endpointRuntime === undefined ? new LocalPty() : endpointSlicePty(endpointRuntime),
       ptyGitRunner: localPtyGitRunner(gitPath, env),
       snapshotter: sliceSnapshotter(), // the real GIT-SNAP-1 snapshot (ticket H13), not a fake, with a hang-guard bound for a loaded host
       ...(finalWaitMs === undefined ? {} : { finalAnchorWaitMs: finalWaitMs, finalizeTimeoutMs: finalWaitMs + 60_000 }),
