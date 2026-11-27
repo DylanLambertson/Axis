@@ -266,18 +266,16 @@ startup.
 - **Imports and the mint, resolved.** Every import and re-export is resolved to a file, whether it is a package specifier, a
   relative path or a barrel. Only `grant-action.ts` may import it, and only the host composition file may call `takeGrantMint`,
   as the direct argument of `createGrantAction`.
-- **References, type-aware.** The TypeScript checker flags every reference to `grant` or `setEnabled` on a value of type
-  `PluginGrantRecords`:
-  - property access, and element access with a literal key;
-  - destructuring and aliasing (`const { grant } = j.plugins`, `const g = j.plugins.grant`);
-  - calls through `call`, `apply` or `bind`.
-
-  Element access with a non-literal key on that type is refused outright. Passing a `PluginGrantRecords` value to a function is
-  flagged at the call site unless the callee is in the allowed files.
-- **Flows** (review K2-g3 S1). A store, a journal or the grant action used as anything but the receiver of a member access is
-  checked against the type it flows into: a view of another type that still exposes an increase member (a `Pick<>`, a
-  structural type, a function's declared return, a journal whose `plugins` does) is refused. The one exception is the journal
-  passed into the plugins handler's deps, at the composition's single `registerPluginsHandlers` call.
+- **Call sites, whatever the type** (review K2-g3, round 2). Outside the files allowed for each member, any access, element
+  access (a literal key, or a computed one) or destructuring of a callable member named `grant`, `setEnabled` or
+  `takeGrantMint` is refused, whatever type the receiver has been given: the store, a `Pick<>`, a structural view, a union, a
+  container, a promise's result, a generic. This includes calls through `call`, `apply` and `bind`.
+  - It is not refused when the receiver is the grant action (the one known type that is not the store), or for
+    `setEnabled(…, false)`, a decrease, which is allowed anywhere.
+  - A data field that happens to be named `grant` is not callable, so it is never flagged.
+  - This replaces chasing the shapes a value can flow through: whatever path the store takes, its increase members can only be
+    reached by name at a call site, and every such site is checked.
+  - Passing a `PluginGrantRecords` value to a function is also flagged, unless the callee is the grant action's factory.
 - **Exports.** `grant-action.ts` exports exactly one name.
 - **Construction.** Only `daemon-host/src/host.ts` may call `Journal.open` or the storage port's `openDatabase`. Only
   `audit/src/db.ts` and `daemon-host/src/storage/node-storage.ts` may call the audit package's `openDatabase`. Only

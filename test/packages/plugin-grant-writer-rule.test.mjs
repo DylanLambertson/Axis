@@ -79,13 +79,25 @@ const PLANTED = [
   ["a second caller of takeGrantMint", `${J}export function f(j: Journal) { return j.plugins.takeGrantMint(); }`],
   ["a token laundered through a look-alike interface", `${J}interface S { grant(a: string, b: string, c: string, t: PluginGrantWrite): void }\nexport function f(s: S, t: PluginGrantWrite) { s.grant("a", "b", "c", t); }`],
   ["the grant action held elsewhere", `import type { GrantAction } from "./plugins/grant-action.js";\nexport function f(a: GrantAction) { a.grant("a", "b", "c"); }`],
-  ["a decrease called outside the allowed files", `${J}export function f(j: Journal) { j.plugins.setEnabled("x", "p", false); }`],
+  ["an enable outside the allowed files", `${J}export function f(j: Journal) { j.plugins.setEnabled("x", "p", true); }`],
+  ["a setEnabled whose third argument is not the literal false", `${J}export function f(j: Journal, on: boolean) { j.plugins.setEnabled("x", "p", on); }`],
   ["a bare reference to grant", `${J}export function f(j: Journal) { const g = j.plugins.grant; return typeof g; }`],
   ["a structural view of the store", `${J}export function f(j: Journal) { const p: { takeGrantMint(): () => unknown; grant(a: string, b: string, c: string, t: never): void } = j.plugins; return p.takeGrantMint(); }`],
-  ["a Pick<> view of the store", `${J}import type { PluginGrantRecords } from "../../journal/src/plugin-grant-store.js";\nexport function f(j: Journal) { const p: Pick<PluginGrantRecords, "grant"> = j.plugins; return p; }`],
-  ["a structural view of the journal", `${J}export function f(j: Journal) { const v: { plugins: { setEnabled(a: string, b: string, e: boolean): void } } = j; return v; }`],
-  ["a function typed to return a view of the store", `${J}export function view(j: Journal): { setEnabled(a: string, b: string, e: boolean): void } { return j.plugins; }`],
+  ["a Pick<> view of the store", `${J}import type { PluginGrantRecords } from "../../journal/src/plugin-grant-store.js";\nexport function f(j: Journal, t: PluginGrantWrite) { const p: Pick<PluginGrantRecords, "grant"> = j.plugins; p.grant("a", "b", "c", t); }`],
+  ["a two-member union view", `${J}export function f(j: Journal) { const p: { takeGrantMint(): unknown; x?: 1 } | { takeGrantMint(): unknown; y?: 2 } = j.plugins; return p.takeGrantMint(); }`],
+  ["a literal bracket enable, no token in sight", `${J}export function f(j: Journal) { j.plugins["setEnabled"]("x", "p", true); }`],
+  ["a union view", `${J}export function f(j: Journal) { const p: { takeGrantMint(): () => unknown } | undefined = j.plugins; return p?.takeGrantMint(); }`],
+  ["the store in an array", `${J}export function f(j: Journal) { const a = [j.plugins]; return a[0]?.takeGrantMint(); }`],
+  ["the store in an object", `${J}export function f(j: Journal) { const o = { s: j.plugins }; return o.s.takeGrantMint(); }`],
+  ["a function returning the store in a tuple", `${J}const pair = (j: Journal): [number, Journal["plugins"]] => [1, j.plugins];\nexport function f(j: Journal) { return pair(j)[1].takeGrantMint(); }`],
+  ["the journal in an array", `${J}export function f(j: Journal) { return [j][0]?.plugins.takeGrantMint(); }`],
+  ["an element access into a structural journal view", `${J}export function f(j: Journal) { const v: { plugins: { setEnabled(a: string, b: string, e: boolean): void } } = { plugins: j["plugins"] }; v.plugins.setEnabled("x", "p", true); }`],
+  ["the journal through a promise", `${J}export async function f(j: Journal) { const v: { plugins: { takeGrantMint(): unknown } } = await Promise.resolve(j); return v.plugins.takeGrantMint(); }`],
+  ["a generic bounded by a structural view", `${J}function g<T extends { plugins: { takeGrantMint(): unknown } }>(x: T) { return x.plugins.takeGrantMint(); }\nexport function f(j: Journal) { return g(j); }`],
+  ["a structural journal view", `${J}export function f(j: Journal) { const v: { plugins: { setEnabled(a: string, b: string, e: boolean): void } } = j; v.plugins.setEnabled("x", "p", true); }`],
+  ["a function typed to return a view of the store", `${J}export function view(j: Journal): { setEnabled(a: string, b: string, e: boolean): void } { return j.plugins; }\nexport function f(j: Journal) { view(j).setEnabled("x", "p", true); }`],
   ["a function returning a token, alone", `${J}export function f(m: () => PluginGrantWrite) { return typeof m; }`],
+  ["a shorthand property", `${J}export function f(j: Journal) { const plugins = j.plugins; const o = { plugins }; return o.plugins.takeGrantMint(); }`],
   ["Journal.open outside the host", `import { Journal } from "../../journal/src/journal.js";\nexport const j = Journal.open();`],
   ["new PluginGrantRecords outside the journal", `import { PluginGrantRecords } from "../../journal/src/plugin-grant-store.js";\nexport const p = new PluginGrantRecords();`],
   ["the audit openDatabase elsewhere", `import { openDatabase } from "../../audit/src/db.js";\nexport const d = openDatabase("y");`],
@@ -127,18 +139,30 @@ export function wire(j: Journal) { return createGrantAction(j.plugins, (j.plugin
   assert.ok(problems.some((p) => p.startsWith(`${FILES.compose}:`) && p.includes("takeGrantMint")), JSON.stringify(problems));
 });
 
-test("refused: the composition exporting the store under a structural type", () => {
-  const problems = run({ [FILES.compose]: `${BASE[FILES.compose]}\nexport function leak(j: Journal): { grant(a: string, b: string, c: string, t: never): void } { return j.plugins; }` });
-  assert.ok(problems.some((p) => p.startsWith(`${FILES.compose}:`) && p.includes("another type")), JSON.stringify(problems));
+test("refused: the composition exporting the store under a structural type, at the importer's call", () => {
+  const problems = run({
+    [FILES.compose]: `${BASE[FILES.compose]}\nexport function leak(j: Journal): { grant(a: string, b: string, c: string, t: never): void } { return j.plugins; }`,
+    [EVIL]: `${J}import { leak } from "./compose-serving.js";\nexport function f(j: Journal, t: never) { leak(j).grant("a", "b", "c", t); }`,
+  });
+  assert.ok(problems.some((p) => p.startsWith(`${EVIL}:`) && p.includes("grant")), JSON.stringify(problems));
 });
 
-test("refused: the handler passing the grant action out under a structural type", () => {
-  const problems = run({ [FILES.handler]: `${BASE[FILES.handler]}\nexport function out(a: GrantAction) { const g: { grant(a: string, b: string, c: string): void } = a; return g; }` });
-  assert.ok(problems.some((p) => p.startsWith(`${FILES.handler}:`) && p.includes("grant action viewed")), JSON.stringify(problems));
+test("refused: the handler passing the grant action out under a structural type, at the call", () => {
+  const problems = run({ [FILES.handler]: `${BASE[FILES.handler]}\nexport function out(a: GrantAction) { const g: { grant(a: string, b: string, c: string): void } = a; g.grant("x", "p", "runs.start"); }` });
+  assert.ok(problems.some((p) => p.startsWith(`${FILES.handler}:`) && p.includes("grant")), JSON.stringify(problems));
 });
 
-test("allowed: the journal into the plugins handler's deps, at the composition's one site, and nowhere else", () => {
+test("refused: something leaked inside the handler-deps call of the composition", () => {
+  const problems = run({
+    [EVIL]: `${J}export function leak(j: Journal) { return j.plugins.takeGrantMint(); }`,
+    [FILES.compose]: `${BASE[FILES.compose]}\nimport { leak } from "./evil.js";\nexport function more(j: Journal) { registerPluginsHandlers({ journal: j, extra: leak(j) } as never); }`,
+  });
+  assert.ok(problems.some((p) => p.startsWith(`${EVIL}:`)), JSON.stringify(problems));
+});
+
+test("allowed: a decrease anywhere, the grant action's own calls, a data field named grant, an unused method named grant", () => {
   assert.deepEqual(run(), []);
-  const elsewhere = run({ [EVIL]: `${J}import { registerPluginsHandlers } from "./handlers/plugins.js";\nexport function f(j: Journal) { return registerPluginsHandlers({ journal: j }); }` });
-  assert.ok(elsewhere.some((p) => p.startsWith(`${EVIL}:`)), JSON.stringify(elsewhere));
+  assert.deepEqual(run({ [EVIL]: `${J}export function f(j: Journal) { j.plugins.setEnabled("x", "p", false); }` }), [], "a decrease");
+  assert.deepEqual(run({ [EVIL]: `export function f(out: { kind: "granted"; grant: { token: string } }) { return out.grant.token; }` }), [], "a data field");
+  assert.deepEqual(run({ [EVIL]: `class Acl { grant(): void {} }\nexport function f(a: Acl) { return typeof a; }` }), [], "a method declared but not used");
 });

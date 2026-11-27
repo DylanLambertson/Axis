@@ -4,8 +4,10 @@
 // runtime locks are the guarantee (a single-use token that only the serving journal's mint makes, and that mint taken once by
 // the host composition); these rules catch ordinary mistakes in the product source, with the type checker:
 //
-// - members: `grant`, `setEnabled` and `takeGrantMint` on a `PluginGrantRecords` value (property access, a literal or any
-//   non-literal element key, destructuring), and that value passed to a function, only in the files allowed for each;
+// - call sites: any access, element access or destructuring of a callable member named `grant`, `setEnabled` or
+//   `takeGrantMint`, whatever type the receiver is given (a union, a container, a structural view, a generic), unless the file
+//   is allowed for that member, the receiver is the grant action, or it is `setEnabled(…, false)` (a decrease);
+// - the store passed to a function not declared in the grant action;
 // - values whose type is the token (`PluginGrantWrite`), a function returning one, or the grant action (`GrantAction`), only in
 //   the files that make, carry or use them, so a grant laundered through another type is still seen (every grant needs a token);
 // - `takeGrantMint()` only in the composition, as the direct argument of `createGrantAction(`; `createGrantAction(` only there;
@@ -83,44 +85,32 @@ export function grantWriterProblems(program, root, checked) {
       if (values !== 1) at(sf, `grant-action.ts must export exactly one value (found ${values})`);
     }
     const visit = (node) => {
-      // Members of the grant store.
-      if (ts.isPropertyAccessExpression(node) && MEMBER_FILES.has(node.name.text) && isStore(node.expression)) {
-        if (!MEMBER_FILES.get(node.name.text).has(rel)) at(node, `${node.name.text} on the grant store`);
+      // Call sites (review K2-g3 round 2): outside the files allowed for each, ANY access, element access or destructuring of a
+      // callable member named grant, setEnabled or takeGrantMint is refused, whatever type the receiver is given, unless the
+      // receiver is a known type that is not the store (the grant action) or it is setEnabled(..., false), a decrease.
+      if (ts.isPropertyAccessExpression(node) && MEMBER_FILES.has(node.name.text) && callableMember(checker, node.expression, node.name.text) && !knownOther(checker, node.expression) && !isDecrease(node)) {
+        if (!MEMBER_FILES.get(node.name.text).has(rel)) at(node, `${node.name.text} on a value that may be the grant store`);
       }
-      if (ts.isElementAccessExpression(node) && isStore(node.expression) && rel !== FILES.store) {
+      if (ts.isElementAccessExpression(node) && rel !== FILES.store && !knownOther(checker, node.expression)) {
         const key = node.argumentExpression;
         const literal = ts.isStringLiteralLike(key) ? key.text : undefined;
-        if (literal === undefined) at(node, "a computed member of the grant store");
-        else if (MEMBER_FILES.has(literal) && !MEMBER_FILES.get(literal).has(rel)) at(node, `${literal} on the grant store`);
+        if (literal === undefined) {
+          if (STORE_INCREASES.some((n) => callableMember(checker, node.expression, n))) at(node, "a computed member of a value that may be the grant store");
+        } else if (MEMBER_FILES.has(literal) && callableMember(checker, node.expression, literal) && !MEMBER_FILES.get(literal).has(rel)) at(node, `${literal} on a value that may be the grant store`);
       }
-      if (ts.isVariableDeclaration(node) && node.initializer !== undefined && ts.isObjectBindingPattern(node.name) && isStore(node.initializer)) {
+      if (ts.isVariableDeclaration(node) && node.initializer !== undefined && ts.isObjectBindingPattern(node.name) && !knownOther(checker, node.initializer)) {
         for (const el of node.name.elements) {
           const key = el.propertyName ?? el.name;
           const name = ts.isIdentifier(key) || ts.isStringLiteralLike(key) ? key.text : undefined;
-          if (name === undefined || (MEMBER_FILES.has(name) && !MEMBER_FILES.get(name).has(rel))) at(el, `${name ?? "a computed member"} destructured from the grant store`);
+          if (name === undefined) {
+            if (STORE_INCREASES.some((n) => callableMember(checker, node.initializer, n))) at(el, "a computed member destructured from a value that may be the grant store");
+          } else if (MEMBER_FILES.has(name) && callableMember(checker, node.initializer, name) && !MEMBER_FILES.get(name).has(rel)) at(el, `${name} destructured from a value that may be the grant store`);
         }
       }
       if ((ts.isCallExpression(node) || ts.isNewExpression(node)) && node.arguments !== undefined) {
         const calleeFile = declFile(symbolOf(ts.isCallExpression(node) ? node.expression : node.expression));
         for (const arg of node.arguments) {
           if (isStore(arg) && calleeFile !== FILES.action && rel !== FILES.store && rel !== FILES.journal) at(arg, "the grant store passed to a function outside the grant action");
-        }
-      }
-      // Flow (review K2-g3 S1): a store, a journal or the grant action used as anything but the receiver of a member access is
-      // checked against the type it flows into. A view of another type that still exposes an increase member (a Pick<>, a
-      // structural type, a function's declared return) is refused outside the allowed files, so no alias launders the name.
-      if ((ts.isIdentifier(node) || ts.isPropertyAccessExpression(node) || ts.isCallExpression(node)) && !isReceiver(node) && !isDeclarationName(node)) {
-        const own = checker.getTypeAtLocation(node);
-        const kind = isNamed(own, "PluginGrantRecords") ? "store" : isNamed(own, "GrantAction") ? "action" : isNamed(own, "Journal") && checker.getPropertyOfType(own, "plugins") !== undefined ? "journal" : undefined;
-        const ctx = kind === undefined ? undefined : contextualTypeOf(checker, node);
-        if (kind !== undefined && ctx !== undefined && !(ctx.flags & ts.TypeFlags.Any)) {
-          if (kind === "store" && !isNamed(ctx, "PluginGrantRecords") && exposes(checker, ctx, STORE_INCREASES) && rel !== FILES.store && rel !== FILES.journal && !(rel === FILES.compose && isArgOf(node, "createGrantAction"))) at(node, "the grant store viewed under another type that exposes an increase");
-          if (kind === "action" && !isNamed(ctx, "GrantAction") && exposes(checker, ctx, ["grant", "enable"]) && rel !== FILES.action) at(node, "the grant action viewed under another type");
-          if (kind === "journal") {
-            const plugins = checker.getPropertyOfType(ctx, "plugins");
-            const pt = plugins === undefined ? undefined : checker.getTypeOfSymbolAtLocation(plugins, node);
-            if (pt !== undefined && !(pt.flags & ts.TypeFlags.Any) && !isNamed(pt, "PluginGrantRecords") && exposes(checker, pt, STORE_INCREASES) && rel !== FILES.journal && !(rel === FILES.compose && insideCallOf(node, "registerPluginsHandlers"))) at(node, "the journal viewed under a type whose plugins expose an increase");
-          }
         }
       }
       // Tokens, mints and the grant action, wherever a value of their type is declared, read or made.
@@ -161,29 +151,21 @@ export function grantWriterProblems(program, root, checked) {
 }
 
 const STORE_INCREASES = ["grant", "setEnabled", "takeGrantMint"];
-const exposes = (checker, type, names) => names.some((n) => checker.getPropertyOfType(type, n) !== undefined);
-const isReceiver = (node) => (ts.isPropertyAccessExpression(node.parent) || ts.isElementAccessExpression(node.parent)) && node.parent.expression === node;
-const isDeclarationName = (node) =>
-  ts.isIdentifier(node) &&
-  ((ts.isPropertyAccessExpression(node.parent) && node.parent.name === node) ||
-    ((ts.isVariableDeclaration(node.parent) || ts.isParameter(node.parent) || ts.isPropertyDeclaration(node.parent) || ts.isPropertySignature(node.parent) || ts.isPropertyAssignment(node.parent) || ts.isFunctionDeclaration(node.parent) || ts.isMethodDeclaration(node.parent) || ts.isBindingElement(node.parent) || ts.isImportSpecifier(node.parent) || ts.isExportSpecifier(node.parent) || ts.isImportClause(node.parent) || ts.isClassDeclaration(node.parent) || ts.isInterfaceDeclaration(node.parent) || ts.isTypeAliasDeclaration(node.parent)) && node.parent.name === node) ||
-    ts.isTypeReferenceNode(node.parent) ||
-    ts.isQualifiedName(node.parent) ||
-    ts.isTypeQueryNode(node.parent));
-/** The type a value flows into: its contextual type, or for a shorthand property the contextual type of that property. */
-function contextualTypeOf(checker, node) {
-  if (ts.isShorthandPropertyAssignment(node.parent) && node.parent.name === node) {
-    const obj = checker.getContextualType(node.parent.parent);
-    const prop = obj === undefined ? undefined : checker.getPropertyOfType(obj, node.text);
-    return prop === undefined ? undefined : checker.getTypeOfSymbolAtLocation(prop, node);
-  }
-  return checker.getContextualType(node);
+/** The receiver's member of that name is callable (or the receiver is untyped): the store's three are methods. A data field is not. */
+function callableMember(checker, receiver, name) {
+  const type = checker.getNonNullableType(checker.getTypeAtLocation(receiver));
+  if (type.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) return false; // an `any` cast is the reviewed boundary
+  const prop = checker.getPropertyOfType(type, name);
+  if (prop === undefined) return false;
+  return checker.getTypeOfSymbolAtLocation(prop, receiver).getCallSignatures().length > 0;
 }
-const isArgOf = (node, callee) => ts.isCallExpression(node.parent) && node.parent.arguments.includes(node) && ts.isIdentifier(node.parent.expression) && node.parent.expression.text === callee;
-function insideCallOf(node, callee) {
-  for (let n = node.parent; n !== undefined; n = n.parent) if (ts.isCallExpression(n) && ts.isIdentifier(n.expression) && n.expression.text === callee) return true;
-  return false;
+/** The one receiver type known not to be the store: the grant action (its own rule keeps it in its files). */
+function knownOther(checker, receiver) {
+  const type = checker.getNonNullableType(checker.getTypeAtLocation(receiver));
+  return !type.isUnion() && isNamed(type, "GrantAction");
 }
+/** `x.setEnabled(a, b, false)`: a decrease, allowed anywhere. */
+const isDecrease = (access) => access.name.text === "setEnabled" && ts.isCallExpression(access.parent) && access.parent.expression === access && access.parent.arguments[2]?.kind === ts.SyntaxKind.FalseKeyword;
 
 function isTakeMint(call) {
   return ts.isPropertyAccessExpression(call.expression) && call.expression.name.text === "takeGrantMint";
