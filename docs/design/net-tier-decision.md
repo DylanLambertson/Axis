@@ -156,7 +156,7 @@ The scope is a BUILT-IN connector with plugin access to integrations and `net:` 
    - RR-87: a plugin's quota and data-out use within its budget, once plugins send.
    - RR-91: the system resolver is the name trust anchor.
    - RR-92: tier 3, until the raise ships.
-   - **Correction:** `integrations-contract.md` §3 ("Request bytes count (RR-81)") and the PV-N1f ticket row label the request-byte accounting as RR-81. That is a mislabel: RR-81 is the device-code-only residual. It is flagged for its own correction.
+   - **Corrected:** `integrations-contract.md` §3 ("Request bytes count") and the PV-N1f ticket row labelled the request-byte accounting RR-81, which is the device-code-only residual. Both now say RR-87, the accepted residual of the per-plugin request and byte budget.
 
 ## 7. Before ANYTHING plugin-facing is enabled
 

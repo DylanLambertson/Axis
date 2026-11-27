@@ -32,7 +32,7 @@ No request has a URL, header, cookie, redirect, proxy, method override or creden
 
 ## 3. Replies and limits
 
-**Request bytes count (RR-81).** A `GET` with a 2,048-character path and query is a data-out channel to an approved origin: PV-N1f counts the REQUEST bytes (path, query, arguments, body), not only the response, in the per-plugin byte budget.
+**Request bytes count (RR-87).** A `GET` with a 2,048-character path and query is a data-out channel to an approved origin: PV-N1f counts the REQUEST bytes (path, query, arguments, body), not only the response, in the per-plugin byte budget.
 
 A reply is a status in 200 to 299 and one typed value (`result`, or `body` for net): the connector's response schema produced it, at most 12 levels deep, 1,000 array items, 256 object keys and 65,536 characters per text, inside the envelope's own walk (1 MiB, 16 levels). Any other status is a closed error, never a body.
 
