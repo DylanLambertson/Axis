@@ -177,3 +177,15 @@ export function formatReport({ branch, head, results, packageCounts }) {
   lines.push(`verdict: ${code === 0 ? passed : code === 1 ? "FAILED" : "INCOMPLETE (skipped gates)"}`, "```");
   return lines.join("\n");
 }
+
+/**
+ * The one line a gate run on the wrong Node prints first, or undefined when Node is the pinned one (or no pin is given: the
+ * node-version step reports that). `hints` are directories that hold the pinned Node, in order of preference.
+ */
+export function wrongNodeLine({ running, pinned, execPath, hints }) {
+  if (typeof pinned !== "string" || running === `v${pinned}`) return undefined;
+  const where = hints.length > 0
+    ? `put ${hints[0]} first on PATH`
+    : "no pinned Node found: set NODE24_BIN to its bin directory or run scripts/code-oss/build.sh --toolchain-only";
+  return `gate: wrong Node: running ${running} (${execPath}), expected v${pinned} (pinned in code-oss/upstream.json); ${where}`;
+}
