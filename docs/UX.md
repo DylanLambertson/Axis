@@ -1,5 +1,7 @@
 # UX and Visual Design System
 
+> **Direction change (2026-11-26):** ADR 0011 (`docs/adr/0011-own-shell-ide-as-optional-feature.md`, Proposed) replaces the Code OSS-based shell with our own shell, with the IDE as an optional module. Statements here about Code OSS, IDE view, Workspace Trust, extensions or Open VSX are revised by plan ticket OS-23 (`docs/design/own-shell-plan.md`).
+
 ## Design thesis
 An agent home first, with a full IDE one step away: closer to Paradev than to Cursor, with Linear-inspired precision and a distinct original identity. Minimal, dense where useful, calm by default. Accent color and boldness signal interaction, selection, focus, or meaningful status—not decoration. No gratuitous glows, gradient-heavy surfaces, metric walls, or oversized cards; the project home and the agent lists are dense, actionable lists (usage is numbers in rows, not charts).
 
