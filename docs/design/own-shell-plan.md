@@ -49,7 +49,7 @@ The renderer packages import only `@axis/protocol`, each other and their pinned 
 | OS-11 | Approvals: pending list and cards as core components; tier 1 to 3 resolved in the renderer, tier 4 and up routed to main's dialog, never labelled native below tier 4 | S | `axis.approvals/1` | OS-8 |
 | OS-12 | Composer panel: Ask, Edit and Agent, model choice within the connection, activity stream from events, stop. Mock provider first, then Anthropic. Demo 1 runs it in a workspace OS-10 just created | M | `axis.composer-runs/1`, `axis.providers/1`, `axis.events/1` | OS-10, OS-11; Anthropic needs the vault key path (PV-N0 remaining slices, below) |
 | DC-3b | **Opus. Moved into wave B (decided: the owner wants a terminal, and without it the own shell has none).** Main's pty-data broker to a window: the renderer asks with `terminalPort(nonce, terminalId)`, main checks the sender, and the daemon grants the id to the new `conn`. This takes over the rest of PV-X1b, whose Code OSS-side adapter stops | M | `pty-process` grant and attach | DC-3a, OS-3 |
-| OS-16 | Terminal module (moved here from wave D; see there) | M | DC-3a, DC-3b | OS-7 |
+| OS-16 | Terminal module (moved here from wave D): xterm.js over the data port, splits, layout kept per workspace, attach to CLI runs, "not managed" never shown (all terminals are Axis-managed now), PTY-5 unchanged in the pty process | M | DC-3a, DC-3b | OS-7 |
 | OS-13 | Changes module v0: file list, protected-path flags, whole-file view from `review.content`, commit of the full reviewed tree, push plan and push (tier 4), compare URL | M | `axis.review/1` diff/content, `axis.git/1` | OS-7, OS-10, **DC-0** (demo 1 does not ship today's real-index overwrite) |
 
 **Demo 1 = OS-1 to OS-13 with OS-3b, OS-5b, OS-20, OS-27, DC-0, DC-3a, DC-3b, DC-7 and OS-16:** open Axis, see projects and workspaces, add and trust a project, create a workspace, open a terminal in it, run the mock composer in Agent mode, approve a request, see the changed files, commit, push to a local bare remote. No file manager or hunks yet. Create workspace, the composer, approvals and commit and push have never existed in any GUI (the interim Code OSS demo has add and trust, Changes and diff, and a terminal), so this is new UI, not a port.
@@ -74,7 +74,6 @@ The renderer packages import only `@axis/protocol`, each other and their pinned 
 | OS-18 | Editor kit: Monaco lazy chunk; workers bundled as files by esbuild and loaded from the app scheme, never `blob:`, tested under `worker-src 'self'`; the exact Trusted Types policy names at the pinned version listed in the CSP (no `'allow-duplicates'`), with a test that fails when an upgrade adds or renames one; token theme; one model per file per window; read-only mode; copy works with only `clipboard-sanitized-write` allowed | M | `@axis/ui-editor` | OS-2, OS-6 |
 | OS-14 | Files module: lazy tree, open in a single-file viewer (editor kit), edit and save for trusted projects, read only for untrusted, create, rename, delete, "Open in code" intent | M | DC-1 | OS-7, OS-18, DC-1a (read), DC-1b (edit) |
 | OS-15 | Changes module v1: **+ / -** per file and per hunk ("Staged for commit" and "Changes", with the note that this is not `git add`), Monaco diff view, discard per file and per hunk, commit of the built tree, showing exactly the set DC-2 built | M | DC-0, DC-2, DC-4, `axis.git/1` | OS-13, OS-18 |
-| OS-16 | **Built in wave B.** Terminal module: xterm.js over the data port, splits, layout kept per workspace, attach to CLI runs, "not managed" never shown (all terminals are Axis-managed now), PTY-5 unchanged in the pty process | M | DC-3a, DC-3b | OS-7 |
 | OS-17 | Code module (IDE view): tabs, split, find and replace, project search, go to line, outline, open at file:line from files and changes, return keeps buffers and selection (C1′) | L | DC-1, DC-5, editor kit | OS-14 |
 
 **Demo 2 = demo 1 plus OS-14, OS-15, OS-17 and OS-18:** the file manager, + and - per file and hunk, CLI runs attached in terminals, and the code editor.
@@ -96,20 +95,26 @@ Composer prerequisites that already exist or are in flight and stay valid: PV-N0
 
 ## 3. Dependency picture
 
+Each line reads "ticket <- what it waits for", and is the same as the tables' Depends column.
+
 ```text
-OS-1 ─┬─ OS-20 (pins first)
-      ├─ OS-2 ─┬─ OS-3 ─┬─ OS-3b ── OS-9
-      │        │        ├─ OS-4, OS-27, OS-28
-      │        │        └─ DC-3b ── OS-16 (also DC-3a, OS-7) ───────┐
-      │        └─ OS-18 (also OS-6)                                  │
-      ├─ OS-5 ── OS-5b (fake) ──┐                                    │
-      └─ OS-6 ── OS-7 ──────────┴─ OS-8 (also DC-7) ─┬─ OS-10 ─┬─ OS-12 (also OS-11)
-                                                     ├─ OS-11  └─ OS-13 (also DC-0)
-                                                     └─ OS-24, OS-25         => demo 1
-Day 1, daemon side: DC-0, DC-3a, DC-7, DC-1a, DC-2, DC-5
-DC-1a/b ── OS-14 (also OS-7, OS-18) ── OS-17 (also DC-5)
-DC-2 ── DC-4 ── OS-15 (also DC-0, OS-13, OS-18)                              => demo 2
-OS-19, OS-21 ── OS-26 ;  OS-23 ;  G0 ── OS-22
+Wave A   OS-1  <- (owner-approved direction)       OS-20 <- OS-1 (pins), OS-7 (bundle check)
+         OS-2  <- OS-1                             OS-3  <- OS-2
+         OS-3b <- OS-3                             OS-4, OS-27, OS-28 <- OS-3 (OS-28 also OS-6)
+         OS-5  <- OS-1                             OS-5b <- OS-5
+         OS-6  <- OS-1                             OS-7  <- OS-6
+Wave B   OS-8  <- OS-5b, OS-6, DC-7 (fake); OS-3 to switch to the real port
+         OS-9  <- OS-8, OS-3b                      OS-10 <- OS-8
+         OS-11 <- OS-8                             OS-12 <- OS-10, OS-11
+         OS-13 <- OS-7, OS-10, DC-0                DC-3b <- DC-3a, OS-3
+         OS-16 <- OS-7, DC-3a, DC-3b                                          => demo 1
+Day 1    DC-0, DC-1a, DC-2, DC-3a, DC-5, DC-7 (daemon side, no shell dependency)
+Wave D   DC-1b <- DC-1a                            DC-4  <- DC-2
+         OS-18 <- OS-2, OS-6                       OS-14 <- OS-7, OS-18, DC-1a, DC-1b
+         OS-15 <- OS-13, OS-18, DC-0, DC-2, DC-4   OS-17 <- OS-14, DC-1, DC-5  => demo 2
+Wave E   OS-19 <- OS-2, OS-3, OS-18                OS-21 <- OS-3
+         OS-24 <- OS-8, OS-14, OS-15               OS-25 <- OS-8
+         OS-26 <- OS-19, OS-21                     OS-22 <- G0
 ```
 
 OS-15 sits behind the whole demo 1 chain through OS-13. Demo 2's other long chain is DC-1 then OS-14 then OS-17.
