@@ -7,10 +7,11 @@
 // or main sends window.gone: no run is ever created. The model list and engine.prepare waits are inside the real service, before
 // its synchronous check: composer-plugin-start.test.ts covers them.
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
 import { test, type TestContext } from "node:test";
 import type { Identity } from "@axis/daemon";
-import { approvedStartOf } from "../src/gate/plugin-run-start.js";
+import { randomBytes, randomUUID } from "node:crypto";
+import { approvedStartOf, pluginRunStartChallenges } from "../src/gate/plugin-run-start.js";
+import { createWindowLifetimes } from "../src/plugins/window-lifetimes.js";
 import { createComposerRunsHandlers } from "../src/handlers/composer-runs.js";
 import type { Client } from "./approvals-rig.js";
 import { handlerRig, PLUGIN_ATT, reason, setup, until, verifier, type Row, type Setup } from "./plugin-start-rig.js";
@@ -244,4 +245,37 @@ test("layer: an ended lifetime is refused at entry, without waiting for the proj
   (release as () => void)();
   await held;
   assert.equal(h.seen.length, 0);
+});
+
+test("review K2-g4b N1: a lifetimes port that throws is a closed window, in the binding and in the handler", async (t) => {
+  const s = await setup(t);
+  const asPlugin = verifier.verify(PLUGIN_ATT) as Identity;
+  const throwing = { current: () => "pinned-epoch", alive: (): boolean => { throw new Error("lifetimes failed"); } };
+  const binding = pluginRunStartChallenges(s.journal, s.journal.pluginIssues, () => 1, throwing).bind({ identity: asPlugin, actor: asPlugin.actor, contract: "axis.runs", method: "start", args: s.body() } as never, { target: "x", contentDigest: "e".repeat(64) });
+  assert.ok(binding !== undefined, "issued: the epoch was there at issue");
+  assert.equal(binding.valid(), false, "a throw in alive() is not a live window");
+  const h = handlerRig(s);
+  const handlers = createComposerRunsHandlers({ service: { cancel: () => assert.fail("no"), get: () => assert.fail("no"), list: () => assert.fail("no"), events: () => assert.fail("no"), start: () => assert.fail("never reached") }, gate: { admit: async () => "ticket" } as never, journal: s.journal, mutex: h.mutex, pluginStarts: s.journal, hostWindows: throwing });
+  await assert.rejects(Promise.resolve(handlers.start(h.ctx(asPlugin, binding.approved), s.body() as never)), (e: unknown) => (e as { details?: Row }).details?.["reason"] === "host_window_closed");
+});
+
+test("review K2-g4b N2: an epoch that fell out of the ended ring is dead: the binding no longer holds", async (t) => {
+  const s = await setup(t);
+  const asPlugin = verifier.verify(PLUGIN_ATT) as Identity;
+  const windows = createWindowLifetimes({ randomBytes: (n) => randomBytes(n), endedRing: 1 });
+  const desktop = (connection: string, windowId: string): Identity => ({ connectionId: connection.padEnd(22, "_"), windowId, actorId: "u", actor: "user", trusted: false, clientKind: "desktop" });
+  windows.accepted(desktop("h", "w1"));
+  const binding = pluginRunStartChallenges(s.journal, s.journal.pluginIssues, () => 1, windows).bind({ identity: asPlugin, actor: asPlugin.actor, contract: "axis.runs", method: "start", args: s.body() } as never, { target: "x", contentDigest: "e".repeat(64) });
+  const pinned = approvedStartOf(binding?.approved)?.hostEpoch as string;
+  assert.equal(binding?.valid(), true);
+  windows.gone("w1");
+  assert.equal(windows.status("w1", pinned), "ended");
+  // Another window's ended epoch pushes w1's out of the one-entry ring: it is now unknown, and still dead.
+  windows.accepted(desktop("o", "w9"));
+  windows.gone("w9");
+  assert.equal(windows.status("w1", pinned), "unknown");
+  assert.equal(binding?.valid(), false);
+  // A reopened w1 has a new epoch; the evicted one never comes back to life.
+  windows.accepted(desktop("h2", "w1"));
+  assert.equal(binding?.valid(), false);
 });
