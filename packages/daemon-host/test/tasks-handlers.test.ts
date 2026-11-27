@@ -103,7 +103,7 @@ test("a run's worker sees only its own project's tasks; the allow-list is exactl
   assert.throws(() => service.update(W, { taskId: other, baseSeq: 1, title: "Q", body: "y" }), /not_found/);
   assert.throws(() => service.create(W, { projectId: "q", title: "Q", body: "y" }), /not_found/);
   assert.deepEqual(service.listForRun(W), []);
-  const keys = ["taskId", "projectId", "seq", "bytes", "authorKind", "callerKind", "runId", "status", "assigneeKind", "linkKind", "changed"];
-  assert.deepEqual(Object.keys(TASKS_PAYLOAD_ALLOWLIST).sort(), ["task.assign", "task.create", "task.delete", "task.link", "task.status", "task.unlink", "task.update"]);
+  const keys = ["taskId", "projectId", "seq", "bytes", "authorKind", "callerKind", "runId", "status", "assigneeKind", "linkKind", "changed", "workerId", "workerKind", "untrusted", "hop"];
+  assert.deepEqual(Object.keys(TASKS_PAYLOAD_ALLOWLIST).sort(), ["task.assign", "task.create", "task.delete", "task.link", "task.start", "task.status", "task.unlink", "task.update"]);
   for (const v of Object.values(TASKS_PAYLOAD_ALLOWLIST)) assert.deepEqual([...v], keys);
 });

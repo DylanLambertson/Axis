@@ -251,7 +251,7 @@ test("policySurface filters registry, rules and planned together, so coverage ho
 test("coverage: gated rows (project and per-start) must be registered with gated handlers, and only they (exit 70 before ready)", () => {
   const gatedRows = Object.entries(RULES).filter(([, r]) => r.trust === "project" || r.trust === "per-start").map(([k]) => k);
   assert.deepEqual(gatedRows.sort(), [
-    "axis.agents/1.start", "axis.cli-runs/1.start", "axis.git/1.commit", "axis.git/1.push", "axis.runs/1.start",
+    "axis.agents/1.start", "axis.cli-runs/1.start", "axis.git/1.commit", "axis.git/1.push", "axis.runs/1.start", "axis.tasks/1.start",
     "axis.worktrees/1.create", "axis.worktrees/1.discard", "axis.worktrees/1.restoreFromRunBase",
   ]);
   assert.deepEqual(coverageProblems({ gated: new Set(gatedRows) }), []);

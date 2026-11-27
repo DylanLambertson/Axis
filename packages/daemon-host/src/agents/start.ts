@@ -78,10 +78,9 @@ function fromRunError(raw: unknown): never {
   throw e;
 }
 
-export function createAgentStart(deps: AgentStartDeps): (req: AgentsRequest<"start">, context: HandlerContext) => Promise<AgentsResponse<"start">> {
-  const { journal } = deps;
-  /** The agent live, its home READY and in its project: read now, and again under the mutex. */
-  const resolve = (agentId: string) => {
+/** The agent live, its home READY and in its project: read now, and again under the mutex. */
+function resolver(journal: AgentStartDeps["journal"]) {
+  return (agentId: string) => {
     const agent = journal.agents.get(agentId);
     if (agent === undefined) return refuse("E_NOT_FOUND", "not_found");
     if (agent.archived) refuse("E_CONFLICT", "archived");
@@ -90,36 +89,69 @@ export function createAgentStart(deps: AgentStartDeps): (req: AgentsRequest<"sta
     if (home!.projectId !== agent.projectId) refuse("E_CONFLICT", "cross_project");
     return agent;
   };
+}
+
+/**
+ * Start a composer worker's run with `prompt` through the one composer start path: the worker live and its launch read now
+ * and again under the project mutex, the provider serving its stored connection. `extra.recheck` runs first under the mutex
+ * (a task Start re-checks its task there); `extra.taint` are IAC-T receipts the run takes before its first model call
+ * (PV-T1 slice 2b). Refusals are the agents contract's closed reasons.
+ */
+export async function startWorkerComposer(
+  deps: AgentStartDeps,
+  agentId: string,
+  prompt: string,
+  context: HandlerContext,
+  extra: { readonly recheck?: () => void; readonly taint?: readonly unknown[] } = {},
+): Promise<{ readonly runId: string; readonly workspaceId: string; readonly replayed: boolean }> {
+  const resolve = resolver(deps.journal);
+  const agent = resolve(agentId);
+  const launch = agent.launch;
+  if (launch.kind !== "composer") return refuse("E_CONFLICT", "kind_changed");
+  const providerOf = (connection: string): string => deps.providerFor(connection) ?? refuse("E_CONFLICT", "connection_unavailable");
+  const providerId = providerOf(launch.connection);
+  let started: { readonly run: { readonly runId: string }; readonly replayed: boolean };
+  let own: unknown; // the caller's own recheck refusal leaves as it was thrown
+  try {
+    started = await deps.startComposer(
+      {
+        workspaceId: agent.homeWorkspaceId,
+        mode: launch.mode,
+        prompt,
+        providerId,
+        modelId: launch.modelId,
+        worker: agent.id,
+        ...(extra.taint === undefined ? {} : { taint: extra.taint }),
+        // Under the mutex: the worker read again, and the run takes ITS launch (an update while the start waited counts).
+        recheck: () => {
+          try {
+            extra.recheck?.();
+          } catch (e) {
+            own = e;
+            throw e;
+          }
+          const fresh = resolve(agent.id).launch;
+          if (fresh.kind !== "composer") return refuse("E_CONFLICT", "kind_changed");
+          return { mode: fresh.mode, modelId: fresh.modelId, providerId: providerOf(fresh.connection) };
+        },
+      },
+      context,
+    );
+  } catch (e) {
+    if (own !== undefined && e === own) throw e;
+    return fromRunError(e);
+  }
+  return { runId: started.run.runId, workspaceId: agent.homeWorkspaceId, replayed: started.replayed };
+}
+
+export function createAgentStart(deps: AgentStartDeps): (req: AgentsRequest<"start">, context: HandlerContext) => Promise<AgentsResponse<"start">> {
+  const resolve = resolver(deps.journal);
   return async (req, context) => {
     const agent = resolve(req.agentId);
     if (agent.launch.kind === "composer") {
       if (req.input === undefined) throw new DaemonError("E_INVALID_ARGUMENT", "invalid payload");
-      const launch = agent.launch;
-      const providerOf = (connection: string): string => deps.providerFor(connection) ?? refuse("E_CONFLICT", "connection_unavailable");
-      const providerId = providerOf(launch.connection);
-      let started: { readonly run: { readonly runId: string }; readonly replayed: boolean };
-      try {
-        started = await deps.startComposer(
-          {
-            workspaceId: agent.homeWorkspaceId,
-            mode: launch.mode,
-            prompt: req.input.prompt,
-            providerId,
-            modelId: launch.modelId,
-            worker: agent.id,
-            // Under the mutex: the worker read again, and the run takes ITS launch (an update while the start waited counts).
-            recheck: () => {
-              const fresh = resolve(agent.id).launch;
-              if (fresh.kind !== "composer") return refuse("E_CONFLICT", "kind_changed");
-              return { mode: fresh.mode, modelId: fresh.modelId, providerId: providerOf(fresh.connection) };
-            },
-          },
-          context,
-        );
-      } catch (e) {
-        return fromRunError(e);
-      }
-      return { runId: started.run.runId, kind: "composer", workspaceId: agent.homeWorkspaceId, replayed: started.replayed };
+      const out = await startWorkerComposer(deps, agent.id, req.input.prompt, context);
+      return { runId: out.runId, kind: "composer", workspaceId: out.workspaceId, replayed: out.replayed };
     }
     if (req.input !== undefined) throw new DaemonError("E_INVALID_ARGUMENT", "invalid payload"); // a CLI agent takes no prompt
     let out: { readonly run: RunSummary; readonly replayed: boolean };
