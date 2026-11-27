@@ -17,7 +17,17 @@ export interface ComposerStartInput {
   /** The window of the attested connection that started the run: the only one that answers its approvals. */
   readonly windowId: string;
   readonly idempotencyKey?: string;
+  /** The Axis agent record the run is started for (PV-G4), recorded as the run's `agent_id`. */
+  readonly worker?: string;
+  /**
+   * Who started the run, built by the handler from the attested identity only, never from a request field (PV-K1e). REQUIRED, so
+   * a caller that forgets it does not compile (a missing initiator must never mean "the user" by default). A plugin start is
+   * recorded as `plugin:<id>` and is tainted before its first model call.
+   */
+  readonly initiator: RunInitiator;
 }
+
+export type RunInitiator = { readonly kind: "user" } | { readonly kind: "plugin"; readonly pluginId: string; readonly generation: number };
 
 export interface ComposerEventsPage {
   readonly events: RunEvent[];
@@ -57,15 +67,70 @@ export interface ComposerApprovalNote {
   readonly preview: ApprovalPreview | null;
 }
 
+/**
+ * The run must end now with a closed reason (C3, WT-2 broker side): a command changed the repository's hooks or common
+ * directory, or that could not be checked (`GIT_DRIFT_UNJUDGED` when the check could not finish and saw no addition or modification, C7-F2). Thrown by
+ * `ComposerRunTools.invoke`; the loop ends the run FAILED with `reason`.
+ */
+export const RUN_HALT_REASONS = ["GIT_DRIFT", "GIT_DRIFT_UNJUDGED"] as const;
+export class ComposerRunHalt extends Error {
+  constructor(readonly reason: (typeof RUN_HALT_REASONS)[number]) {
+    super("the composer run was halted");
+    this.name = "ComposerRunHalt";
+  }
+}
+
+/**
+ * WT-2 for a composer run (ticket C3, review c3 r1 SF-1): ONE baseline per run, taken before its first command and never
+ * replaced, and every later check compares the repository with it. A change that lands between two commands (a detached
+ * child of an earlier command, anything else) is therefore still drift at the next check, never absorbed into a new baseline.
+ * Held per RUN (one composer run per workspace at a time); the oldest goes first past `maxHeld`, so a run whose baseline was
+ * pushed out finds none and its check throws (the caller reads that as drift).
+ */
+/** The run and the worktree a guard's baseline is taken over (the shape of `@axis/runs` `SnapshotContext`). */
+export interface GuardContext {
+  readonly runId: string;
+  readonly workspaceId: string;
+  readonly worktree: { readonly workTree: string; readonly gitDir: string };
+}
+
+export interface RunRepositoryGuard {
+  /** Takes the run's baseline; refuses (throws) when it cannot be judged, or when the run already has one. */
+  baseline(ctx: GuardContext, signal?: AbortSignal): Promise<void>;
+  /**
+   * The repository now against the run's baseline, which is kept. Throws when there is none or nothing can be judged.
+   * `unjudged` marks a drift verdict whose final take stopped at a bound and whose diff holds no addition or modification (removals may be real): still drift (the run halts), with its own reason so it can be told apart (C7-F2). `signal` (the run's)
+   * stops a take when the run is cancelled; the check then rejects, which is never a clean answer.
+   */
+  check(runId: string, signal?: AbortSignal): Promise<{ readonly drift: boolean; readonly unjudged?: boolean }>;
+  /** Drops the run's baseline (its end). */
+  release(runId: string): void;
+}
+
 export interface ComposerRunTools {
   readonly specs: readonly ComposerToolSpec[];
-  /** Never throws for a refusal: the model is told, the run goes on. Throws only when the run must stop (audit failure). */
+  /** Never throws for a refusal: the model is told, the run goes on. Throws only when the run must stop (audit failure, or `ComposerRunHalt`). */
   invoke(name: string, input: unknown, signal: AbortSignal): Promise<ComposerToolOutcome>;
   /**
    * The drift notice before a model turn (policies section 3.4, C2): the paths the run saw that changed outside it since
    * its last turn, as untrusted-labelled text with no content, or undefined when nothing changed. Never throws.
    */
   drift?(signal: AbortSignal): Promise<string | undefined>;
+  /**
+   * WT-2 before a model turn that follows tool calls, and before the run ends `REVIEWING`: throws `ComposerRunHalt` when the
+   * repository's hooks or common dir changed since the run's first command (or cannot be judged). Nothing else throws.
+   */
+  guard?(signal: AbortSignal): Promise<void>;
+  /**
+   * Messages for the run at a turn boundary (PV-M3 slice 2, inter-agent-communication.md section 6.1): a framed, escaped
+   * block for the next turn, or undefined. The run is tainted before the block is returned when any message is not the
+   * user's. The loop calls `ack` once the next provider request (which carries the block) succeeded, and `release` when
+   * it failed or the run ended first. Throws when the delivery could not be recorded (the content is withheld and the
+   * run must stop).
+   */
+  deliver?(signal: AbortSignal): Promise<{ readonly text: string; ack(): unknown; release(): unknown } | undefined>;
+  /** The run ended (any state): releases what the tools hold for it. Never throws. */
+  close?(): void;
 }
 
 export interface ComposerRunContext {

@@ -8,6 +8,7 @@ import { resolveGit } from "../src/git.js";
 import { canSkipClassification, classifyPath } from "../src/protected.js";
 import { identityOf } from "../src/indexflags.js";
 import { git, makeFixture, type Fixture } from "./helpers.js";
+import { budget } from "./budget.js";
 
 const posix = process.platform !== "win32";
 const realPath = process.env["PATH"] ?? "";
@@ -160,7 +161,7 @@ test("100,000 flagged files are scanned in a few seconds", { skip: !posix }, asy
     chmodSync(join(dir, "git"), 0o755);
     const t0 = Date.now();
     const s = await takeSnapshot(opts(f, { gitPath: join(dir, "git") }));
-    assert.ok(Date.now() - t0 < 4000, `took ${Date.now() - t0} ms`);
+    assert.ok(Date.now() - t0 < budget(4000), `took ${Date.now() - t0} ms`);
     assert.equal(s.incomplete.length, 0, JSON.stringify(s.incomplete));
     assert.match(s.entries.find((e) => e.id === "index/flags")?.text ?? "", /^100000 flagged\n/);
   } finally {
@@ -235,7 +236,7 @@ test("100,000 capitalised flagged files are scanned in a few seconds", { skip: !
     chmodSync(join(dir, "git"), 0o755);
     const t0 = Date.now();
     const s = await takeSnapshot(opts(f, { gitPath: join(dir, "git") }));
-    assert.ok(Date.now() - t0 < 4000, `took ${Date.now() - t0} ms`);
+    assert.ok(Date.now() - t0 < budget(4000), `took ${Date.now() - t0} ms`);
     assert.equal(s.incomplete.length, 0, JSON.stringify(s.incomplete));
   } finally {
     f.cleanup();

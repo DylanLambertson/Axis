@@ -68,7 +68,8 @@ const DETAIL_ALLOWLIST: Readonly<Partial<Record<ErrorCode, Readonly<Record<strin
   E_INVALID_ARGUMENT: { fields: safeStringList, reason: safeString },
   E_NOT_FOUND: { reason: safeString },
   E_CONFLICT: { reason: safeString, retryAfterMs: retryAfter },
-  E_BACKPRESSURE: { retryAfterMs: retryAfter },
+  // `reason` tells a rate limit from a full queue (axis.messages/1: `rate_limited`, `queue_full`).
+  E_BACKPRESSURE: { reason: safeString, retryAfterMs: retryAfter },
   E_UNAVAILABLE: { reason: safeString, retryAfterMs: retryAfter },
   E_TIMEOUT: { retryAfterMs: retryAfter },
 };

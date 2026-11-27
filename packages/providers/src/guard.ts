@@ -17,7 +17,7 @@ import {
   type Timers,
 } from "./guard-types.js";
 import { limitOf, read } from "./guard-util.js";
-import { stringsIn } from "./redaction.js";
+import { requestScan, rescanIfMoved, scanRequest, type RequestScan } from "./guard-scan.js";
 import { StreamValidator, type StreamLimits } from "./stream.js";
 import {
   PROVIDER_ADAPTER_API_VERSION,
@@ -40,6 +40,7 @@ import { checkCapabilities, validateRequest, type ValidRequest } from "./validat
 export type { GuardLimits, GuardMode, GuardOptions, GuardedProvider, ProviderLogRecord, RunOptions, Timers } from "./guard-types.js";
 export { DEFAULT_IDLE_TIMEOUT_MS, DEFAULT_REQUEST_TIMEOUT_MS, MAX_LISTED_MODELS, MAX_TIMEOUT_MS } from "./guard-types.js";
 export { estimateInputTokens } from "./guard-estimate.js";
+export { YIELD_CHARS } from "./guard-scan.js";
 
 export function guardProvider(adapter: ProviderAdapter, options: GuardOptions): GuardedProvider {
   const raw = adapter.descriptor;
@@ -145,8 +146,11 @@ export function guardProvider(adapter: ProviderAdapter, options: GuardOptions): 
    *    sent: zod builds fresh objects and arrays and clones JSON values, so
    *    later changes to the caller's object (or a Proxy that answers
    *    differently to different reads) cannot reach the adapter (NB1);
-   * 3. the secret scan over that snapshot, before any `await`;
-   * 4. capabilities (the first adapter call), checked against the snapshot.
+   * 3. the secret scan over that snapshot (`scanRequest`); it yields to the event loop between strings and between windows
+   *    of a long string (C7-F3), which is safe because the snapshot is a fresh validated clone that nothing else holds;
+   * 4. capabilities (the first adapter call), checked against the snapshot;
+   * 5. the scan again if a key was registered since it ended (`rescanIfMoved`); `prepare` repeats this after the run
+   *    budget, its last `await` before the send.
    * Validation messages never echo values or record keys (S1).
    */
   const preflight = async (
@@ -154,22 +158,21 @@ export function guardProvider(adapter: ProviderAdapter, options: GuardOptions): 
     signal: AbortSignal,
     mode: GuardMode,
     setModel: (m: string) => void,
-  ): Promise<ValidRequest> => {
+  ): Promise<{ readonly valid: ValidRequest; readonly rs: RequestScan }> => {
     if (signal.aborted) throw new ProviderError("cancelled");
     const model = modelIdSchema.safeParse(read(request, "model"));
     if (!model.success) throw new ProviderError("invalid_request", { message: 'The request field "model" is invalid.', reason: "schema" });
     const valid = validateRequest(request);
-    const scanner = redactor.snapshot?.() ?? redactor;
-    for (const s of stringsIn(valid)) {
-      if (scanner.containsSecret(s)) throw new ProviderError("secret_in_request");
-    }
+    const rs = requestScan(redactor.snapshot?.() ?? redactor, signal);
+    await scanRequest(rs, valid);
     setModel(valid.model);
     const caps = await capabilities(valid.model, signal);
     checkCapabilities(valid, caps, mode === "stream" ? "stream" : "generate");
     if (mode === "count_tokens" && caps.features.tokenCounting !== "supported") {
       throw new ProviderError("unsupported_capability", { capability: "tokenCounting" });
     }
-    return valid;
+    await rescanIfMoved(rs, valid);
+    return { valid, rs };
   };
 
   const outcomeOf = (err: ProviderError): "failed" | "cancelled" => (err.code === "cancelled" ? "cancelled" : "failed");
@@ -213,7 +216,7 @@ export function guardProvider(adapter: ProviderAdapter, options: GuardOptions): 
     let model = "";
     let reservation: string | undefined;
     try {
-      const valid = await preflight(request, run.signal, mode, (m) => (model = m));
+      const { valid, rs } = await preflight(request, run.signal, mode, (m) => (model = m));
       const estimatedInputTokens = estimateInputTokens(valid);
       if (run.budget !== undefined) {
         if (failedBudgets.has(run.budget)) throw new ProviderError("budget_exceeded", { reason: "state_invalid" });
@@ -242,6 +245,8 @@ export function guardProvider(adapter: ProviderAdapter, options: GuardOptions): 
           valid.maxOutputTokens = Math.min(valid.maxOutputTokens, decision.maxOutputTokens);
         }
       }
+      // The budget hook awaited: a key registered meanwhile is checked against the request before it is sent.
+      await rescanIfMoved(rs, valid);
       if (run.signal.aborted) throw new ProviderError("cancelled");
       return { request: valid, requestId: reservation, estimatedInputTokens };
     } catch (e) {
@@ -283,7 +288,7 @@ export function guardProvider(adapter: ProviderAdapter, options: GuardOptions): 
       let valid: ValidRequest;
       try {
         if (adapter.countTokens === undefined) throw new ProviderError("unsupported_capability", { capability: "tokenCounting" });
-        valid = await preflight(request, run.signal, "count_tokens", (m) => (model = m));
+        ({ valid } = await preflight(request, run.signal, "count_tokens", (m) => (model = m)));
       } catch (e) {
         const err = normalize(e, run.signal.aborted ? "cancelled" : undefined);
         log({ ...base(run.runId, model, "count_tokens"), event: "request_refused", errorCode: err.code, message: err.message, ...(err.details.reason === undefined ? {} : { reason: err.details.reason }) });

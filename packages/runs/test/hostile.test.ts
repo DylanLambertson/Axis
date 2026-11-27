@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import { test } from "node:test";
 import { AxisError } from "@axis/audit";
 import { CLI, FakeHandle, flush, harness } from "./helpers.js";
+import { budget } from "./load-margin.js";
 
 const code = (c: string) => (e: unknown) => e instanceof AxisError && e.code === c;
 
@@ -126,7 +127,7 @@ test("the snapshot before a run: a failure or a hang refuses the launch", async 
     h.snapshotter.before_ = mode;
     const w = h.workspace();
     const p = h.start(w);
-    const asserted = assert.rejects(p, code("E_UNAVAILABLE"));
+    const asserted = assert.rejects(p, (e: unknown) => code("E_UNAVAILABLE")(e) && (e as { detail?: Record<string, unknown> }).detail?.["reason"] === (mode === "hang" ? "SNAPSHOT_TIMEOUT" : "SNAPSHOT_FAILED"));
     await flush();
     await h.clock.advance(1000);
     await asserted;
@@ -190,7 +191,7 @@ test("a flood of output stays bounded in memory and time", async () => {
   const t0 = Date.now();
   for (let i = 0; i < 50; i++) handle.emitData(big); // 50 MB
   for (let i = 0; i < 200_000; i++) handle.emitData(i % 2 ? "ab" : "c"); // many tiny chunks
-  assert.ok(Date.now() - t0 < 10_000, "the flood must not be quadratic");
+  assert.ok(Date.now() - t0 < budget(10_000), "the flood must not be quadratic");
   const s = h.supervisor.get(run.runId);
   assert.equal(s.outputChars, 50_000_000 + 300_000);
   assert.equal(s.outputChars - s.droppedChars, 4096);

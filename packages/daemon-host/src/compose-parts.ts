@@ -1,16 +1,22 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
-import { basename, normalize } from "node:path";
-import { randomBytes } from "node:crypto";
-import { AxisError, type AuditLog } from "@axis/audit";
-import type { DaemonAuditSink } from "@axis/daemon";
-import type { Journal } from "@axis/journal";
+import { isProjectGated } from "./gate/project-trust.js";
+import { AxisError, type AuditLog, type Redactor } from "@axis/audit";
+import { providerRedactor } from "./bindings/provider-redactor.js";
+import { protocolRegistry, type ContractRegistry, type DaemonAuditSink } from "@axis/daemon";
+import { lookupMethod } from "@axis/protocol";
+import type { HostServices } from "./host.js";
+import { RUN_TERMINAL_STATES, type Journal } from "@axis/journal";
 import type { RunsBindingDeps } from "./bindings/runs.js";
-import type { ControlClient } from "./control/client.js";
 import type { HandlerRegistrar } from "./handlers/anchor-guard.js";
-import type { Logger } from "./log/logger.js";
 import type { Clock } from "./ports/clock.js";
 import type { RunsService } from "./ports/runs.js";
 import type { ProjectMutex } from "./worktrees/project-mutex.js";
+import type { MockProviderOptions, RunBudgetLimits } from "@axis/providers";
+import type { CommandLimits } from "./bindings/agent-command.js";
+import type { ToolCaps } from "./composer/loop.js";
+import type { PtyPort, PtyRelayPort } from "./ports/pty.js";
+import type { EndpointRelay } from "./messages/endpoint.js";
+import type { MessagingSettingsEvent } from "./messages/settings.js";
 
 /**
  * Small pieces of the composition root (ticket H12), kept apart so `compose.ts` stays readable. None of them touches a
@@ -74,14 +80,19 @@ export function createRunsClock(clock: Pick<Clock, "now">): RunsBindingDeps["clo
 }
 
 /** Records every `<contract>/<version>.<method>` handed to the real registrar, so the composition can compare it with what is served. */
-export function recordingRegistrar(inner: HandlerRegistrar): { readonly registrar: HandlerRegistrar; readonly methods: () => ReadonlySet<string> } {
+export function recordingRegistrar(inner: HandlerRegistrar): { readonly registrar: HandlerRegistrar; readonly methods: () => ReadonlySet<string>; readonly gated: () => ReadonlySet<string> } {
   const seen = new Set<string>();
+  const gated = new Set<string>();
   const register: HandlerRegistrar["register"] = (contract, version, handlers, options) => {
-    for (const method of Object.keys(handlers)) seen.add(`${contract}/${version}.${method}`);
+    for (const [method, handler] of Object.entries(handlers)) {
+      seen.add(`${contract}/${version}.${method}`);
+      // As registered, before any wrapping: a handler marked `projectGated` reaches its side effect only through the gate.
+      if (isProjectGated(handler)) gated.add(`${contract}/${version}.${method}`);
+    }
     inner.register(contract, version, handlers, options);
   };
   const registrar: HandlerRegistrar = Object.freeze({ register });
-  return { registrar, methods: () => new Set(seen) };
+  return { registrar, methods: () => new Set(seen), gated: () => new Set(gated) };
 }
 
 /**
@@ -97,45 +108,6 @@ export function daemonAuditSink(audit: Pick<AuditLog, "append"> | undefined, not
       noteWrite();
     },
   };
-}
-
-const NAME = /^[A-Za-z0-9][A-Za-z0-9 ._-]{0,62}$/;
-
-/** A display name for a project from its folder name; a name that is not plain text becomes a fixed word. */
-export function projectDisplayName(path: string): string {
-  const base = basename(path);
-  return NAME.test(base) ? base : "project";
-}
-
-type ProjectsRegister = Parameters<Parameters<ControlClient["onProjectsRegister"]>[0]>[0];
-
-/**
- * `projects.register` of the control channel (design 7.4 and question 4: main only). The id is generated here, the path is
- * main's and must already be normalised (the journal checks it), and the answer is the project id or a closed code: whatever
- * the journal said is never forwarded. `journal` is `undefined` when degraded (nothing may write).
- */
-export function handleProjectsRegister(
-  deps: { readonly journal: Pick<Journal, "registerProject"> | undefined; readonly control: Pick<ControlClient, "send">; readonly logger?: Logger },
-  message: ProjectsRegister,
-): void {
-  const reply = (body: { ok: true; projectId: string } | { ok: false; code: "E_UNAVAILABLE" | "E_CONFLICT" | "E_INVALID_ARGUMENT" | "E_INTERNAL" }): void => {
-    try {
-      deps.control.send({ type: "projects.result", requestId: message.requestId, ...body });
-    } catch {
-      // the channel is gone; nothing to answer
-    }
-  };
-  if (deps.journal === undefined) return reply({ ok: false, code: "E_UNAVAILABLE" });
-  if (normalize(message.path) !== message.path) return reply({ ok: false, code: "E_INVALID_ARGUMENT" });
-  const id = `p-${randomBytes(9).toString("hex")}`;
-  try {
-    const project = deps.journal.registerProject({ id, path: message.path, displayName: projectDisplayName(message.path), trusted: message.trusted, actor: "daemon" });
-    reply({ ok: true, projectId: project.id });
-  } catch (e) {
-    const code = e instanceof AxisError && (e.code === "E_CONFLICT" || e.code === "E_INVALID_ARGUMENT") ? e.code : "E_INTERNAL";
-    deps.logger?.warn("request.failed", { reason: "project_register", code });
-    reply({ ok: false, code });
-  }
 }
 
 /**
@@ -181,4 +153,153 @@ export async function settleComposer(composer: { dispose(): void; idle(): Promis
     if (timer !== undefined) clearTimeout(timer);
     seal.seal();
   }
+}
+
+/** The registry restricted to what the host serves, so an unserved method does not exist (and `hello` does not offer it). */
+export function registryOf(surface: HostServices["surface"]): ContractRegistry {
+  return {
+    lookup: (contract, version, method) => (surface.registry[`${contract}/${version}`]?.[method] === undefined ? undefined : lookupMethod(contract, version, method)),
+    versions: (contract) => protocolRegistry.versions(contract).filter((v) => surface.registry[`${contract}/${v}`] !== undefined),
+  };
+}
+
+/** Composer runs (`axis.runs/1`, docs/design/composer-runtime.md): the mock provider's script, budgets and bounds (the Anthropic connection is added in compose.ts, the only importer of the providers binding there). */
+export interface ComposerOptions {
+  readonly mock?: MockProviderOptions;
+  readonly budget?: RunBudgetLimits;
+  /** Per-workspace budget across composer runs (C10); default `DEFAULT_WORKSPACE_BUDGET`. */
+  readonly workspaceBudget?: RunBudgetLimits;
+  readonly maxTurns?: number;
+  readonly toolCaps?: Partial<ToolCaps>;
+  /**
+   * Lower the `run_command` bounds (C3), never raise them: each given bound a positive integer at or below its
+   * `DEFAULT_COMMAND_LIMITS` value, no other key (`hostCommandLimits`); anything else refuses the composition
+   * (`command_limits_invalid`).
+   */
+  readonly commandLimits?: Partial<CommandLimits>;
+}
+
+export function refuseComposition(reason: string): never {
+  throw new AxisError("E_INVALID_ARGUMENT", "The host composition is incomplete", { reason });
+}
+
+export const isPty = (p: unknown): p is PtyPort => typeof (p as { spawn?: unknown } | null)?.spawn === "function";
+
+/**
+ * Stops the live CLI and composer runs of a project's workspaces (docs/design/project-registration-and-trust.md §5.4): a run
+ * does not outlive the trust it started under, so a revoke (`projects.trust` false) or a lost binding ends them. It is a stop,
+ * not a rollback. Every step is best effort and never throws: a run that ended meanwhile refuses its stop harmlessly.
+ *
+ * It runs inside the PROJECT MUTEX (the same instance the start handlers hold across the gate and the start), taken with
+ * `exclusive` (it queues like an unrelated caller even when fired from inside a holder's call chain): a start that passed the gate
+ * before the revoke, or was already waiting, finishes recording its run first and is then stopped here; one that comes after meets
+ * the revoked record at its own gate. No run that the revoke should end survives it. The stop waits for the current holder (a
+ * commit or push in progress, bounded by that method's own timeout); the revoke's answer does not wait for the stop.
+ */
+export function createProjectRunStopper(deps: {
+  readonly mutex: () => Pick<ProjectMutex, "exclusive"> | undefined;
+  readonly journal: () => Pick<Journal, "listWorkspaces"> | undefined;
+  readonly runs: () => Pick<RunsService, "list" | "stop"> | undefined;
+  readonly composer: () => { list(o: { readonly workspaceId?: string; readonly limit: number }): readonly { readonly runId: string; readonly endedAt: string | null }[]; cancel(id: string): unknown } | undefined;
+}): (projectId: string) => void {
+  const ended = new Set<string>(RUN_TERMINAL_STATES);
+  const quietly = (f: () => unknown): void => {
+    try {
+      f();
+    } catch {
+      // ended meanwhile, or the service is gone: nothing left to stop
+    }
+  };
+  const stopAll = (projectId: string): void =>
+    quietly(() => {
+      for (const ws of deps.journal()?.listWorkspaces() ?? []) {
+        if (ws.projectId !== projectId) continue;
+        for (const run of deps.runs()?.list({ workspaceId: ws.id, limit: 200 }) ?? []) if (!ended.has(run.state)) quietly(() => deps.runs()?.stop(run.runId, "daemon"));
+        for (const run of deps.composer()?.list({ workspaceId: ws.id, limit: 200 }) ?? []) if (run.endedAt === null) quietly(() => deps.composer()?.cancel(run.runId));
+      }
+    });
+  return (projectId) => {
+    const mutex = deps.mutex();
+    if (mutex === undefined) return stopAll(projectId);
+    // Not awaited by the caller (a revoke answers at once); a failure of the mutex itself still stops, outside it.
+    void Promise.resolve()
+      // `exclusive`, never the re-entrant `run`: a revoke fired from inside a call that holds the project (the gate's binding_lost,
+      // inside a start handler) must still queue behind every start already waiting, so none of them records a run after the stop.
+      .then(() => mutex.exclusive(projectId, async () => stopAll(projectId)))
+      .catch(() => stopAll(projectId));
+  };
+}
+
+/**
+ * The host redactor's secret check for message deliveries (messages-contract.md section 11): the providers' own check
+ * (windowed, so a long body is judged whole), so a body it matches is withheld before the providers would refuse it.
+ */
+export function messageSecretCheck(redactor: Redactor): (text: string) => boolean {
+  const check = providerRedactor(redactor);
+  return (text) => check.containsSecret(text);
+}
+
+/** What compose's messaging option turns on (PV-M6; both default false; `cliEndpoint` needs `enabled`). PV-G4 reads `enabled`. */
+export interface MessagingOptions {
+  readonly enabled?: boolean;
+  readonly cliEndpoint?: boolean;
+}
+/** A CLI run's endpoint as the run's spawn needs it. */
+export interface CliEndpoints {
+  mint(runId: string): { readonly endpointId: string; readonly token: string } | undefined;
+  revoke(runId: string): void;
+}
+
+/**
+ * The CLI endpoint relay wired to the pty control channel (PV-M6 slice 2), or undefined: only with `messaging.enabled` AND
+ * `messaging.cliEndpoint` (both off by default) and a pty port that relays. Each relayed message goes to the daemon's relay
+ * with the channel's mark; its answers go back on the channel; shutdown writes the pending aggregated failure rows.
+ */
+export function wireCliEndpoints(
+  o: MessagingOptions | undefined,
+  pty: unknown,
+  endpoints: { readonly relay: EndpointRelay; readonly source: symbol; readonly onSettings?: (l: (e: MessagingSettingsEvent) => void) => () => void },
+  cleanups: (() => void)[],
+): CliEndpoints | undefined {
+  const port = pty as Partial<PtyRelayPort>;
+  if (o?.enabled !== true || o.cliEndpoint !== true || typeof port.onRelay !== "function" || typeof port.relay !== "function") return undefined;
+  const send = port.relay.bind(port);
+  const sub = port.onRelay((m) => void endpoints.relay.onRelay(endpoints.source, m).then((outs) => outs.forEach((out) => send(out)), () => undefined));
+  // Slice 3: a worker's messaging turned off revokes its endpoints; a pause drops the connections of the senders it pauses.
+  const unsettle = endpoints.onSettings?.((e) => (e.kind === "cliMessagingOff" ? endpoints.relay.revokeWorker(e.agentId) : endpoints.relay.dropPaused(e.projectId)).forEach((out) => send(out)));
+  cleanups.push(() => {
+    endpoints.relay.flush();
+    sub.dispose();
+    unsettle?.();
+  });
+  return {
+    mint: (runId) => endpoints.relay.mint(runId),
+    revoke: (runId) => {
+      const out = endpoints.relay.revoke(runId);
+      if (out !== undefined) send(out);
+    },
+  };
+}
+
+/**
+ * The pty port a CLI run spawns through: with endpoints, the run's endpoint is minted at spawn and handed to the pty process
+ * (`messagesEndpoint`), and revoked when the spawn fails or the run's process exits (the endpoint closes at once, not at the
+ * next relayed message). Without them (`endpoints()` undefined: the default) the port is used as it is.
+ */
+export function cliEndpointPty(pty: PtyPort, endpoints: () => CliEndpoints | undefined): PtyPort {
+  return {
+    async spawn(spec) {
+      const e = endpoints();
+      const minted = e?.mint(spec.runId);
+      if (e === undefined || minted === undefined) return pty.spawn(spec);
+      try {
+        const handle = await pty.spawn({ ...spec, messagesEndpoint: { endpoint: minted.endpointId, token: minted.token } });
+        handle.onExit(() => e.revoke(spec.runId));
+        return handle;
+      } catch (err) {
+        e.revoke(spec.runId);
+        throw err;
+      }
+    },
+  };
 }

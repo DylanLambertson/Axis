@@ -53,13 +53,17 @@ export async function settle(rounds = 20): Promise<void> {
   for (let i = 0; i < rounds; i++) await new Promise<void>((r) => setImmediate(r));
 }
 
-/** Polls a condition by yielding to the event loop, bounded by iterations rather than by a clock. */
-export async function until(cond: () => boolean, iterations = 50_000): Promise<void> {
-  for (let i = 0; i < iterations; i++) {
-    if (cond()) return;
-    await new Promise<void>((r) => setImmediate(r));
+/**
+ * Waits until `cond` is true. The guard is only a hang guard (real git children and a loaded host can take
+ * seconds); it is never the condition. A loop that gives up early fails a correct test, so the guard is long
+ * and the failure names what was awaited. The first rounds yield with setImmediate, then it polls every 2 ms.
+ */
+export async function until(cond: () => boolean, what = "the awaited condition", guardMs = 120_000): Promise<void> {
+  const end = Date.now() + guardMs;
+  for (let i = 0; !cond(); i++) {
+    if (Date.now() > end) throw new Error(`${what} did not become true within the ${guardMs} ms hang guard`);
+    await new Promise<void>((r) => (i < 50 ? setImmediate(r) : setTimeout(r, 2)));
   }
-  throw new Error("condition never became true");
 }
 
 export class ManualClock implements Clock {

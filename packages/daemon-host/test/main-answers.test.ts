@@ -43,7 +43,7 @@ function rig(store: Store, over: Partial<MainAnswersOptions> = {}) {
     anchors: store,
     dialog: { confirm: (r) => new Promise<boolean>((resolve, reject) => void shown.push({ ...r, answer: resolve, fail: () => reject(new Error("x")) })) },
     windows: { codeWindowOf: (w) => (w === "w1" ? 1 : w === "w2" ? 2 : undefined) },
-    trust: { projectPath: (p) => (p === "p-1" ? "/home/u/src/repo" : undefined), trustModel: () => JSON.stringify({ uriTrustInfo: [{ uri: { scheme: "file", authority: "", path: "/home/u/src" }, trusted: true }] }) },
+    trust: { trustModel: () => JSON.stringify({ uriTrustInfo: [{ uri: { scheme: "file", authority: "", path: "/home/u/src" }, trusted: true }] }) },
     settings: { inspect: (k) => settings[k] ?? {} },
     platform: "linux",
     now: () => now,
@@ -292,16 +292,16 @@ test("native.confirm: dispose aborts an open dialog and clears its bound", async
 
 // ---- trust.check --------------------------------------------------------------------------------------------------
 
-const check = (over: Record<string, string> = {}) => ({ type: "trust.check", requestId: "t1", windowId: "w1", workspaceId: "ws-1", projectId: "p-1", ...over }) as OutboundMessage;
+const check = (over: Record<string, string> = {}) => ({ type: "trust.check", requestId: "t1", windowId: "w1", workspaceId: "ws-1", projectId: "p-1", projectPath: "/home/u/src/repo", ...over }) as OutboundMessage;
 
-test("trust.check: true only for a live window, a known project and a repository inside a trusted folder", async () => {
+test("trust.check: true only for a live window and a project path (sent by the host from its journal) inside a trusted folder", async () => {
   const r = rig(new Store({ kind: "absent" }));
   r.ask(check());
   r.ask(check({ windowId: "w9" }));
-  r.ask(check({ projectId: "p-2" }));
+  r.ask(check({ projectPath: "/home/u/elsewhere/repo" }));
   assert.deepEqual(r.replies.map((x) => x["trusted"]), [true, false, false]);
   assert.deepEqual(r.replies[0], { type: "trust.result", requestId: "t1", trusted: true });
-  const model = (m: string | undefined) => rig(new Store({ kind: "absent" }), { trust: { projectPath: () => "/home/u/src/repo", trustModel: () => m } });
+  const model = (m: string | undefined) => rig(new Store({ kind: "absent" }), { trust: { trustModel: () => m } });
   for (const [m, want] of [
     [undefined, false],
     ["not json", false],
@@ -318,24 +318,24 @@ test("trust.check: true only for a live window, a known project and a repository
     x.ask(check());
     assert.equal(x.replies[0]!["trusted"], want, String(m));
   }
-  const thrower = rig(new Store({ kind: "absent" }), { trust: { projectPath: () => { throw new Error("x"); }, trustModel: () => undefined } });
+  const thrower = rig(new Store({ kind: "absent" }), { trust: { trustModel: () => { throw new Error("x"); } } });
   thrower.ask(check());
   assert.equal(thrower.replies[0]!["trusted"], false);
-  const dotted = rig(new Store({ kind: "absent" }), { trust: { projectPath: () => "/home/u/src/../../etc", trustModel: () => JSON.stringify({ uriTrustInfo: [{ uri: "file:///home/u/src", trusted: true }] }) } });
-  dotted.ask(check());
+  const dotted = rig(new Store({ kind: "absent" }), { trust: { trustModel: () => JSON.stringify({ uriTrustInfo: [{ uri: "file:///home/u/src", trusted: true }] }) } });
+  dotted.ask(check({ projectPath: "/home/u/src/../../etc" }));
   assert.equal(dotted.replies[0]!["trusted"], false, "a path with .. segments is never trusted");
 });
 
 test("trust.check: Windows and macOS compare without case, Linux with", async () => {
   const model = JSON.stringify({ uriTrustInfo: [{ uri: { scheme: "file", authority: "", path: "/c:/Users/U/Src" }, trusted: true }] });
-  const win = rig(new Store({ kind: "absent" }), { platform: "win32", trust: { projectPath: () => "C:\\users\\u\\src\\Repo", trustModel: () => model } });
-  win.ask(check());
+  const win = rig(new Store({ kind: "absent" }), { platform: "win32", trust: { trustModel: () => model } });
+  win.ask(check({ projectPath: "C:\\users\\u\\src\\Repo" }));
   assert.equal(win.replies[0]!["trusted"], true);
-  const mac = rig(new Store({ kind: "absent" }), { platform: "darwin", trust: { projectPath: () => "/Users/U/Src/repo", trustModel: () => JSON.stringify({ uriTrustInfo: [{ uri: "file:///users/u/src", trusted: true }] }) } });
-  mac.ask(check());
+  const mac = rig(new Store({ kind: "absent" }), { platform: "darwin", trust: { trustModel: () => JSON.stringify({ uriTrustInfo: [{ uri: "file:///users/u/src", trusted: true }] }) } });
+  mac.ask(check({ projectPath: "/Users/U/Src/repo" }));
   assert.equal(mac.replies[0]!["trusted"], true);
-  const linux = rig(new Store({ kind: "absent" }), { trust: { projectPath: () => "/Users/U/Src/repo", trustModel: () => JSON.stringify({ uriTrustInfo: [{ uri: "file:///users/u/src", trusted: true }] }) } });
-  linux.ask(check());
+  const linux = rig(new Store({ kind: "absent" }), { trust: { trustModel: () => JSON.stringify({ uriTrustInfo: [{ uri: "file:///users/u/src", trusted: true }] }) } });
+  linux.ask(check({ projectPath: "/Users/U/Src/repo" }));
   assert.equal(linux.replies[0]!["trusted"], false);
 });
 

@@ -34,8 +34,10 @@ describe('GIT-ENV-1', () => {
     const runner = createExecGitRunner({ gitPath: '/usr/bin/env', baseEnv: dirty });
     const res = await runner.run([], { cwd: process.cwd() });
     const names = res.stdout.split('\n').filter(Boolean).map((l) => l.split('=')[0]).sort();
-    assert.deepEqual(names, ['GIT_TERMINAL_PROMPT', 'HOME', 'LANG', 'LC_ALL', 'PATH', 'TMPDIR', 'USER']);
+    assert.deepEqual(names, ['GIT_ALLOW_PROTOCOL', 'GIT_NO_LAZY_FETCH', 'GIT_TERMINAL_PROMPT', 'HOME', 'LANG', 'LC_ALL', 'PATH', 'TMPDIR', 'USER']);
     assert.match(res.stdout, /^GIT_TERMINAL_PROMPT=0$/m);
+    assert.match(res.stdout, /^GIT_NO_LAZY_FETCH=1$/m);
+    assert.match(res.stdout, /^GIT_ALLOW_PROTOCOL=\/$/m);
     const withIndex = await runner.run([], { cwd: process.cwd(), extraEnv: { GIT_INDEX_FILE: '/tmp/i' } });
     assert.match(withIndex.stdout, /^GIT_INDEX_FILE=\/tmp\/i$/m);
   });

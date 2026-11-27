@@ -15,6 +15,21 @@ test("RR-N4: the node runner reports truncated when stdout passes its limit, and
   assert.ok(big.stdout.length > 40);
 });
 
+test("a call's own output cap keeps at most that many characters, below the runner's limit only, and must be an integer", async () => {
+  const f = fixture();
+  const req = { argv: ["var", "-l"], cwd: f.wt.workTree, env: { PATH: process.env["PATH"] ?? "", HOME: f.home }, context: "pty" as const };
+  const runner = createNodeRunner({ allowPtyContext: true, allowUnpinnedGit: true, maxOutput: 60 });
+  const capped = await runner.run({ ...req, maxOutput: 25, raw: true });
+  assert.deepEqual([capped.stdout.length, capped.truncated, capped.code], [25, true, 0]);
+  const above = await runner.run({ ...req, maxOutput: 1000 });
+  assert.deepEqual([above.stdout.length, above.truncated], [60, true], "the runner's own limit still applies");
+  const none = await runner.run({ ...req, maxOutput: 0 });
+  assert.deepEqual([none.stdout, none.truncated], ["", true]);
+  for (const bad of [-1, 1.5, Number.NaN, Infinity]) {
+    await assert.rejects(runner.run({ ...req, maxOutput: bad }), /output cap/, String(bad));
+  }
+});
+
 test("RR-N5: a normal daemon exit kills git's live process groups (a crash cannot; that is documented)", async () => {
   const { spawnSync } = await import("node:child_process");
   const { existsSync, readFileSync, writeFileSync } = await import("node:fs");
@@ -38,6 +53,9 @@ test("RR-N5: a normal daemon exit kills git's live process groups (a crash canno
   assert.equal(r.status, 0, r.stderr);
   assert.ok(existsSync(pidFile));
   const pid = Number(readFileSync(pidFile, "utf8").trim());
-  await new Promise((res) => setTimeout(res, 300));
+  // The group is killed at exit, but the process is reaped on its own turn: wait for it to be gone (bounded, named) rather than for a duration.
+  for (const end = Date.now() + 10_000; Date.now() < end; await new Promise((res) => setTimeout(res, 10))) {
+    try { process.kill(pid, 0); } catch { break; }
+  }
   assert.throws(() => process.kill(pid, 0), "the grandchild did not outlive the daemon's exit");
 });

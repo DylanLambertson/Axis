@@ -62,6 +62,8 @@ export function buildGitEnv(
   return out;
 }
 
+const PINNED = new Set(['GIT_NO_LAZY_FETCH', 'GIT_ALLOW_PROTOCOL']);
+
 export interface ExecGitRunnerOptions {
   readonly gitPath?: string;
   readonly baseEnv?: Readonly<Record<string, string | undefined>>;
@@ -102,10 +104,20 @@ export function createExecGitRunner(options: ExecGitRunnerOptions = {}): GitRunn
   return {
     gitPath,
     run(args, opts) {
-      const env = {
+      const env: Record<string, string> = {
         ...buildGitEnv(options.baseEnv ?? process.env, options.platform),
         ...opts.extraEnv,
       };
+      // Set last, after any caller variable. A read that needs an object a partial clone lacks would otherwise fetch it
+      // from the promisor remote, and the repository's own config picks the program that fetch runs (an uploadpack, a
+      // remote helper, core.sshCommand). GIT_NO_LAZY_FETCH (git 2.44) stops the fetch; GIT_ALLOW_PROTOCOL=/ (git 2.12)
+      // names a protocol no helper can have, so on an older git the fetch finds no transport it may start. An empty value
+      // would not do: it admits the empty `remote.<name>.vcs` helper.
+      // Windows reads variable names case-insensitively, so a caller's `git_allow_protocol` would be a second copy of the
+      // pin with no defined winner: drop every spelling first (on POSIX another spelling is a different variable git ignores).
+      for (const k of Object.keys(env)) if (PINNED.has(k.toUpperCase())) delete env[k];
+      env['GIT_NO_LAZY_FETCH'] = '1';
+      env['GIT_ALLOW_PROTOCOL'] = '/';
       return new Promise<GitResult>((resolve, reject) => {
         const child = spawn(gitPath, [...args], {
           cwd: opts.cwd,

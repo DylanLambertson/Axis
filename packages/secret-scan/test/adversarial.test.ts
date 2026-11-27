@@ -57,13 +57,29 @@ test("linear-time: a 1 MiB single line of each hostile shape finishes, as a patc
 });
 
 test("doubling the input does not much more than double the time (not quadratic)", () => {
+  // CPU time of the (synchronous) scan, not wall time, and the best of several runs per size: a load spike hits some runs, not
+  // all, so the minimum is the work itself. Each take must cost at least MIN_MS of CPU so timer and cache noise stay small
+  // next to it: the small size is scaled per shape until it does (a shape that scans fast needs more input).
+  // Linear growth gives about 4x for four times the input and a quadratic scan about 16x; the limit is 8x (plus a floor).
+  // Known limit: a very mild quadratic (a few percent of the linear cost at these sizes) is not detected; a clearly quadratic
+  // scan, which is what stalls on a hostile input, is.
+  const MIN_MS = 150;
+  const best = (f: () => number, n: number): number => Math.min(...Array.from({ length: n }, f));
   for (const name of ["name repeats", "scheme repeats", "bearer repeats", "assignment values", "many runs"]) {
     const unit = (shapes[name] as string).slice(0, 4096);
-    const run = (n: number): number => timed(() => scan(patch("a.txt", [repeat(unit, n)]))).ms;
+    const run = (n: number): number => {
+      const input = patch("a.txt", [repeat(unit, n)]);
+      const before = process.cpuUsage();
+      scan(input);
+      const used = process.cpuUsage(before);
+      return (used.user + used.system) / 1000;
+    };
     run(256 * 1024); // warm up
-    const small = Math.max(run(512 * 1024), 20);
-    const big = run(2 * MB);
-    assert.ok(big < small * 12 + 200, `${name}: ${small} ms then ${big} ms for four times the input`);
+    const probe = best(() => run(256 * 1024), 2);
+    const factor = Math.min(8, Math.max(1, Math.ceil(MIN_MS / Math.max(probe, 1))));
+    const small = Math.max(best(() => run(256 * 1024 * factor), 5), 10);
+    const big = best(() => run(4 * 256 * 1024 * factor), 4);
+    assert.ok(big < small * 8 + 20, `${name}: ${small} ms then ${big} ms (best of 5 and 4, CPU time, ${factor * 256} KiB then four times that)`);
   }
 });
 

@@ -277,6 +277,31 @@ function base64Variants(raw: Buffer): string[] {
 }
 
 /**
+ * Every form `Redactor.registerSecret` redacts for `value`: raw, NFC and NFD, JSON-escaped, URL-encoded (either case), hex
+ * (either case), base64 and base64url (padded or not); forms shorter than `MIN_REGISTERED_SECRET_LENGTH` are left out. One
+ * list for the redactor and for any caller that must find a secret in its encoded forms (C7-F4).
+ */
+export function secretForms(value: string): string[] {
+  const variants = new Set<string>();
+  for (const form of new Set([value, value.normalize("NFC"), value.normalize("NFD")])) {
+    const buf = Buffer.from(form, "utf8");
+    const enc = encodeURIComponent(form);
+    for (const v of [
+      form,
+      JSON.stringify(form).slice(1, -1),
+      enc,
+      enc.replace(/%[0-9A-F]{2}/g, (m) => m.toLowerCase()),
+      buf.toString("hex"),
+      buf.toString("hex").toUpperCase(),
+      ...base64Variants(buf),
+    ]) {
+      if (v.length >= MIN_REGISTERED_SECRET_LENGTH) variants.add(v);
+    }
+  }
+  return [...variants];
+}
+
+/**
  * Deterministic redaction of strings and structured payloads. One instance per
  * process holds the explicitly registered secret values (for example the
  * connection vault's API keys); the pattern rules are fixed.
@@ -298,25 +323,17 @@ export class Redactor {
         `A registered secret must be a string of at least ${MIN_REGISTERED_SECRET_LENGTH} characters`,
       );
     }
-    const variants = new Set<string>();
-    for (const form of new Set([value, value.normalize("NFC"), value.normalize("NFD")])) {
-      const buf = Buffer.from(form, "utf8");
-      const enc = encodeURIComponent(form);
-      for (const v of [
-        form,
-        JSON.stringify(form).slice(1, -1),
-        enc,
-        enc.replace(/%[0-9A-F]{2}/g, (m) => m.toLowerCase()),
-        buf.toString("hex"),
-        buf.toString("hex").toUpperCase(),
-        ...base64Variants(buf),
-      ]) {
-        if (v.length >= MIN_REGISTERED_SECRET_LENGTH) variants.add(v);
-      }
-    }
-    const next = new Set([...this.#literals, ...variants]);
+    const next = new Set([...this.#literals, ...secretForms(value)]);
     // Longest first so a secret that contains another is replaced whole.
     this.#literals = [...next].sort((a, b) => b.length - a.length || (a < b ? -1 : 1));
+  }
+
+  /**
+   * How many registered forms the redactor holds. It only grows (nothing unregisters a secret), so a caller may keep a "no
+   * secret" verdict for a text while this number is unchanged, and must judge the text again once it grows.
+   */
+  get registeredForms(): number {
+    return this.#literals.length;
   }
 
   /** The rules and registered literals, on a string already made well-formed and bounded. */

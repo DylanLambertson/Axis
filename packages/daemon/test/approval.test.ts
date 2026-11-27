@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { test, type TestContext } from "node:test";
 import { ApprovalError, DaemonError, type ApprovalContentHook } from "../src/index.js";
 import { approveAndRun, fakeGate, sha } from "./gate.js";
-import { CONTRACT, KEY1, KEY2, hello, req, rig, type Rig } from "./harness.js";
+import { CONTRACT, KEY1, KEY2, drain as settle, hello, req, rig, untilTrue, type Rig } from "./harness.js";
 
 async function ready(t: TestContext, options: Parameters<typeof rig>[0] = {}): Promise<Rig> {
   const r = rig(options);
@@ -13,7 +13,6 @@ async function ready(t: TestContext, options: Parameters<typeof rig>[0] = {}): P
   return r;
 }
 const KEY3 = "00000000-0000-4000-8000-000000000003";
-const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 async function open(r: Rig, att: string) {
   const c = r.connect(att);
   c.client.postMessage(hello());
@@ -190,27 +189,31 @@ test("a gate refusal maps to E_POLICY_DENIED or E_CONFLICT; any other gate error
 test("a cancel before the approval was spent withdraws it once; a timeout too; a spent approval is not withdrawn", async (t) => {
   const { gate, calls } = fakeGate();
   let hang = true;
-  const r = await ready(t, { gate: { ...gate, execute: (i, ref, c, a) => (hang ? new Promise(() => undefined) : gate.execute(i, ref, c, a)) } });
+  let executeCalls = 0;
+  const r = await ready(t, { gate: { ...gate, execute: (i, ref, c, a) => (executeCalls++, hang ? new Promise(() => undefined) : gate.execute(i, ref, c, a)) } });
   r.daemon.register(CONTRACT, 1, { danger: (c) => new Promise((res) => c.signal.addEventListener("abort", () => res({ done: true }))) });
   const first = await approveAndRun(r, "c", { id: "ws-1" });
-  await wait(20);
+  await untilTrue(() => executeCalls === 1, 5_000, "the approved retry reached the gate");
   r.send({ v: 1, cancel: first });
   assert.equal((await r.inbox.response(first)).error?.code, "E_CANCELLED");
-  await wait(20);
+  await untilTrue(() => calls.withdraw.length >= 1, 5_000, "the cancel withdrew the approval");
+  await settle(); // once means once: nothing more arrives after one settle
   assert.deepEqual(calls.withdraw.map((w) => w.challengeId), ["1".padStart(43, "A")]);
 
   r.send(req("t-1", "danger", { id: "ws-2" }, { idempotencyKey: KEY2 }));
   await r.inbox.response("t-1");
   r.send(req("t-2", "danger", { id: "ws-2", approval: { challengeId: "2".padStart(43, "A") } }, { idempotencyKey: KEY2, timeoutMs: 20 }));
   assert.equal((await r.inbox.response("t-2")).error?.code, "E_TIMEOUT");
-  await wait(20);
+  await untilTrue(() => calls.withdraw.some((w) => w.challengeId === "2".padStart(43, "A")), 5_000, "the timeout withdrew the approval");
+  await settle();
   assert.equal(calls.withdraw.filter((w) => w.challengeId === "2".padStart(43, "A")).length, 1);
 
   hang = false;
   const spent = await approveAndRun(r, "s", { id: "ws-3", __key: KEY3 });
-  await wait(20);
+  await untilTrue(() => calls.execute.some((e) => e.challengeId === "3".padStart(43, "A")), 5_000, "the third approval was spent");
   r.send({ v: 1, cancel: spent });
   await r.inbox.response(spent);
+  await settle(); // a withdrawal would have been issued within these turns
   assert.equal(calls.withdraw.filter((w) => w.challengeId === "3".padStart(43, "A")).length, 0, "spent before the cancel: nothing to withdraw");
 });
 
@@ -224,7 +227,8 @@ test("closing a connection withdraws its challenges once, and the gate sees one 
   other.client.postMessage(req("w2", "danger", { id: "ws-9" }, { idempotencyKey: KEY1 }));
   await other.inbox.response("w2");
   r.client.close();
-  await wait(40);
+  await untilTrue(() => calls.withdrawConnection.length >= 1, 5_000, "the close withdrew the connection's challenges");
+  await settle(); // once means once
   assert.deepEqual(calls.withdrawConnection, ["conn-1".padEnd(22, "_")]);
   assert.equal(records.get("1".padStart(43, "A"))?.state, "withdrawn");
   assert.equal(records.get("2".padStart(43, "A"))?.state, "open", "another connection's challenge is untouched");
@@ -242,12 +246,14 @@ test("a withdrawn challenge cannot be spent", async (t) => {
 
 test("a gate whose withdraw throws is reported locally and does not change the answer", async (t) => {
   const { gate } = fakeGate();
-  const r = await ready(t, { gate: { ...gate, execute: () => new Promise(() => undefined), withdraw: () => { throw new Error("gone"); } } });
+  let executed = false;
+  const r = await ready(t, { gate: { ...gate, execute: () => ((executed = true), new Promise(() => undefined)), withdraw: () => { throw new Error("gone"); } } });
   r.daemon.register(CONTRACT, 1, { danger: () => assert.fail("must not run") });
   const id = await approveAndRun(r, "e", { id: "ws-1" });
-  await wait(20);
+  await untilTrue(() => executed, 5_000, "the approved retry reached the gate");
   r.send({ v: 1, cancel: id });
   assert.equal((await r.inbox.response(id)).error?.code, "E_CANCELLED");
-  await wait(20);
+  await untilTrue(() => r.internal.length >= 1, 5_000, "the failing withdraw was reported locally");
+  await settle(); // reported once
   assert.equal(r.internal.length, 1);
 });

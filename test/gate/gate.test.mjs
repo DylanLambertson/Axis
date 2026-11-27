@@ -43,7 +43,8 @@ function setup() {
 
 /** The caller's environment without GATE_* knobs or git variables that would steer the child. */
 function cleanEnv() {
-  return Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("GATE_") && !k.startsWith("GIT_")));
+  // AXIS_REQUIRE_OVERLAY_TESTS is a builder's own setting: the throwaway repository never has an overlay tree (PV-X3).
+  return Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("GATE_") && !k.startsWith("GIT_") && k !== "AXIS_REQUIRE_OVERLAY_TESTS"));
 }
 
 function runGate(cwd, env = {}) {
@@ -186,6 +187,20 @@ function fakeGitleaks(dir, versionText) {
   return file;
 }
 
+test("PV-X3: without a tree the overlay tests are a loud skip; AXIS_REQUIRE_OVERLAY_TESTS=1 makes that a failure", () => {
+  const dir = setup();
+  try {
+    commit(dir, "a.txt", "one\n", "feat: add a file");
+    let r = runGate(dir);
+    assert.match(r.out, /SKIP {2}overlay tests/);
+    assert.match(r.out, /WARNING: overlay tests did not run \(no Code OSS tree: set GATE_OVERLAY_TREE/);
+    r = runGate(dir, { AXIS_REQUIRE_OVERLAY_TESTS: "1" });
+    assert.equal(r.code, 1, r.out);
+    assert.match(r.out, /FAIL {2}overlay tests/);
+    assert.match(r.out, /required by AXIS_REQUIRE_OVERLAY_TESTS=1/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 test("gitleaks: a binary whose version is not the CI pin is refused", { skip: process.platform === "win32" }, () => {
   const dir = setup();
   try {
@@ -217,7 +232,120 @@ test("gitleaks: the recorded binary hash is enforced and reported", { skip: proc
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
-test("the npm test runner runs the renderer-imports suite", () => {
+test("the npm test runner runs every test/code-oss suite (the renderer boundary pins among them)", () => {
   const src = readFileSync(fileURLToPath(new URL("../../scripts/test-all.mjs", import.meta.url)), "utf8");
-  assert.match(src, /test\/code-oss\/renderer-imports\.test\.mjs/);
+  assert.match(src, /\["--test", "test\/code-oss\/\*\.test\.mjs"\]/, "a glob, so a new pin file cannot be left out (mutant: a named list)");
+});
+
+// scripts/test-all.mjs: the runner never stalls or dies silently. Each scenario runs the real runner
+// in a child with its own hard external limit, so a disabled limit fails by name and fast, never by hanging.
+import { spawn } from "node:child_process";
+
+const testAll = fileURLToPath(new URL("../../scripts/test-all.mjs", import.meta.url));
+const node = process.execPath;
+
+function seamEnv(suites, env) {
+  const e = { ...process.env, AXIS_TEST_ALL_SUITES_JSON: JSON.stringify(suites), AXIS_TEST_ALL_SEAM: "runner-self-test", ...env };
+  delete e.CI;
+  return e;
+}
+
+function runner(suites, env, hardMs = 15_000) {
+  return new Promise((resolve) => {
+    const child = spawn(node, [testAll], { detached: true, stdio: ["ignore", "pipe", "pipe"], env: seamEnv(suites, env) });
+    let out = "";
+    child.stdout.on("data", (d) => { if (out.length < 1_000_000) out += d; });
+    child.stderr.on("data", (d) => { if (out.length < 1_000_000) out += d; });
+    let hung = false;
+    const t = setTimeout(() => { hung = true; try { process.kill(-child.pid, "SIGKILL"); } catch { /* gone */ } }, hardMs);
+    child.on("close", (code) => { clearTimeout(t); resolve({ code, out, hung }); });
+  });
+}
+
+test("test-all: a spinning suite is killed at its limit, named with its last output, and the runner exits non-zero", { timeout: 25_000 }, async () => {
+  const r = await runner([["spin", node, ["-e", "console.log('about to spin'); for (;;) {}"]]], { AXIS_TEST_SUITE_TIMEOUT_MS: "700" });
+  assert.equal(r.hung, false, "the runner must have killed the spinning suite within 15 s of its 0.7 s limit");
+  assert.match(r.out, /== spin: FAILED \(0 pass, 0 fail, TIMED OUT after 1s \(last output: about to spin\)\)/);
+  assert.notEqual(r.code, 0, "a timed-out suite fails the run");
+});
+
+test("test-all: output past the cap kills the suite, says so, stops echoing, and the runner exits non-zero", { timeout: 25_000 }, async () => {
+  const r = await runner([["flood", node, ["-e", "const b='x'.repeat(65536); setInterval(()=>process.stdout.write(b),1)"]]], { AXIS_TEST_OUTPUT_CAP_BYTES: "200000" });
+  assert.equal(r.hung, false, "the runner must have killed the flooding suite within 15 s");
+  assert.match(r.out, /== flood: FAILED .*OUTPUT CAP exceeded \(200000 bytes/);
+  assert.ok(r.out.length < 400_000, "output past the cap is not echoed");
+  assert.notEqual(r.code, 0, "a capped suite fails the run");
+});
+
+test("test-all: pass counts, a kill signal and an exit status are reported; a leftover grandchild is killed", { timeout: 25_000 }, async () => {
+  const pidFile = join(tmpdir(), `axis-rs-${process.pid}`);
+  const orphan = `const c=require('child_process').spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore'});c.unref();require('fs').writeFileSync(${JSON.stringify(pidFile)},String(c.pid));`;
+  const r = await runner([["ok", node, ["-e", "console.log('# pass 3\\n# fail 0')"]], ["sig", node, ["-e", "process.kill(process.pid,'SIGKILL')"]], ["exit", node, ["-e", "process.exit(3)"]], ["orphan", node, ["-e", orphan]]], {});
+  assert.equal(r.hung, false, "the runner must finish within 15 s");
+  assert.match(r.out, /== ok: ok \(3 pass, 0 fail\)/);
+  assert.match(r.out, /== sig: FAILED \(0 pass, 0 fail, killed by SIGKILL\)/);
+  assert.match(r.out, /== exit: FAILED \(0 pass, 0 fail, exit 3\)/);
+  const pid = Number(readFileSync(pidFile, "utf8"));
+  rmSync(pidFile, { force: true });
+  let alive = true;
+  for (let i = 0; i < 30 && alive; i++) { try { process.kill(pid, 0); await new Promise((res) => setTimeout(res, 100)); } catch { alive = false; } }
+  if (alive) { try { process.kill(pid, "SIGKILL"); } catch { /* gone */ } }
+  assert.equal(alive, false, "the runner must have killed the suite's leftover child");
+});
+
+import { Writable } from "node:stream";
+import { runSuite } from "../../scripts/gate/run-suite.mjs";
+
+test("run-suite: a suite that runs past the sample point prints memory and its biggest processes; a killed one prints them once", { timeout: 20_000, skip: process.platform !== "linux" }, async () => {
+  const parts = [];
+  const sink = new Writable({ write(c, _e, cb) { parts.push(c); cb(); } });
+  await runSuite("slow", node, ["-e", "setTimeout(()=>{},700)"], { sampleMs: 100, sampleAfterMs: 0, out: sink, err: sink });
+  const text = Buffer.concat(parts).toString("utf8");
+  assert.match(text, /== sample \(slow, \+\d+s, running\): .*Mem:/s);
+  // The shape of a process line (rss, pid, command), never which program is among the top five: that is the host's business.
+  assert.match(text, /\n    \d+ +\d+ +\S/, "at least one process line: rss, pid, command");
+  const killed = [];
+  const sink2 = new Writable({ write(c, _e, cb) { killed.push(c); cb(); } });
+  await runSuite("spin", node, ["-e", "for(;;){}"], { timeoutMs: 400, graceMs: 200, sampleMs: 0, out: sink2, err: sink2 });
+  assert.match(Buffer.concat(killed).toString("utf8"), /== sample \(spin, \+\d+s, timeout\): /);
+});
+
+test("test-all: SIGTERM during a suite stops the runner with 143 and no queued suite starts", { timeout: 25_000 }, async () => {
+  const suites = [["first", node, ["-e", "console.log('FIRST STARTED'); setInterval(()=>{},1000)"]], ["second", node, ["-e", "console.log('NEXT RAN')"]]];
+  const child = spawn(node, [testAll], { detached: true, stdio: ["ignore", "pipe", "pipe"], env: seamEnv(suites, {}) });
+  let out = "";
+  let sent = false;
+  const hard = setTimeout(() => { try { process.kill(-child.pid, "SIGKILL"); } catch { /* gone */ } }, 15_000);
+  const code = await new Promise((resolve) => {
+    const onData = (d) => { out += d; if (!sent && out.includes("FIRST STARTED")) { sent = true; child.kill("SIGTERM"); } };
+    child.stdout.on("data", onData);
+    child.stderr.on("data", onData);
+    child.on("close", (c) => resolve(c));
+  });
+  clearTimeout(hard);
+  assert.ok(sent, "the first suite started");
+  assert.ok(!out.includes("NEXT RAN"), "no suite may start after a termination signal");
+  assert.equal(code, 143, "the runner exits 143 on SIGTERM");
+});
+
+test("test-all: the suite-list seam is refused in CI or without its marker, and a bad limit is refused", { timeout: 25_000 }, async () => {
+  const run1 = (env) => new Promise((resolve) => {
+    const c = spawn(node, [testAll], { stdio: ["ignore", "pipe", "pipe"], env });
+    let out = "";
+    c.stdout.on("data", (d) => { out += d; });
+    c.stderr.on("data", (d) => { out += d; });
+    c.on("close", (code) => resolve({ code, out }));
+  });
+  let r = await run1({ ...seamEnv([], {}), CI: "true" });
+  assert.equal(r.code, 2, r.out);
+  assert.match(r.out, /test-only seam; refused/);
+  const noMarker = seamEnv([], {});
+  delete noMarker.AXIS_TEST_ALL_SEAM;
+  r = await run1(noMarker);
+  assert.equal(r.code, 2, r.out);
+  for (const bad of [{ AXIS_TEST_SUITE_TIMEOUT_MS: "abc" }, { AXIS_TEST_OUTPUT_CAP_BYTES: "0" }]) {
+    r = await run1(seamEnv([], bad));
+    assert.equal(r.code, 2, r.out);
+    assert.match(r.out, /must be a positive integer/);
+  }
 });

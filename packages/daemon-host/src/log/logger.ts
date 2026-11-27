@@ -30,6 +30,8 @@ export const LOG_EVENTS = [
   "dispose.failed",
   "log.dropped",
   "log.invalid",
+  // PV-D2 slice 2: one per `gh` run of the forge binding, with the closed state (`reason`) and the exit code (`code`) only.
+  "forge.list",
 ] as const;
 export type LogEvent = (typeof LOG_EVENTS)[number];
 

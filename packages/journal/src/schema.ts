@@ -1,5 +1,11 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import type { Migration } from "@axis/audit";
+import { JOURNAL_V11 } from "./schema-v11.js";
+import { AGENTS_MIGRATION } from "./schema-agents.js";
+import { FORGE_PINS_MIGRATION } from "./schema-forge-pins.js";
+import { PAGES_MIGRATION } from "./schema-pages.js";
+import { TASKS_MIGRATION } from "./schema-tasks.js";
+import { PLUGIN_GRANTS_MIGRATION } from "./schema-plugins.js";
 
 /**
  * Journal schema, versioned in `axis_schema` under component `journal`.
@@ -317,6 +323,168 @@ export const JOURNAL_MIGRATIONS: readonly Migration[] = [
         BEGIN SELECT RAISE(ABORT, 'base_branch is recorded with its tip'); END;
     `,
   },
+  {
+    // The taint rule IAC-T (ticket PV-M0, inter-agent-communication.md section 6.6): a composer run that received content
+    // from anyone but the user is tainted for its whole life, also across a restart or a later resume of the run. The flag
+    // only goes from 0 to 1; nothing clears it. 0 for every run made before this version (no source existed then). Additive.
+    version: 8,
+    sql: `
+      ALTER TABLE composer_runs ADD COLUMN tainted INTEGER NOT NULL DEFAULT 0 CHECK (tainted IN (0, 1));
+      CREATE TRIGGER composer_runs_taint_sticky BEFORE UPDATE OF tainted ON composer_runs
+        WHEN NEW.tainted < OLD.tainted
+        BEGIN SELECT RAISE(ABORT, 'a tainted run stays tainted'); END;
+      -- INSERT OR REPLACE deletes the old row without firing a DELETE trigger, which would clear the taint: refused.
+      CREATE TRIGGER composer_runs_inserted_once BEFORE INSERT ON composer_runs
+        WHEN EXISTS (SELECT 1 FROM composer_runs WHERE run_id = NEW.run_id)
+        BEGIN SELECT RAISE(ABORT, 'a composer run is recorded once'); END;
+    `,
+  },
+  {
+    // axis.messages/1 (ticket PV-M3, inter-agent-communication.md sections 2, 4.2 and 7): threads, their participant sets,
+    // messages, who each message is addressed to, read cursors and messaging settings. Additive: new tables only.
+    //
+    // - A thread belongs to one registered project. Its `last_seq` only grows: a message must take the next one (trigger).
+    // - Participants only join (no update, no delete, by trigger): `joined_seq` is the last message before the principal
+    //   joined, so it reads messages after it and the ones addressed to it (section 4.2).
+    // - A message is never changed. Its body is the sender's raw text (escaped on every way out, never here).
+    // - `message_recipients` holds who a message is addressed to after group expansion; `counted` marks a message that
+    //   counts against the recipient's queue quotas (an agent's or a plugin's, never the user's or the system's). A
+    //   recipient row is never changed (it feeds the quotas).
+    // - Messages and their recipient rows can be deleted: the retention purge (a later slice) removes them, recipient
+    //   rows first. Threads, participants and cursors stay.
+    // - A read cursor never moves back (trigger).
+    version: 9,
+    sql: `
+      CREATE TABLE message_threads (
+        id         TEXT PRIMARY KEY CHECK (length(id) = 26 AND substr(id, 1, 4) = 'thr_' AND id NOT GLOB '*[^A-Za-z0-9_-]*'),
+        project_id TEXT NOT NULL REFERENCES projects(id),
+        created_at TEXT NOT NULL,
+        last_seq   INTEGER NOT NULL DEFAULT 0 CHECK (last_seq >= 0),
+        last_at    TEXT NOT NULL
+      ) STRICT;
+      CREATE INDEX message_threads_recent ON message_threads (last_at DESC, id);
+      CREATE TRIGGER message_threads_fixed BEFORE UPDATE OF id, project_id, created_at ON message_threads
+        BEGIN SELECT RAISE(ABORT, 'a thread keeps its id and project'); END;
+      CREATE TRIGGER message_threads_forward BEFORE UPDATE OF last_seq ON message_threads
+        WHEN NEW.last_seq < OLD.last_seq BEGIN SELECT RAISE(ABORT, 'a thread sequence only grows'); END;
+
+      CREATE TABLE message_participants (
+        thread_id  TEXT NOT NULL REFERENCES message_threads(id),
+        principal  TEXT NOT NULL CHECK (length(principal) BETWEEN 4 AND 128 AND principal NOT GLOB '*[^A-Za-z0-9:._-]*'),
+        joined_seq INTEGER NOT NULL CHECK (joined_seq >= 0),
+        ord        INTEGER NOT NULL CHECK (ord BETWEEN 0 AND 63),
+        PRIMARY KEY (thread_id, principal),
+        UNIQUE (thread_id, ord)
+      ) STRICT, WITHOUT ROWID;
+      CREATE INDEX message_participants_by_principal ON message_participants (principal, thread_id);
+      CREATE TRIGGER message_participants_kept BEFORE UPDATE ON message_participants
+        BEGIN SELECT RAISE(ABORT, 'a participant only joins'); END;
+      CREATE TRIGGER message_participants_no_delete BEFORE DELETE ON message_participants
+        BEGIN SELECT RAISE(ABORT, 'a participant only joins'); END;
+
+      CREATE TABLE agent_messages (
+        id          TEXT PRIMARY KEY CHECK (length(id) = 26 AND substr(id, 1, 4) = 'msg_' AND id NOT GLOB '*[^A-Za-z0-9_-]*'),
+        thread_id   TEXT NOT NULL REFERENCES message_threads(id),
+        seq         INTEGER NOT NULL CHECK (seq >= 1),
+        sender      TEXT NOT NULL CHECK (length(sender) <= 1024 AND json_valid(sender)),
+        sender_key  TEXT NOT NULL CHECK (length(sender_key) BETWEEN 4 AND 128),
+        recipients  TEXT NOT NULL CHECK (length(recipients) <= 8192 AND json_valid(recipients)),
+        expanded    TEXT NOT NULL CHECK (length(expanded) <= 8192 AND json_valid(expanded)),
+        body        TEXT NOT NULL CHECK (length(body) BETWEEN 1 AND 16384),
+        refs        TEXT NOT NULL CHECK (length(refs) <= 65536 AND json_valid(refs)),
+        in_reply_to TEXT,
+        hop         INTEGER NOT NULL CHECK (hop BETWEEN 0 AND 8),
+        created_at  TEXT NOT NULL,
+        UNIQUE (thread_id, seq)
+      ) STRICT;
+      CREATE TRIGGER agent_messages_in_order BEFORE INSERT ON agent_messages
+        WHEN NEW.seq <> (SELECT last_seq + 1 FROM message_threads WHERE id = NEW.thread_id)
+        BEGIN SELECT RAISE(ABORT, 'a message takes the next sequence of its thread'); END;
+      CREATE TRIGGER agent_messages_added AFTER INSERT ON agent_messages BEGIN
+        UPDATE message_threads SET last_seq = NEW.seq, last_at = NEW.created_at WHERE id = NEW.thread_id;
+      END;
+      CREATE TRIGGER agent_messages_immutable BEFORE UPDATE ON agent_messages
+        BEGIN SELECT RAISE(ABORT, 'a message is never changed'); END;
+
+      CREATE TABLE message_recipients (
+        principal  TEXT NOT NULL CHECK (length(principal) BETWEEN 4 AND 128 AND principal NOT GLOB '*[^A-Za-z0-9:._-]*'),
+        message_id TEXT NOT NULL REFERENCES agent_messages(id),
+        thread_id  TEXT NOT NULL REFERENCES message_threads(id),
+        seq        INTEGER NOT NULL CHECK (seq >= 1),
+        sender_key TEXT NOT NULL,
+        counted    INTEGER NOT NULL CHECK (counted IN (0, 1)),
+        PRIMARY KEY (principal, message_id)
+      ) STRICT, WITHOUT ROWID;
+      CREATE INDEX message_recipients_by_thread ON message_recipients (principal, thread_id, seq);
+      CREATE INDEX message_recipients_by_message ON message_recipients (message_id);
+      CREATE TRIGGER message_recipients_fixed BEFORE UPDATE ON message_recipients
+        BEGIN SELECT RAISE(ABORT, 'a recipient row is never changed'); END;
+
+      CREATE TABLE message_cursors (
+        thread_id    TEXT NOT NULL REFERENCES message_threads(id),
+        principal    TEXT NOT NULL,
+        read_through INTEGER NOT NULL CHECK (read_through >= 0),
+        PRIMARY KEY (thread_id, principal)
+      ) STRICT, WITHOUT ROWID;
+      CREATE TRIGGER message_cursors_forward BEFORE UPDATE OF read_through ON message_cursors
+        WHEN NEW.read_through < OLD.read_through BEGIN SELECT RAISE(ABORT, 'a read cursor never moves back'); END;
+
+      CREATE TABLE messaging_settings (
+        project_id TEXT PRIMARY KEY REFERENCES projects(id),
+        body       TEXT NOT NULL CHECK (length(body) <= 65536 AND json_valid(body))
+      ) STRICT;
+      CREATE TABLE messaging_agent_settings (
+        agent_id      TEXT PRIMARY KEY CHECK (length(agent_id) BETWEEN 1 AND 64),
+        accepts_from  TEXT NOT NULL CHECK (accepts_from IN ('none','group','project')),
+        cli_messaging INTEGER NOT NULL CHECK (cli_messaging IN (0, 1)),
+        muted         INTEGER NOT NULL CHECK (muted IN (0, 1))
+      ) STRICT;
+    `,
+  },
+  {
+    // Message delivery into runs (ticket PV-M3 slice 2, inter-agent-communication.md sections 3 and 6.1). One row per
+    // message and recipient, so a message reaches a recipient at most once: `leased` when a live run took it at a turn
+    // boundary (in the same transaction that taints the run), `acked` once the model's request that carried it succeeded,
+    // or `failed` when its delivery failed `failures` times (quarantined: never offered again; the user is told). A lease
+    // only moves to `acked`; an acked or failed row never changes. A lease is released (deleted) when the request that
+    // carried it failed, when the run ended before it, and for every lease at host start (no run survives a restart), so
+    // such a message goes to a later run. An acked or failed row is deleted only after its message (the retention purge),
+    // so a delivered message cannot become deliverable again (the purge deletes both in one transaction with deferred
+    // foreign keys). `message_delivery_failures` counts failed attempts. Additive.
+    version: 10,
+    sql: `
+      CREATE TABLE message_deliveries (
+        message_id TEXT NOT NULL REFERENCES agent_messages(id),
+        principal  TEXT NOT NULL CHECK (length(principal) BETWEEN 4 AND 128 AND principal NOT GLOB '*[^A-Za-z0-9:._-]*'),
+        run_id     TEXT NOT NULL REFERENCES agent_runs(id),
+        state      TEXT NOT NULL CHECK (state IN ('leased','acked','failed')),
+        leased_at  TEXT NOT NULL,
+        acked_at   TEXT,
+        PRIMARY KEY (message_id, principal),
+        CHECK ((state = 'acked') = (acked_at IS NOT NULL))
+      ) STRICT, WITHOUT ROWID;
+      CREATE INDEX message_deliveries_by_run ON message_deliveries (run_id, state);
+      CREATE TRIGGER message_deliveries_forward BEFORE UPDATE ON message_deliveries
+        WHEN OLD.state <> 'leased' OR NEW.state <> 'acked' OR NEW.message_id IS NOT OLD.message_id
+          OR NEW.principal IS NOT OLD.principal OR NEW.run_id IS NOT OLD.run_id OR NEW.leased_at IS NOT OLD.leased_at
+        BEGIN SELECT RAISE(ABORT, 'a delivery only moves from leased to acked'); END;
+      CREATE TRIGGER message_deliveries_kept BEFORE DELETE ON message_deliveries
+        WHEN OLD.state <> 'leased' AND EXISTS (SELECT 1 FROM agent_messages WHERE id = OLD.message_id)
+        BEGIN SELECT RAISE(ABORT, 'a delivered message stays delivered'); END;
+      CREATE TABLE message_delivery_failures (
+        message_id TEXT NOT NULL REFERENCES agent_messages(id),
+        principal  TEXT NOT NULL CHECK (length(principal) BETWEEN 4 AND 128 AND principal NOT GLOB '*[^A-Za-z0-9:._-]*'),
+        failures   INTEGER NOT NULL CHECK (failures >= 1),
+        PRIMARY KEY (message_id, principal)
+      ) STRICT, WITHOUT ROWID;
+    `,
+  },
+  JOURNAL_V11,
+  AGENTS_MIGRATION,
+  FORGE_PINS_MIGRATION,
+  PAGES_MIGRATION,
+  TASKS_MIGRATION,
+  PLUGIN_GRANTS_MIGRATION,
 ];
 
 export const JOURNAL_SCHEMA_VERSION = JOURNAL_MIGRATIONS.length;

@@ -1,9 +1,10 @@
 # Inter-agent communication: the CLI agent endpoint
 
-- **Status:** Proposed (design only; nothing is built). Companion to `docs/design/inter-agent-communication.md` ("the main design"); split out after security design review 1 (items S3, S4, S5, S11, N5) to keep both files short.
+- **Status:** Accepted by ADR 0007. Built: the daemon side of the relay (PV-M6 slice 1, `messages-contract.md` section 12) and the pty process listener (slice 2, section 13), both off by default and inert until PV-G4; not built: the shim (PV-M7) and the peer-credential and Windows pipe helpers. Companion to `docs/design/inter-agent-communication.md` ("the main design"); split out after security design review 1 (items S3, S4, S5, S11, N5) to keep both files short.
 - **Date:** 2026-11-06. Verified against `origin/main` at `74cd12e`; E1 (`116ef22`) and P1d (`e52114f`) have merged since.
 - **Depends on:** ADR 0004 decisions 8 and 10 and implication 3 (PTY-5), `docs/security/threat-model-phase1.md` (PTY-3, PTY-5, NET-1, A10, assumption on same-user processes), `docs/design/daemon-host-plan.md` §3 Q16 (permission-bypass entries), B9 (pty process, branch `feat/pty-process`).
 - **Evidence tags:** as in `product-vision-v2.md`.
+- **Decided by ADR 0007** (`docs/adr/0007-inter-agent-messaging.md` decision 7): the endpoint is hosted by the **pty process**, which relays frames to the daemon; the daemon checks the token and opens no listener (ADR 0003 D1.1, DMN-4). Where this file says "the daemon creates" or "the daemon accepts", read the pty process for the listener and the daemon for the token and the answer. Peer checks: Unix ships without a native helper (the `0700` directory is the control); Windows has no endpoint without the native pipe flags and DACL.
 
 ## 1. Constraints that do not change
 
@@ -39,7 +40,7 @@ All per-connection buffers are bounded; an idle authenticated connection is clos
 ## 4. The token and its residual (review S4)
 
 - 256 random bits, bound to `{ projectId, agentId, runId }` and to the methods `send` and `read`; never written to the journal, the audit log or any log (a canary test checks this); revoked as in §3.
-- **How it reaches the shim.** The endpoint address and the token are set as two variables in the CLI's environment after the PTY-5 deny-list. **PTY-5 amendment needed:** `AXIS_*` is denied today [V, `packages/pty-policy/src/names.ts`]; the amendment admits exactly two names, only for runs with messaging enabled, and the PTY-5 test asserts they are absent otherwise.
+- **How it reaches the shim.** The endpoint address and the token are two variables in the CLI's environment, added by the pty process after its PTY-5 re-check (ADR 0007 amendment item 1; they are never in the spawn's environment). **PTY-5 amendment needed:** `AXIS_*` is denied today [V, `packages/pty-policy/src/names.ts`]; the amendment admits exactly two names, only for runs with messaging enabled, and the PTY-5 test asserts they are absent otherwise.
 - **Residual, stated honestly.** The environment is inherited by **every program the CLI runs, including the repository's own scripts** (tests, build scripts, hooks, tool servers the repository configures). The hostile repository is the main in-scope adversary, so this is not only a "same-user process" concern. Such code can read this agent's inbox and send as this agent. The added privilege is small (that code already runs as the user and can do more than send messages), but **the attribution proves only that the sender held the token**.
 - **Labelling.** Every endpoint-originated message carries `verified: false`; the thread view and the audit show it as "via CLI endpoint, unverified writer". The taint rule treats it as a source like any agent message.
 - **Alternatives considered.** A file passed by path has the same exposure. A token handed only to the shim through the CLI's own tool configuration would avoid the environment but would put a long-lived secret in a config file; not chosen. Revisit when the OS sandbox (Phase 3) can scope child processes.
@@ -54,10 +55,10 @@ All per-connection buffers are bounded; an idle authenticated connection is clos
 
 - Off by default; enabling is a user tier-2 action per agent.
 - **Refused** for an `axis.cliAgents` entry the user marked as bypassing the CLI's prompts, or whose arguments match the maintained bypass-flag list (plan Q16) [I: a flag list is incomplete by nature; the user's marking is the primary signal].
-- **CLI configuration can auto-approve too**, including configuration files **in the repository**. The enable dialog states: "This CLI may act on other agents' messages without asking you, depending on its own configuration, including files in this repository." When a known CLI project-configuration file exists in the worktree (these paths are already in the protected set), Axis shows a warning and requires a second confirmation (M-3); the file's presence is re-checked at each run start and messaging is suspended for that run until confirmed again if the file changed.
+- **CLI configuration can auto-approve too**, including configuration files **in the repository**. The enable dialog states: "This CLI may act on other agents' messages without asking you, depending on its own configuration, including files in this repository." When a known CLI project-configuration file exists in the worktree (`CLI_PROJECT_CONFIG` in `@axis/pty-policy`: `.claude/settings.json`, `.claude/settings.local.json`, `.claude/hooks/`, `.codex/config.toml`, `.codex/hooks/`, each verified in the installed CLI; the same list is in the broker's protected set and git-snapshot's `cli-config` category since 2026-11-22, they were not before), Axis shows a warning and requires a second confirmation (M-3); the file's presence is re-checked at each run start and messaging is suspended for that run until confirmed again if the file changed.
 - The dashboard row of a CLI agent with messaging on says so in text.
 
-## 7. Proposed gate lines (Phase 2a)
+## 7. Gate lines (Phase 2a; `ROADMAP.md` refers to them)
 
 1. A CLI run without messaging enabled has neither endpoint variable in its environment (PTY-5 test extended).
 2. After the run ends, an **already-open** shim connection and a new connection with the old token are both refused; Pause makes open connections answer `paused`.

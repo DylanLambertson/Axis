@@ -1,4 +1,6 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
+import { openTrustGate } from "../testing/open-gate.js";
+import type { ProjectTrustGate } from "../src/gate/project-trust.js";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -53,6 +55,8 @@ export { Client, gitUnavailable };
 const PATHS = process.env["PATH"] ?? "/usr/bin:/bin";
 
 export interface GitRigOptions {
+  /** The project trust gate the git handlers call (default: an open one; the gate's refusals are tested on their own). */
+  gate?: ProjectTrustGate;
   scanMode?: ScanMode;
   /** Scanner limits (a tiny `maxBytes` makes every scan incomplete). */
   maxBytes?: number;
@@ -140,12 +144,12 @@ export async function gitRig(options: GitRigOptions = {}) {
   const gate = { runsActive: options.runsActive ?? false, stalled: false, branchOverride: undefined as string | undefined, recordPushed: [] as string[], bookkeeping: [] as unknown[], internal: [] as unknown[] };
   const runs: Pick<RunsService, "hasActiveRun"> = { hasActiveRun: () => gate.runsActive };
   const calls = { planPush: [] as Array<{ baseSha: string; branch: string; remote: string }>, executePush: 0, executeCommit: 0, prepare: 0, restoreIndex: 0, assertFresh: 0 };
-  const realOps = createGitOperations({ git: gitPort, runs, ...(options.resolveSshHost === undefined ? {} : { resolveSshHost: options.resolveSshHost }) });
+  const realOps = createGitOperations({ git: gitPort, now: () => performance.now(), runs, ...(options.resolveSshHost === undefined ? {} : { resolveSshHost: options.resolveSshHost }) });
   const baseOps: GitOperations = {
     ...realOps,
     planPush: (c) => (calls.planPush.push({ baseSha: c.baseSha, branch: c.branch, remote: c.remote }), realOps.planPush(c)),
-    executePush: (c, p) => (calls.executePush++, realOps.executePush(c, p)),
-    executeCommit: (c, i) => (calls.executeCommit++, realOps.executeCommit(c, i)),
+    executePush: (c, p, t, s) => (calls.executePush++, realOps.executePush(c, p, t, s)),
+    executeCommit: (c, i, t) => (calls.executeCommit++, realOps.executeCommit(c, i, t)),
   };
   const ops = options.ops ? options.ops(baseOps) : baseOps;
   const indexDir = join(root, "indexes");
@@ -211,6 +215,7 @@ export async function gitRig(options: GitRigOptions = {}) {
   daemon.register("axis.approvals", 1, createApprovalsHandlers({ approvals: approvals.port }));
   daemon.register("axis.review", 1, createReviewHandlers({ review, journal: spyJournal, runs: { get: () => { throw new Error("unused"); } }, trees, audit: { append: () => undefined } }));
   const handlerDeps: GitHandlerDeps = {
+    gate: options.gate ?? openTrustGate(),
     ops,
     review: preparer,
     trees,

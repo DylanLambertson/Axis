@@ -11,6 +11,14 @@
     ".": {
       "types": "./dist/src/index.d.ts",
       "default": "./dist/src/index.js"
+    },
+    "./client": {
+      "types": "./dist/src/client-entry.d.ts",
+      "default": "./dist/src/client-entry.js"
+    },
+    "./config": {
+      "types": "./dist/src/config.d.ts",
+      "default": "./dist/src/config.js"
     }
   },
   "scripts": {
@@ -19,6 +27,7 @@
     "test": "tsc -b && node --test \"dist/test/**/*.test.js\""
   },
   "dependencies": {
+    "@axis/protocol": "0.0.0",
     "@axis/pty-policy": "0.0.0",
     "@axis/runs": "0.0.0",
     "zod": "4.6.6"

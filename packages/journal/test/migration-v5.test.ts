@@ -58,9 +58,12 @@ test("upgrading a populated version 4 database loses nothing and leaves every ol
   assert.deepEqual(without(without(after, "base_branch"), "base_tip"), before.ws, "every old column of every row is unchanged");
   assert.ok(after.every((r) => r["base_branch"] === null), "old workspaces are not attestable: no base branch is invented");
   assert.equal(journal.getWorkspace("w-fin")?.baseBranch, null);
-  assert.deepEqual(dump(db, "agent_runs", "id"), before.runs);
+  assert.deepEqual(dump(db, "agent_runs", "id").map(({ agent_id: _a, ...rest }) => rest), before.runs);
+  for (const r of dump(db, "agent_runs", "id")) assert.equal(r["agent_id"], null, "an old run has no agent");
   assert.deepEqual(dump(db, "state_transitions", "id"), before.tr);
-  assert.deepEqual(dump(db, "projects", "id"), before.projects);
+  // Version 11 adds the binding columns and resets every trust (migration-v11.test.ts); every other column is unchanged.
+  const projects = without(without(without(dump(db, "projects", "id"), "common_dir"), "git_dir_id"), "trust_changed_at");
+  assert.deepEqual(projects, before.projects.map((r) => ({ ...r, trusted: 0 })));
   assert.deepEqual(dump(db, "audit_events", "1"), before.audit);
   assert.deepEqual(audit.head(), head);
   assert.equal(audit.verify().ok, true);
@@ -127,7 +130,7 @@ test("recordBaseBranch: only while CREATING, once, a valid branch, audited witho
   const db = openDatabase(":memory:");
   const audit = new AuditLog(db);
   const journal = Journal.open(db, { audit });
-  journal.registerProject({ id: "proj-a", path: "/work/a", displayName: "A", trusted: true, actor: "user" });
+  journal.registerProject({ id: "proj-a", path: "/work/a", displayName: "A", trusted: false, actor: "user" });
   const id = creating(journal);
   const head = audit.head()!.seq;
   assert.equal(journal.recordBaseBranch(id, "refs/heads/main", SHA, "daemon").baseBranch, "refs/heads/main");

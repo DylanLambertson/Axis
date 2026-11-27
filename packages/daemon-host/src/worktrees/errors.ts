@@ -62,6 +62,7 @@ export type WorktreeFailureCode = keyof typeof CODE_TEXT;
 
 /** Reasons the host itself states (not from the manager). */
 const EXTRA_TEXT: Readonly<Record<string, string>> = {
+  untrusted: "The project is not trusted to run.",
   already_finalised: "The workspace is already finalised.",
   not_ready: "The workspace is not ready for this.",
   base_moved: "The base moved while the workspace was created.",
@@ -113,6 +114,9 @@ export function toDaemonError(error: unknown): DaemonError {
       case "E_BACKPRESSURE":
       case "E_UNAVAILABLE":
         return error.code === "E_BACKPRESSURE" ? new DaemonError("E_BACKPRESSURE", "Too many requests are waiting.") : worktreeFailure(error.code);
+      // The project trust gate refuses with it internally; only the daemon may answer E_POLICY_DENIED on the wire.
+      case "E_POLICY_DENIED":
+        return worktreeFailure("E_CONFLICT", "untrusted");
       default:
         break;
     }

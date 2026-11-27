@@ -211,3 +211,22 @@ test("a symlink at an ordinary path is flagged when its target is protected; an 
     f.cleanup();
   }
 });
+
+test("a symlink whose target was not read (read budget spent) is highlighted with its own rule, and only when a matcher is present", { skip: !posix }, async () => {
+  for (const withMatcher of [true, false]) {
+    const f = fixture({ deps: { ...(withMatcher ? { protectedPaths: underGithub } : {}), limits: { maxSymlinkReads: 1 } } });
+    try {
+      symlinkSync("a.txt", join(f.repo, "far1"));
+      symlinkSync("a.txt", join(f.repo, "far2"));
+      const s = await ReviewSession.start(f.deps, { worktree: f.wt, against: f.head() });
+      const links = s.files.filter((x) => x.kind === "symlink");
+      assert.equal(links.length, 2);
+      const far = links.find((x) => x.protectedRules.length > 0 || x.warnings.includes("symlink-outside"));
+      assert.equal(links.filter((x) => x.warnings.includes("symlink-outside")).length, 1, "only the link past the read budget is unread");
+      assert.deepEqual(far?.protectedRules, withMatcher ? ["symlink-target-unread"] : []);
+      assert.deepEqual(links.filter((x) => x !== far).map((x) => x.protectedRules), [[]]);
+    } finally {
+      f.cleanup();
+    }
+  }
+});

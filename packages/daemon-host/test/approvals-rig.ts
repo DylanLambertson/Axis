@@ -52,17 +52,25 @@ export class Client {
   readonly all: Msg[] = [];
   #waiters: Array<() => void> = [];
   #n = 0;
+  #closed = false;
   constructor(readonly port: MessagePort) {
     port.on("message", (m: Msg) => {
       this.all.push(m);
       this.#waiters.splice(0).forEach((w) => w());
     });
+    // A closed port ends every wait on it: a test that failed and tore the rig down must not leave a polling loop holding the process.
+    port.on("close", () => {
+      this.#closed = true;
+      this.#waiters.splice(0).forEach((w) => w());
+    });
   }
-  async until(pred: (m: Msg) => boolean, ms = 15_000): Promise<Msg> {
+  /** `ms` is a hang guard, not an expectation: a reply that exists arrives however slowly a loaded host runs real git, and a lost one fails loudly after the guard. */
+  async until(pred: (m: Msg) => boolean, ms = 120_000): Promise<Msg> {
     const end = Date.now() + ms;
     for (;;) {
       const hit = this.all.find(pred);
       if (hit) return hit;
+      if (this.#closed) throw new Error("the client's port closed before the awaited message");
       if (Date.now() >= end) throw new Error(`timed out; got ${JSON.stringify(this.all).slice(0, 300)}`);
       await new Promise<void>((r) => {
         const t = setTimeout(r, 25);
@@ -74,7 +82,9 @@ export class Client {
   async call(contract: string, method: string, payload: unknown, key?: string): Promise<Msg> {
     const id = `q${++this.#n}`;
     this.send(contract, method, payload, id, key);
-    return this.until((m) => m.id === id);
+    const answer = this.until((m) => m.id === id);
+    answer.catch(() => undefined); // a call abandoned by a failed test rejects when the port closes: that is not an unhandled rejection
+    return answer;
   }
   send(contract: string, method: string, payload: unknown, id: string, key?: string): void {
     this.port.postMessage({ v: 1, id, contract, contractVersion: 1, method, payload, ...(key ? { idempotencyKey: key } : {}) });
@@ -83,7 +93,7 @@ export class Client {
     this.port.postMessage({
       type: "hello",
       protocolVersions: [1],
-      contracts: [{ id: "axis.worktrees", versions: [1] }, { id: "axis.approvals", versions: [1] }, { id: "axis.cli-runs", versions: [1] }, { id: "axis.runs", versions: [1] }, { id: "axis.test", versions: [1] }],
+      contracts: [{ id: "axis.worktrees", versions: [1] }, { id: "axis.approvals", versions: [1] }, { id: "axis.cli-runs", versions: [1] }, { id: "axis.runs", versions: [1] }, { id: "axis.test", versions: [1] }, { id: "axis.pages", versions: [1] }, { id: "axis.tasks", versions: [1] }],
     });
     await this.until((m) => m.type !== undefined);
   }
@@ -99,7 +109,10 @@ export interface RigOptions {
   nativeWaitPerWindow?: number;
   /** Where the challenge events go instead of the in-memory list (a real `AuditLog`). */
   audit?: { append(e: ChallengeAuditEvent): unknown };
+  /** The native dialog's words for a target (`createApprovals` `describe`). */
+  describe?: ApprovalsDescribe;
 }
+type ApprovalsDescribe = NonNullable<Parameters<typeof createApprovals>[0]["describe"]>;
 
 /** The attestation is "<actor>#<connection>#<window>". */
 const verifier: IdentityVerifier = {
@@ -143,6 +156,7 @@ export async function rig(options: RigOptions = {}) {
     ...(options.limits ? { limits: options.limits } : {}),
     ...(options.nativeWaitLimit ? { nativeWaitLimit: options.nativeWaitLimit } : {}),
     ...(options.nativeWaitPerWindow ? { nativeWaitPerWindow: options.nativeWaitPerWindow } : {}),
+    ...(options.describe ? { describe: options.describe } : {}),
   });
   const trust = new InMemoryTrustRegistry();
   const runs: Array<{ id: string; approved: unknown; payload: unknown }> = [];

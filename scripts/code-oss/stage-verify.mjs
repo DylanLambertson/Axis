@@ -7,6 +7,7 @@ import { join, posix } from "node:path";
 import { StageError, fail, readRegular, walkFiles } from "./stage-fs.mjs";
 import { LOADER_BUILTINS, RESTRICTED_MODULES, mayImportRestricted, importSpecifiers, unsafeForms } from "./stage-scan.mjs";
 import { listenerBuiltinRefusal, webHostEdgeRefusal } from "./web-rules.mjs";
+import { egressBuiltinRefusal } from "./egress-rules.mjs";
 
 export const STAGE_ROOT = "src/vs/axis/packages";
 export const MANIFEST_NAME = "stage-manifest.json";
@@ -39,6 +40,8 @@ export function checkStagedFile(rel, text, fileSet) {
       if (only !== undefined && !only.has(pkg)) fail(`staged ${rel}: ${spec} loads or runs code without a module specifier`);
       const listener = listenerBuiltinRefusal(spec, rel);
       if (listener !== null) fail(`staged ${rel}: ${listener}`);
+      const egress = egressBuiltinRefusal(spec, rel);
+      if (egress !== null) fail(`staged ${rel}: ${egress}`);
       continue;
     }
     if (!spec.startsWith("./") && !spec.startsWith("../")) fail(`staged ${rel}: bare import ${spec} would resolve from the tree at run time`);

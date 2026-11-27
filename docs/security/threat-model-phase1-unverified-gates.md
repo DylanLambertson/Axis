@@ -1,7 +1,7 @@
 # Threat model: Phase 1 gate items that Linux cannot verify
 
-- **Status:** Draft for review. Refreshed 2026-11-20 against `origin/main` `76575e4`; this lists gate evidence still missing after the merges since `74cd12e`.
-- **Merged components:** B9 (`86247ab`), X1b/X1c (`2a0acff`), E1 (`116ef22`), A3 (`cc087cb`), C8/S4 (`5e4e797`), C4 (`6b5d50f`), J2/C10 (`d47fb8a`), REF1-SCAN library (`6293443`) and H13 (`13b036f`). Their package tests do not replace real-app or cross-platform gate runs.
+- **Status:** Draft for review. Refreshed 2026-11-26 against `origin/main` `9b2f0e9`; this lists Phase 1 gate evidence still missing after the merges since `74cd12e`.
+- **Merged evidence:** B9 (`86247ab`), X1b/X1c (`2a0acff`), E1 (`116ef22`), C3 (`cb227ca`, `bb12ee1`), C6 (`812df0c`), C7 child-process composer slice (`2c4b704`), J2/C10 (`d47fb8a`), REV2-FIX review wiring (`ca4b6e8`), and the NET-GATE static checker (`e3d0dda`). Package tests do not replace the real-app or cross-platform gate runs.
 - **Why this list exists.** The Phase 1a and 1b gates are stated "on macOS, plus Windows/Linux CI smoke" (`docs/ROADMAP.md`). What runs today is the `Axis packages` job on `ubuntu-24.04` (`docs/ci.md`): typecheck, build and `npm test`, which includes the headless slice of `@axis/daemon-host`. There is no Windows job. A macOS job for the slice exists on branch `ci/macos-headless-slice` and is not on main (plan question 12). The pinned Code OSS build has been validated natively on Linux x64 (`docs/feasibility/linux-build-validation.md`) and measured on macOS x64 (`docs/design/axis-shell-stage1-built.md`); no Windows build has been run.
 - **Every Windows or macOS behaviour below that is not cited to a measurement is [I] (inferred, not run).**
 - **Claims here are limits of this revision's evidence**, not findings about the code. "Linux evidence" names the test or document that exists; where none is named, there is none. Platform behaviour that is not measured is marked **[I]**.
@@ -9,17 +9,17 @@
 
 ## 1. Open implementation or integration work
 
-A merged package can still leave a gate open when its host wiring or required test is absent.
+A merged package can still leave a gate open when host wiring, platform evidence or a required test is absent.
 
 | Gate | What is missing | Ticket |
 |---|---|---|
-| 1a/L2, L10, L17, L24 | B9 merged (`86247ab`) and POSIX group-liveness tests exist in `packages/pty-process/test/group-kill.test.ts` and `test/code-oss/node-pty-real.test.mjs`. Windows job-object acceptance and a real app run are missing; detached children and restart tracking remain limits. | B9; RR-2 |
-| 1a/L3, L14, L18 | H13 run snapshotter merged (`13b036f`), but the commit and push drift gate still uses the separate worktrees snapshot path; H13b and the complete CLI drift scenarios remain open. | RR-3 |
-| 1a/L15 | Pty scratch, exec and hook primitives merged (`2497928`, `7fe8311`); the host still does not run commit hooks, and push hook integration is incomplete. | H9-hooks; RR-4 |
-| 1a/L32 | REV2-FIX git-ops attribute reader merged (`0b69378`), but review does not yet use it; the attribute-swap gate remains open. | RR-13 |
+| 1a/L2, L10, L17, L24 | B9 merged (`86247ab`), with POSIX group-liveness tests in `packages/pty-process/test/group-kill.test.ts` and `test/code-oss/node-pty-real.test.mjs`. Windows job-object and real-app acceptance remain missing; detached children and restart tracking remain limits. | B9; RR-2 |
+| 1a/L3, L14, L18 | H13 run snapshotter merged (`13b036f`), but the commit/push drift gate still uses a separate worktrees snapshot path. H13b and the complete CLI drift scenarios remain open. | RR-3 |
+| 1a/L15 | Pty scratch and hook primitives and pty push with hooks off merged (`2497928`, `7fe8311`, `3f02f3f`); host commit hooks and pre-push integration remain open. | H9-hooks; RR-4 |
+| 1a/L32 | REV2-FIX review wiring merged (`ca4b6e8`), with `packages/review/test/real-attr-snapshot.test.ts` for the swap. Git-ops push classification still reads live attributes, and macOS/Windows gate acceptance has not run. | RR-13 |
 | 1a/L13 | Workbench registration of the four `axis.*` settings with user, application or machine scope. | RR-15 |
-| 1a/L33 | Refusal of `--remote-debugging-port` and `--inspect*` in a packaged build. | RR-19 |
-| 1b/L1 to L16 (daemon side) | C1/C2/C4/C5/C8/C9/C10/C11, J2 and REF1-SCAN library are merged. C3 command and broker-git wiring, C6 Anthropic/vault integration, host snapshot-scanner wiring, app recovery and full acceptance are still open. The individual gate lines need their own merged tests. | RR-20 to RR-29 |
+| 1a/L33 | NET-GATE static scan and packaged checker merged (`e3d0dda`), but the checker skips without a build and the product still lacks an early debug-flag refusal and Electron fuse. | RR-19 |
+| 1b/L1 to L16 (daemon side) | C1/C2/C3/C4/C5/C6/C8/C9/C10/C11, J2 and REF1-SCAN library are merged. C7 child-process tests cover mock and Anthropic scenarios, including SIGKILL/restart. Key storage over the wire, the production secret backend, host-configured snapshot scanning, untracked-file REF-1 gate case, hooks decision and real-app acceptance remain open. | C7, C12; RR-20 to RR-29 |
 
 ## 2. Built, but verifying needs an Electron or Code OSS run (macOS and Windows as much as Linux)
 
@@ -29,14 +29,14 @@ Much package logic is tested on Linux with injected fakes. The gate wording need
 |---|---|---|
 | 1a/L1 | Scenarios 2 to 5 of `docs/PRODUCT.md` with an installed agent CLI; stub `gh` run with the expected arguments. | Push to a local bare remote and compare URL in slice step 6 and `@axis/git-ops` tests. No code that runs `gh pr create` was found in `packages/` at `74cd12e` (only the compare URL), so the stub-`gh` half of the line is **not built**. |
 | 1a/L2 | PTY-5 with the git extension enabled, `git.terminalAuthentication` on and a test extension adding an environment collection. | `@axis/pty-policy` tests and slice step 3 (a plain child process, seeded names). The extension-collection half needs a real Code OSS run; B9 is merged. |
-| 1a/L8 | Tier 4 confirmation through the native dialog (`dialog.showMessageBox`, main-built summary, APR-2). | Challenge manager and gate tests; the slice answers `native.confirm` from a test supervisor. |
-| 1a/L9, L19, L25 | Restricted Mode, trust re-derived at mount/start, and main attestation in the real app. | Host registry and single-use attestation in the slice; X1c main answers merged (`2a0acff`) with `main-answers.test.ts`. App integration remains unverified. |
+| 1a/L8 | Tier 4 confirmation through the native dialog (`dialog.showMessageBox`, main-built summary, APR-2). | Challenge manager and gate tests; the slice answers `native.confirm` from a test supervisor. Main's dialog is built (X1c, `2a0acff`: `nativeDialog`, `dialog.showMessageBox`), but no recorded run confirms a tier 4 challenge through it yet (the driver in `pty-exec-node.md` is a plan). |
+| 1a/L9, L19, L25 | Restricted Mode, trust re-derived at mount/start, and main attestation in the real app. | Main answers (`2a0acff`), project dialogs (`83695b0`) and side-effect gate (`4860234`) have unit tests; real-app and platform acceptance remain unverified. |
 | 1a/L11, L30 | Keyboard-only run of all three view modes; screen-reader announcement of a view switch; typing after a switch reaches only the destination. | none (shell A1 has a workspace model test, no input-routing run). |
 | 1a/L22 | Open VSX signed, unsigned and tampered install against a packaged build. | none; a packaged build refuses every gallery install today. |
-| 1a/L23 | ADR 0003 criteria 1 to 7 (window identity, frame URL and main-frame checks, MessagePort hand-off); Trusted Types with no violation in the Axis React bundle. | Envelope, limits and handshake in `@axis/daemon` and `@axis/protocol`; X1b/X1c main checks are merged, but their packaged-app path remains unverified. Trusted Types was measured on a macOS reh-web build for the workbench only. |
+| 1a/L23 | ADR 0003 criteria 1 to 7, window identity, MessagePort hand-off and Trusted Types in the real Axis bundle. | Main checks are merged (`2a0acff`) and source tests exist; packaged-app path and Axis React Trusted Types run remain unverified. |
 | 1a/L27 (UI half) | Control and bidirectional characters escaped in diff review and dashboard rows; symlink display in the tree and preview; Open-in-IDE refusal outside the worktree. | `toDisplayPath` and protocol display rules are unit-tested; the rendering is not. |
 | 1a/L28 | EL-5 on every platform; the renderer change in `window.ts`. | Main-process refusal measured on macOS; the renderer change has no complete real-app test and was not exercised in a running macOS or Windows app. |
-| 1a/L29 | Loopback port scan during a desktop run, no reh-web start. | Linux: no listener with no extensions, one GitLens loopback listener with the pinned set (`linux-build-validation.md` §10). Not an automated gate. |
+| 1a/L29 | Loopback port scan during a desktop run with no reh-web start. | NET-GATE static scan and packaged checker are merged (`e3d0dda`), but the checker skips without a packaged build. The pinned extension set opened a Linux loopback listener (`linux-build-validation.md` §10). |
 | Entry (X1, merged) | `utilityProcess` and `parentPort` behaviour: an `init` queued before the listener attaches; an unref'd init timer that must not let a process with no `init` exit 0 (read as a crash instead of 78); Electron adding no `execArgv`; the minified desktop `main.js` still running the supervisor after private-field mangling. | Entry and supervisor tests with fakes and manual timers, on Linux. |
 
 ## 3. Platform-specific behaviour that Linux cannot confirm

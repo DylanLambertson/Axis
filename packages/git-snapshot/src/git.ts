@@ -90,8 +90,8 @@ const nullDevice = process.platform === "win32" ? "NUL" : "/dev/null";
 /**
  * The environment for every call here: the GIT-ENV-1 allow-list from `@axis/pty-policy` (no caller `GIT_*`, no
  * prompts), `HOME` set to the user's home so git expands `~` as the pty process does, no system or user config (the
- * guard set covers the repository's own files), discovery that cannot climb above the worktree, and a `PATH` of
- * absolute entries only.
+ * guard set covers the repository's own files), discovery that cannot climb above the worktree, no lazy fetch, and a
+ * `PATH` of absolute entries only.
  */
 export function snapshotGitEnv(parent: Readonly<Record<string, string | undefined>>, home: string, worktree: string): Record<string, string> {
   const env = { ...buildGitEnv(parent).env };
@@ -101,6 +101,10 @@ export function snapshotGitEnv(parent: Readonly<Record<string, string | undefine
   env["GIT_CONFIG_NOSYSTEM"] = "1";
   env["GIT_CONFIG_GLOBAL"] = nullDevice;
   env["GIT_CEILING_DIRECTORIES"] = dirname(worktree);
+  // No call here reads a blob today (rev-parse, config --list, ls-files -v), so a partial clone has nothing to fetch;
+  // the pins keep it that way if one ever does: no lazy fetch (git 2.44), and no transport a helper could serve (`/`).
+  env["GIT_NO_LAZY_FETCH"] = "1";
+  env["GIT_ALLOW_PROTOCOL"] = "/";
   return env;
 }
 
@@ -187,8 +191,8 @@ export async function askGit(i: AskInput): Promise<GitView> {
     i.budget.tick();
     return new Promise((done) => {
       const timeout = Math.max(1, Math.floor(Math.min(TIMEOUT_MS, i.budget.remaining())));
-      const opts = { cwd, env, encoding: "buffer" as const, maxBuffer, timeout, windowsHide: true, ...(i.budget.signal === undefined ? {} : { signal: i.budget.signal }) };
-      execFile(i.gitPath, [...base, ...argv], opts, (err, stdout) => done({ ok: err === null, missing: (err as NodeJS.ErrnoException | null)?.code === "ENOENT", stdout: Buffer.isBuffer(stdout) ? stdout : Buffer.alloc(0) }));
+      const signal = i.budget.signal;
+      execFile(i.gitPath, [...base, ...argv], { cwd, env, encoding: "buffer", maxBuffer, timeout, windowsHide: true, ...(signal === undefined ? {} : { signal }) }, (err, stdout) => done({ ok: err === null, missing: (err as NodeJS.ErrnoException | null)?.code === "ENOENT", stdout: Buffer.isBuffer(stdout) ? stdout : Buffer.alloc(0) }));
     });
   };
   const guard = async (argv: readonly string[]): Promise<Out> => {

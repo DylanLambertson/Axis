@@ -55,6 +55,8 @@ export interface PushCall {
   readonly allowedBinaryPaths?: readonly string[];
   /** Binary files allowed by identity (`blocked.binaryFiles[].id` of an earlier plan). */
   readonly allowedBinaryIds?: readonly string[];
+  /** The destination key (`pushTarget`), covered by the plan digest so a confirmation is bound to where the push goes. */
+  readonly destination?: string;
 }
 
 /**
@@ -76,10 +78,16 @@ export interface GitOperations {
    */
   baseUsable(call: { readonly worktree: WorktreeRef; readonly branch: string; readonly base: string }): Promise<boolean>;
   planPush(call: PushCall): Promise<PushPlanFacts>;
-  /** Pushes the one scanned tip, or refuses `E_CONFLICT` `plan_changed` when the outgoing changes are not the confirmed plan. */
-  executePush(call: PushCall, confirmed: { readonly tip: string; readonly digest: string }): Promise<void>;
-  /** The commit of the reviewed tree. `assertFresh` refuses by throwing (G2). */
-  executeCommit(call: { readonly workspaceId: string; readonly assertFresh: () => Promise<void> }, input: CommitInput): Promise<{ readonly commit: string; readonly tree: string }>;
+  /**
+   * Pushes the one scanned tip, or refuses `E_CONFLICT` `plan_changed` when the outgoing changes are not the confirmed plan. `signal`
+   * (the request's) ends the push run: aborted, it is `E_CANCELLED` and the run's group is killed.
+   */
+  executePush(call: PushCall & { readonly projectId: string }, confirmed: { readonly tip: string; readonly digest: string }, ticket: unknown, signal?: AbortSignal): Promise<void>;
+  /**
+   * The commit of the reviewed tree. `assertFresh` refuses by throwing (G2). Both writes spend the project trust gate's ticket
+   * (`consumeTicket`) for `projectId` and `workspaceId` at their entry, before any git: project-registration-and-trust.md §5.4.
+   */
+  executeCommit(call: { readonly workspaceId: string; readonly projectId: string; readonly assertFresh: () => Promise<void> }, input: CommitInput, ticket: unknown): Promise<{ readonly commit: string; readonly tree: string }>;
   /** The compare URL of the named remote (its own URL, from the repository). */
   compareUrl(call: { readonly workspaceId: string; readonly worktree: WorktreeRef; readonly remote: string; readonly base: string; readonly head: string }): Promise<string>;
 }

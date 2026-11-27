@@ -8,7 +8,7 @@ import { Daemon, memoryPair, type ApprovalGate, type Handler, type Identity } fr
 import { auditListResponseSchema, auditStatusResponseSchema, auditVerifyResponseSchema } from "@axis/protocol";
 import { createDaemonHost, createHandlerRegistrar, guardHandlers, registerAuditHandlers, type HostServices } from "../src/index.js";
 import { hostFixture, type HostFixture } from "../testing/host-fixture.js";
-import { must, wait } from "./helpers.js";
+import { must, untilTrue } from "./helpers.js";
 
 const user: Identity = { connectionId: "conn-1".padEnd(22, "_"), windowId: "win-1", actorId: "actor-1", actor: "user", trusted: true, clientKind: "desktop" };
 const CANARY = ["cred", "ential", "-canary-", "value"].join("");
@@ -45,12 +45,12 @@ async function serve(services: HostServices, extra?: (d: Daemon, r: ReturnType<t
       { id: "axis.worktrees", versions: [1] },
     ],
   });
-  for (let i = 0; i < 200 && !replies.some((r) => r["type"] === "welcome"); i++) await wait(5);
+  await untilTrue(() => replies.some((r) => r["type"] === "welcome"), "the welcome", 30_000);
   let n = 0;
   const call = async (contract: string, method: string, payload: unknown): Promise<Reply> => {
     const id = `q${++n}`;
     client.postMessage({ v: 1, id, contract, contractVersion: 1, method, payload, ...(contract === "axis.worktrees" ? { idempotencyKey: randomUUID() } : {}) });
-    for (let i = 0; i < 200 && !replies.some((r) => r["id"] === id); i++) await wait(5);
+    await untilTrue(() => replies.some((r) => r["id"] === id), `the answer to ${method}`, 30_000);
     const r = replies.find((x) => x["id"] === id);
     assert.ok(r, "no response");
     return r as unknown as Reply;
@@ -97,7 +97,7 @@ test("status over the wire conforms, reports the anchor and carries nothing path
     try {
       append(s, 3);
       s.anchors.noteWrite();
-      await wait(20);
+      await untilTrue(() => s.anchors.status().lag === 0, "the supervisor acknowledged the newest head", 10_000);
       const r = await w.call("status");
       assert.equal(r.ok, true);
       const status = auditStatusResponseSchema.parse(r.result);
@@ -167,7 +167,7 @@ test("verify: ok on a sound chain, then the first bad seq and reason after an ed
     try {
       append(s, 5);
       s.anchors.noteWrite();
-      await wait(20);
+      await untilTrue(() => s.anchors.status().lag === 0, "the supervisor acknowledged the newest head", 10_000);
       const ok = auditVerifyResponseSchema.parse((await w.call("verify")).result);
       assert.deepEqual(ok, { ok: true, count: 5, head: s.anchors.status().head });
       tamper(fix, "DELETE FROM audit_events WHERE seq > 3");
@@ -244,7 +244,7 @@ test("stalled: status says so, list and verify (tier 1) are still served, a tier
         assert.equal(gateCalls, 0, "neither issue nor execute was reached");
         // Acks return: the supervisor acknowledges what it was sent (the head before the stall row), and the request is served.
         fix.peer.send({ type: "anchor.ack", seq: fix.supervisor.puts.at(-1)?.seq });
-        await wait(20);
+        await untilTrue(() => !s.anchors.status().stalled, "the ack ended the stall", 10_000);
         assert.equal(s.anchors.status().stalled, false);
         const served = await w.callOn("axis.worktrees", "remove", { id: "ws1", approval: { challengeId: "A".repeat(43) } });
         assert.equal(ran, 1, JSON.stringify(served));
@@ -335,14 +335,17 @@ test("startup anchors a verified head that is newer than the supervisor's anchor
     fix.supervisor.anchor = { seq: 2, hash: must(second).hash };
     fix.sent.length = 0;
     const host = createDaemonHost(fix.config, fix.ports);
-    await host.start();
-    await wait(20);
+    const started = await host.start();
+    await untilTrue(() => fix.sent.some((m) => m["type"] === "anchor.put") && started.anchors.status().anchor?.seq === head?.seq, "the head was put and acknowledged", 10_000);
     assert.deepEqual(fix.sent.filter((m) => m["type"] === "anchor.put").map((m) => m["seq"]), [head?.seq]);
     await host.stop();
     fix.sent.length = 0;
     const again = createDaemonHost(fix.config, fix.ports);
-    await again.start();
-    await wait(20);
+    const again2 = await again.start();
+    // `start` awaits the supervisor's anchor and flushes before it returns, so what it sent is final. Ask for a flush once more:
+    // with the anchor already at the head there is nothing to put (a manager that ignored the supervisor's anchor would put now).
+    again2.anchors.noteWrite();
+    assert.equal(again2.anchors.status().anchor?.seq, again2.anchors.status().head?.seq, "the supervisor's anchor is the head");
     assert.equal(fix.sent.filter((m) => m["type"] === "anchor.put").length, 0);
     await again.stop();
   } finally {

@@ -10,6 +10,7 @@ import {
   isWellFormedString,
   wellFormed,
 } from "../src/index.js";
+import { budget } from "./load-margin.js";
 
 // Low-entropy, runtime-assembled stand-ins; none is a credential.
 const SECRET = "hunter2" + "hunter2" + "xyz";
@@ -112,12 +113,31 @@ test("redactString (all rules, literals and the encoded-run pass) is bounded on 
   assert.deepEqual(slow, []);
 });
 
-test("B2: the review's quadratic inputs now run in milliseconds", () => {
+test("B2: the review's quadratic inputs scale linearly with their length", () => {
   const r = new Redactor();
-  for (const input of ["a-".repeat(40_000), "a.".repeat(80_000), "eyJaaaaa.".repeat(30_000), "sk-".repeat(60_000)]) {
-    const t0 = performance.now();
-    r.redactString(input);
-    assert.ok(performance.now() - t0 < 500, "the review's quadratic inputs took seconds to minutes");
+  // Inputs under MAX_STRING_CHARS (16 384): longer ones are cut to nothing before any rule runs (the cut drops a partial token), which
+  // would leave every rule unexercised. A quadratic rule costs 16 times more at 4 times the length, a linear one about 4 times; the
+  // best of nine runs and a ratio (not a bound) keep a busy machine from deciding it. Named mutant: a scheme regex that rescans the
+  // whole token run from every start (`/[a-z][a-z0-9+.-]*:\/\/x/g`) put at the top of the URL rule costs about 0.5 s at the large size.
+  const shapes: Array<[string, (n: number) => string]> = [
+    ["a-", (n) => "a-".repeat(n / 2)],
+    ["a.", (n) => "a.".repeat(n / 2)],
+    ["eyJaaaaa.", (n) => "eyJaaaaa.".repeat(n / 9)],
+    ["sk-", (n) => "sk-".repeat(n / 3)],
+  ];
+  const best = (input: string): number => {
+    let min = Infinity;
+    for (let i = 0; i < 9; i++) {
+      const t0 = performance.now();
+      r.redactString(input);
+      min = Math.min(min, performance.now() - t0);
+    }
+    return min;
+  };
+  for (const [name, make] of shapes) {
+    const small = best(make(4_032));
+    const large = best(make(16_128));
+    assert.ok(large <= 8 * small + 10, `${name}: ${large.toFixed(1)} ms at 16 128 characters against ${small.toFixed(1)} ms at 4 032 (a linear rule costs about 4 times more, a quadratic one 16 times)`);
   }
 });
 
@@ -266,7 +286,7 @@ test("S5: a shared-subtree DAG is walked once (the 24-level case took 31 s)", ()
   for (let i = 0; i < 24; i++) node = [node, node];
   const t0 = performance.now();
   const out = JSON.stringify(new Redactor().redactValue(node));
-  assert.ok(performance.now() - t0 < 2000, "an exponential walk took tens of seconds");
+  assert.ok(performance.now() - t0 < budget(2000), "an exponential walk took tens of seconds");
   assert.ok(out.includes("[SHARED]"));
   assert.ok(out.length < 10_000);
 });
@@ -302,4 +322,16 @@ test("S5: a throwing getter yields a fixed marker and its message never escapes"
   const err = new Error("x");
   Object.defineProperty(err, "message", { get() { throw new Error(SECRET); } });
   assert.ok(!JSON.stringify(r.redactValue(err)).includes(SECRET));
+});
+
+test("registeredForms grows with each new secret and stays the same for one registered again", () => {
+  const r = new Redactor();
+  assert.equal(r.registeredForms, 0);
+  r.registerSecret("first-registered-value-for-forms");
+  const one = r.registeredForms;
+  assert.ok(one > 1, "a secret is held in several forms");
+  r.registerSecret("first-registered-value-for-forms");
+  assert.equal(r.registeredForms, one, "the same secret again adds nothing");
+  r.registerSecret("second-registered-value-for-forms");
+  assert.ok(r.registeredForms > one);
 });

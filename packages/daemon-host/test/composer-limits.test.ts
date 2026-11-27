@@ -1,4 +1,5 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
+import { openTrustGate } from "../testing/open-gate.js";
 import { Redactor } from "@axis/audit";
 import assert from "node:assert/strict";
 import { mkdirSync, readFileSync } from "node:fs";
@@ -24,7 +25,7 @@ const codeOf = (e: unknown): unknown => (e as { code?: unknown }).code;
 test("DMN-5: a side effect whose audit row cannot be written stops the run; the model is never asked again", async (t) => {
   const c = await setup(t, { replies: [{ kind: "tool_use", name: "write_file", input: { path: "src/a.txt", content: "hi" } }, { kind: "text", text: "never sent" }], failAudit: (a) => a === "broker.result" });
   const { run } = await c.service.start(START(c.workspaceId), new AbortController().signal);
-  await until(ended(c, run.runId));
+  await until(ended(c, run.runId), "the run to end");
   assert.deepEqual([c.service.get(run.runId).state, c.service.get(run.runId).reason], ["FAILED", "TOOL_FAILED"]);
   assert.equal(readFileSync(join(c.root, "src/a.txt"), "utf8"), "hi", "the write happened; its result could not be recorded");
   assert.equal(c.wire(), 1, "no further provider request after an unrecorded side effect");
@@ -39,7 +40,7 @@ test("the host-wide limit of live runs answers E_BACKPRESSURE and creates nothin
   await assert.rejects(c.service.start(START(other.id), new AbortController().signal), (e) => codeOf(e) === "E_BACKPRESSURE");
   assert.equal(c.journal.listRuns({ workspaceId: other.id }).length, 0);
   c.service.cancel(run.runId);
-  await until(ended(c, run.runId));
+  await until(ended(c, run.runId), "the run to end");
 });
 
 test("a CLI run is not a composer run: get, cancel and events answer E_NOT_FOUND and list leaves it out", async (t) => {
@@ -80,7 +81,7 @@ test("a run whose last transition could not be written can be cancelled, so the 
 
 test("axis.runs handlers refuse a non-user identity themselves, behind the policy row (defence in depth)", async (t) => {
   const c = await setup(t, { replies: [] });
-  const handlers = createComposerRunsHandlers({ service: c.service, journal: c.journal, mutex: new ProjectMutex() });
+  const handlers = createComposerRunsHandlers({ service: c.service, gate: openTrustGate(), journal: c.journal, mutex: new ProjectMutex() });
   const ctx = (actor: string) => ({ identity: { actor, windowId: "win-1" }, signal: new AbortController().signal }) as never;
   for (const [method, payload] of [["list", {}], ["get", { runId: "r1" }], ["events", { runId: "r1" }], ["start", { ...START(c.workspaceId) }]] as const) {
     await assert.rejects(Promise.resolve(handlers[method](ctx("agent:composer.x"), payload as never)), (e) => codeOf(e) === "E_NOT_FOUND", method);

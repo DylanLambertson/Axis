@@ -5,7 +5,7 @@ import { EventEmitter } from "node:events";
 import { test, type TestContext } from "node:test";
 import { MemoryIdempotencyStore, ShutdownCoordinator, type ShutdownTarget, type FlushableIdempotencyStore, DrainGate, installShutdownSignals, type ShutdownResult } from "../src/index.js";
 import { approveAndRun, fakeGate, sha } from "./gate.js";
-import { CONTRACT, KEY1, hello, req, rig, type Rig } from "./harness.js";
+import { CONTRACT, KEY1, drain as settle, hello, req, rig, untilTrue, type Rig } from "./harness.js";
 
 async function ready(t: TestContext, options: Parameters<typeof rig>[0] = {}): Promise<Rig> {
   const r = rig(options);
@@ -44,6 +44,7 @@ test("SF-1a: an explicit undefined keeps the default; Infinity waits without a t
       const before = count();
       const c = new ShutdownCoordinator(target(drain, { cancelAll: () => ((cancelled = true), 1) }), { graceMs });
       const p = c.run("t");
+      // A real 60 ms on purpose: the defect is a wait cut to ~1 ms, and a longer sleep can only make that clearer (correct code never cancels, so no load can fail this).
       await wait(60);
       assert.equal(cancelled, false, `graceMs ${String(graceMs)} must not cut the wait to ~1 ms`);
       if (graceMs === Infinity) assert.equal(count(), before, "no timer for an infinite wait");
@@ -51,7 +52,7 @@ test("SF-1a: an explicit undefined keeps the default; Infinity waits without a t
       assert.equal((await p).graceful, true);
       assert.equal(count(), before);
     }
-    await wait(10);
+    await settle(); // process warnings are emitted on the next tick
   } finally {
     process.off("warning", onWarning);
   }
@@ -83,11 +84,12 @@ test("SF-1d: flushTimeoutMs undefined keeps 5 s (a 100 ms flush is done) and Inf
 
 test("N1a: a request parked in policy when shutdown begins is refused instead of starting its handler", async (t) => {
   const park = deferred();
-  const r = await ready(t, { policy: { evaluate: async () => (await park.promise, { effect: "allow" as const }) } });
+  let parked = false;
+  const r = await ready(t, { policy: { evaluate: async () => ((parked = true), await park.promise, { effect: "allow" as const }) } });
   let started = 0;
   r.daemon.register(CONTRACT, 1, { echo: () => (started++, { text: "x" }) });
   r.send(req("a", "echo", { text: "a" }));
-  await wait(10);
+  await untilTrue(() => parked, undefined, "the request is parked in policy");
   const done = r.daemon.shutdown("t");
   park.resolve();
   assert.equal((await r.inbox.response("a")).error?.code, "E_UNAVAILABLE");
@@ -99,15 +101,16 @@ test("N1b: a keyed write parked in its audit write is refused, audited with an o
   const park = deferred();
   const rows: Array<{ outcome: string; reason: unknown }> = [];
   let first = true;
+  let parkedAudit = false;
   const keys = new MemoryIdempotencyStore();
   const r = await ready(t, {
     idempotency: keys,
-    audit: { append: (e) => (first ? ((first = false), park.promise) : void rows.push({ outcome: e.outcome, reason: e.payload["reason"] })) },
+    audit: { append: (e) => (first ? ((first = false), (parkedAudit = true), park.promise) : void rows.push({ outcome: e.outcome, reason: e.payload["reason"] })) },
   });
   let started = 0;
   r.daemon.register(CONTRACT, 1, { write: () => (started++, { n: 1 }) });
   r.send(req("a", "write", { n: 1 }, { idempotencyKey: KEY1 }));
-  await wait(10);
+  await untilTrue(() => parkedAudit, undefined, "the request is parked in its audit write");
   assert.equal(keys.size, 1, "the key is in progress while the request is parked");
   const done = r.daemon.shutdown("t");
   park.resolve();
@@ -120,10 +123,11 @@ test("N1b: a keyed write parked in its audit write is refused, audited with an o
 
 test("N1d: a request refused after its policy wait is audited as denied (shutting_down)", async (t) => {
   const park = deferred();
-  const r = await ready(t, { policy: { evaluate: async () => (await park.promise, { effect: "allow" as const }) } });
+  let parked = false;
+  const r = await ready(t, { policy: { evaluate: async () => ((parked = true), await park.promise, { effect: "allow" as const }) } });
   r.daemon.register(CONTRACT, 1, { echo: () => ({ text: "x" }) });
   r.send(req("a", "echo", { text: "a" }));
-  await wait(10);
+  await untilTrue(() => parked, undefined, "the request is parked in policy");
   const done = r.daemon.shutdown("t");
   park.resolve();
   await r.inbox.response("a");
@@ -135,13 +139,14 @@ test("N1e: a content lock that wraps the errors it sees still yields E_UNAVAILAB
   const { gate, calls } = fakeGate();
   const park = deferred();
   let parkNext = false;
+  let lockParked = false;
   const r = await ready(t, { gate });
   r.daemon.register(CONTRACT, 1, { danger: () => ({ done: true as const }) }, {
     content: {
       danger: () => ({
         target: "workspace:ws-1",
         withLock: async (fn) => {
-          if (parkNext) await park.promise;
+          if (parkNext) ((lockParked = true), await park.promise);
           try {
             return await fn(sha("v1"));
           } catch (e) {
@@ -152,7 +157,7 @@ test("N1e: a content lock that wraps the errors it sees still yields E_UNAVAILAB
     },
   });
   const id = await approveAndRun(r, "w", { id: "ws-1" }, () => void (parkNext = true));
-  await wait(20);
+  await untilTrue(() => lockParked, undefined, "the content lock is parked");
   const done = r.daemon.shutdown("t");
   park.resolve();
   assert.equal((await r.inbox.response(id)).error?.code, "E_UNAVAILABLE");
@@ -165,6 +170,7 @@ test("N1c: a tier-4 request whose content lock is parked when shutdown begins is
   const { gate, calls } = fakeGate();
   const park = deferred();
   let parkNext = false;
+  let lockParked = false;
   const r = await ready(t, { gate });
   let ran = 0;
   r.daemon.register(CONTRACT, 1, { danger: () => (ran++, { done: true }) }, {
@@ -172,14 +178,14 @@ test("N1c: a tier-4 request whose content lock is parked when shutdown begins is
       danger: () => ({
         target: "workspace:ws-1",
         withLock: async (fn) => {
-          if (parkNext) await park.promise;
+          if (parkNext) ((lockParked = true), await park.promise);
           return fn(sha("v1"));
         },
       }),
     },
   });
   const id = await approveAndRun(r, "d", { id: "ws-1" }, () => void (parkNext = true));
-  await wait(20);
+  await untilTrue(() => lockParked, undefined, "the content lock is parked");
   const done = r.daemon.shutdown("t");
   park.resolve();
   assert.equal((await r.inbox.response(id)).error?.code, "E_UNAVAILABLE");
@@ -199,13 +205,12 @@ test("N2: each escalate() skips only the wait in progress: grace, then the settl
     { ...target(drain, { cancelAll: () => (events.push("cancel"), 1), closeAll: () => void events.push("close") }), store: hang },
     { graceMs: Infinity, cancelSettleMs: Infinity, flushTimeoutMs: Infinity },
   );
-  const p = c.run("t");
-  await wait(10);
+  const p = c.run("t"); // the grace wait is armed synchronously
   c.escalate(); // ends the grace
-  await wait(10);
+  await settle(); // each phase moves on within promise turns: settle once, assert once
   assert.deepEqual(events, ["cancel"], "the settle wait after cancel is still in progress");
   c.escalate(); // ends the settle
-  await wait(10);
+  await settle();
   assert.deepEqual(events, ["cancel", "close"], "now in the flush");
   c.escalate(); // ends the flush
   const res = await p;
@@ -248,12 +253,13 @@ test("N3: the exit hook receives the full result, so a host can tell cancelled-b
 test("N6: a hello that arrives while draining is rejected with E_UNAVAILABLE and the connection closes", async (t) => {
   const r = await ready(t);
   const gate = deferred<{ text: string }>();
-  r.daemon.register(CONTRACT, 1, { echo: () => gate.promise });
+  let entered = false;
+  r.daemon.register(CONTRACT, 1, { echo: () => ((entered = true), gate.promise) });
   r.send(req("a", "echo", { text: "a" }));
-  await wait(10);
+  await untilTrue(() => entered, undefined, "the handler started");
   // A connection accepted and verified before the drain, whose hello arrives after it.
   const late = r.connect("good#conn-2");
-  await wait(10);
+  await untilTrue(() => r.daemon.connectionCount === 2, undefined, "the second connection is verified");
   const done = r.daemon.shutdown("t");
   late.client.postMessage(hello());
   const rejected = await late.inbox.until((m): m is { type: string; error: { code: string } } => (m as { type?: string }).type === "hello-rejected");
@@ -280,8 +286,11 @@ test("R2: a flush that is cut short while still running is reported as running; 
   const slow = { ...store, flush: () => late.promise };
   const c = new ShutdownCoordinator({ ...target(new DrainGate()), store: slow }, { flushTimeoutMs: Infinity });
   const p = c.run("t");
-  await wait(10);
+  await settle(); // the run is in its flush (a promise-turn check: the stubs here are promise-only)
   c.escalate();
-  assert.equal((await p).flushed, "running");
+  // A guard, not an expectation: a broken escalate fails here by name in 5 s instead of waiting out the runner.
+  let guard: NodeJS.Timeout | undefined;
+  const result = await Promise.race([p, new Promise<never>((_, rej) => (guard = setTimeout(() => rej(new Error("escalate did not end the flush wait")), 5_000)))]).finally(() => clearTimeout(guard));
+  assert.equal(result.flushed, "running");
   late.resolve();
 });
