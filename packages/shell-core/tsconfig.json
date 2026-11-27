@@ -1,5 +1,14 @@
 {
   "extends": "../../tsconfig.base.json",
-  "compilerOptions": { "rootDir": ".", "outDir": "dist" },
-  "include": ["src", "test"]
+  "compilerOptions": {
+    "rootDir": ".",
+    "outDir": "dist",
+    // The tests are ported from the legacy overlay, which Code OSS compiles without these two checks, so they stay off
+    // for this project. src/ must still pass with both on: the legacy staging hook copies src/ into Code OSS, and
+    // test/packages/staged-typecheck.test.mjs checks it there with the repository's strict flags.
+    "noUncheckedIndexedAccess": false,
+    "exactOptionalPropertyTypes": false
+  },
+  "include": ["src", "test"],
+  "references": [{ "path": "../ui" }]
 }
