@@ -228,6 +228,59 @@ jobs:
       - name: Test
         run: npm test
 
+  desktop-smoke:
+    name: Desktop app smoke (Xvfb)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Read the pinned Node version from the manifest
+        id: manifest
+        run: |
+          set -euo pipefail
+          node_version="$(jq -er '.node' code-oss/upstream.json)"
+          [[ "$node_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+            echo "::error file=code-oss/upstream.json::node is not MAJOR.MINOR.PATCH: $node_version"
+            exit 1
+          }
+          echo "node=$node_version" >>"$GITHUB_OUTPUT"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ steps.manifest.outputs.node }}
+          package-manager-cache: false
+
+      - name: Install dependencies (lockfile only, no install scripts)
+        run: npm ci --ignore-scripts
+
+      - name: Install Xvfb
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends xvfb xauth
+
+      - name: Electron runtime (the pinned version, checksum-verified by its installer)
+        # Ubuntu 24.04 restricts unprivileged user namespaces, so Chromium's sandbox needs its setuid helper.
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          node node_modules/electron/install.js
+          sudo chown root:root node_modules/electron/dist/chrome-sandbox
+          sudo chmod 4755 node_modules/electron/dist/chrome-sandbox
+
+      - name: Build the packages
+        run: npm run build
+
+      - name: Smoke test (opens the empty window and exits)
+        timeout-minutes: 5
+        run: xvfb-run -a npm run smoke --workspace @axis/desktop
+
   workflow-lint:
     name: Workflow lint
     runs-on: ubuntu-24.04
