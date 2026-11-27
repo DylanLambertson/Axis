@@ -35,7 +35,7 @@
 | Line | Gate line (short) | Threats | Proved by | State |
 |---|---|---|---|---|
 | 2a/L20 | A CLI run without messaging has neither endpoint variable (PTY-5 test extended) | IAC-19 | PV-M6 | Open (no variable exists) |
-| 2a/L21 | After run end an open shim connection and a new one with the old token are refused; Pause makes open connections answer `paused` | IAC-12 | PV-M6 | Open |
+| 2a/L21 | After run end an open shim connection and a new one with the old token are refused; Pause closes open connections at once (the listener stays) and a new connection's requests answer `paused` | IAC-12 | PV-M6 | Open |
 | 2a/L22 | A fifth connection is closed; no `auth` within 2 s or an oversized frame closes; a 64 KiB unframed write before auth does not grow memory past the frame cap | IAC-15 | PV-M6 | Open |
 | 2a/L23 | Reads limited to 60 a minute and replies to the caps; 1,000 bad tokens give at most one aggregated audit row a minute | IAC-15 | PV-M6 | Open |
 | 2a/L24 | A body with `ESC ] 52`, `ESC ] 8` and a bidi override comes back escaped through the endpoint and inside the label | IAC-14 | PV-M6, PV-M7 | Open |
