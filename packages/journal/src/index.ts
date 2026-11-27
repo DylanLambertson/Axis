@@ -57,6 +57,7 @@ export { PLUGIN_RECORD_ACTION, PluginGrantRecords, type PluginState } from "./pl
 export { PLUGIN_ISSUES_MIGRATION, PLUGIN_ISSUE_LIMITS } from "./schema-plugin-issues.js";
 export { PluginIssueRecords, type PluginIssueRefusal, type PluginIssueResult } from "./plugin-issue-store.js";
 export {
+  TASK_USER_RESERVE,
   TaskRecords,
   type TaskAssignee,
   type TaskAuthor,
