@@ -1,5 +1,7 @@
 # Threat model: Phase 1 (agent-first shell, 1a and 1b)
 
+> **Direction change (2026-11-26):** ADR 0011 (`docs/adr/0011-own-shell-ide-as-optional-feature.md`, Proposed) replaces the Code OSS-based shell with our own shell, with the IDE as an optional module. Statements here about Code OSS, IDE view, Workspace Trust, extensions or Open VSX are revised by plan ticket OS-23 (`docs/design/own-shell-plan.md`).
+
 - **Purpose:** the threat-model revision that ADR 0004 (security implication 7) requires before the Phase 1a gate, for the agent-first architecture.
 - **Status:** Draft for review. **Revised 2026-11-05 (verified against main `74cd12e`) for the 1a-then-1b order: `docs/security/threat-model-phase1-revision-1a.md` records which controls are built (with packages and PRs), the threats found during implementation, and where its status differs from this file. On status it wins.**
 - **Date:** 2026-11-02 (revision: 2026-11-05).

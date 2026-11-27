@@ -1,6 +1,7 @@
 # ADR 0003: Electron IPC bridge for Axis services
 
 - **Status:** Proposed. Becomes Accepted after the Phase 1 bridge spike meets the validation criteria below.
+- **Amended by:** ADR 0011 (Proposed, 2026-11-26): D1's handshake and sender checks move to our own window registry, D6 and I7 have no upstream footprint, D7 allows one fixed preload, and validation criteria 1 and 4 to 7 are re-stated there.
 - **Date:** 2026-11-01.
 - **Depends on:** ADR 0002 (Code OSS integration strategy, Proposed): Axis shell code in `src/vs/axis`, no deep upstream patches, decision 6 (Copilot and agent host removal as a separate patch set) and decision 7 (security-hardening patch range).
 - **Related:** `docs/security/threat-model-phase0.md`. Threat IDs such as EL-2 and DMN-1 refer to that document.

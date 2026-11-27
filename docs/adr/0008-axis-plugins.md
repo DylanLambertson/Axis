@@ -1,6 +1,7 @@
 # ADR 0008: Axis plugins
 
 - **Status:** Proposed. Becomes Accepted when the Phase 4a plugin gate lines pass (ticket PV-K5, validation criteria below). The owner decisions it records (extensibility D-1 to D-4 and D-12, product vision O-6) are decided; the engineering decisions it adds are decided and revisable.
+- **Amended by:** ADR 0011 (Proposed, 2026-11-26): plugin views are placed in the own shell's layout regions instead of the Code OSS workbench.
 - **Date:** 2026-11-22.
 - **Decision owner:** Dylan Lambertson. The owner delegated every open decision to the project lead on 2026-11-21; the decisions are recorded in `docs/design/owner-decisions-2026-11-21.md` §1 (O-6) and §4, and the owner can reverse any of them there.
 - **Depends on:** ADR 0002 (Code OSS integration strategy: shell-layer budget, criterion 2), ADR 0003 (bridge, principals, D1 handshake, D4 policy and approvals, D5 audit, D7 prohibited patterns), ADR 0006 (projects, the rail shows a destination only once its phase ships), ADR 0007 (messaging, M-8; merged, #573), ADR 0010 (pages, the isolated view; merged, #571). All Proposed.
