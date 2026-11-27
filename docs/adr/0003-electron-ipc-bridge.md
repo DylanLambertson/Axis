@@ -393,3 +393,7 @@ export interface IAxisPolicyEngine { evaluate(req: PolicyRequest, token: Cancell
 ## Amendment (2026-11-22, ADR 0008)
 
 ADR 0008 ("Axis plugins") adds a fourth principal kind, `plugin:<id>`, to D4. Main mints one connection per plugin view when it creates the view, signed like a window connection with `clientKind: plugin` and a `p<n>` window id; a plugin view never uses `vscode:axisConnect`, and D1.3's checks still refuse it there. A plugin actor never resolves an approval, the D5 record may name it, and D7 is unchanged (the plugin port shim adds no `contextBridge` global). Its section "Amendment to ADR 0003" governs where wording differs.
+
+## Amendment (2026-11-26, PV-K1e-a2)
+
+A challenge raised by a `plugin:<id>` request is addressed to the plugin view's attested host window: it is listed and resolved there by a `user` actor only, under the same window rule as any challenge, and consumed only by the plugin's own connection. The plugin learns only the challenge id. The approval is bound to the plugin's grant generation and host window, and is refused if either changes before it is consumed. The full request a user approves is read through `axis.approvals/1.detail`, built by the daemon; the 192-character summary stays as it is. Native confirmation applies only at tier >= 4; a plugin run start is tier 3 and is resolved by the renderer's own resolve. (`docs/design/plugin-run-start.md` section 2.)
