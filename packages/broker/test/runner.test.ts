@@ -50,12 +50,37 @@ test("a normal run records exit, output and no kill", async () => {
 });
 
 test("timeout kills the process and records why", async () => {
-  const runner = createCommandRunner({ killGraceMs: 200 });
+  // The grace is a hang guard only: a child that dies on SIGTERM is reaped by its exit event, which a loaded host can deliver late. With a
+  // short grace the runner gave up on it (`unkillable`, slot still held) and `active` read 1.
+  const runner = createCommandRunner({ killGraceMs: 10_000 });
   const r = await runner.run(base("setInterval(()=>{},1000)", { timeoutMs: 300 }));
   assert.equal(r.endedBy, "timeout");
   assert.equal(r.killed, true);
+  assert.equal(r.unkillable, false);
   assert.ok(r.durationMs >= 250 && r.durationMs < 30_000, String(r.durationMs)); // a timer never fires early; the upper bound only catches a kill that never happens
   assert.equal(runner.active, 0);
+});
+
+test("with the production default grace, a process that ignores SIGTERM is killed and its slot released", { skip: !posix }, async () => {
+  const dir = mkdtempSync(join(tmpdir(), "axis-run-"));
+  try {
+    const ready = join(dir, "ready");
+    const abort = new AbortController();
+    const runner = createCommandRunner();
+    // Aborted only once the child has installed its SIGTERM handler (it says so by a file), so the kill cannot beat the handler on a loaded host.
+    const script = `process.on("SIGTERM",()=>{});require("fs").writeFileSync(${JSON.stringify(ready)},"1");setInterval(()=>{},1000)`;
+    const run = runner.run(base(script, { signal: abort.signal }));
+    await waitFor(() => existsSync(ready), "the child's handler is installed");
+    abort.abort();
+    const r = await run;
+    assert.equal(r.endedBy, "aborted");
+    assert.equal(r.killed, true);
+    assert.equal(r.signal, "SIGKILL", "the default grace ended in a kill, not in giving up");
+    assert.equal(r.unkillable, false);
+    assert.equal(runner.active, 0);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("output cap kills the process, keeps exactly the cap and flags truncation", async () => {

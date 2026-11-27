@@ -2,6 +2,8 @@
 
 # Licensing at a glance
 
+> **Direction change (2026-11-26):** ADR 0011 (`docs/adr/0011-own-shell-ide-as-optional-feature.md`, Proposed) replaces the Code OSS-based shell with our own shell, with the IDE as an optional module. Statements here about Code OSS, IDE view, Workspace Trust, extensions or Open VSX are revised by plan ticket OS-23 (`docs/design/own-shell-plan.md`).
+
 This page orients readers. The binding texts are [`LICENSE`](../LICENSE) and [`NOTICE`](../NOTICE) at the repository root, which stay as plain text so build tooling and the product metadata can point at them. Nothing here is legal advice, and the licence text still needs a legal review before the first distributed build.
 
 <p align="center"><img src="../assets/readme/license-summary.svg" alt="What GitHub allows, what is not licensed, and how third-party software is treated" width="100%"></p>

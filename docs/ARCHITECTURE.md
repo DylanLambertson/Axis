@@ -1,5 +1,7 @@
 # Architecture and Technical Decisions
 
+> **Direction change (2026-11-26):** ADR 0011 (`docs/adr/0011-own-shell-ide-as-optional-feature.md`, Proposed) replaces the Code OSS-based shell with our own shell, with the IDE as an optional module. Statements here about Code OSS, IDE view, Workspace Trust, extensions or Open VSX are revised by plan ticket OS-23 (`docs/design/own-shell-plan.md`).
+
 ## System decomposition
 - **Shells:** Electron desktop main/preload/renderer; browser client with remote workspace gateway.
 - **Workbench:** one Axis shell (ADR 0002, ADR 0004) with two views. **Agent view** (default) is Axis-owned: workspace dashboard, workspace view (file tree, changes and diff review, terminals and panes, composer, agent activity). **IDE view** reuses the upstream workbench parts: editor surface, panels, status, notifications. A view-mode service switches or splits the views per user preference; command registry shared.
