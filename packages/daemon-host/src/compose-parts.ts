@@ -268,13 +268,16 @@ export function wireCliEndpoints(
   if (on !== true || typeof port.onRelay !== "function" || typeof port.relay !== "function") return undefined;
   const send = port.relay.bind(port);
   const sub = port.onRelay((m) => void endpoints.relay.onRelay(endpoints.source, m).then((outs) => outs.forEach((out) => send(out)), () => undefined));
-  // Slice 3: a worker's messaging turned off revokes its endpoints; a pause drops the connections of the senders it pauses.
-  const unsettle = endpoints.onSettings?.((e) => (e.kind === "cliMessagingOff" ? endpoints.relay.revokeWorker(e.agentId) : endpoints.relay.dropPaused(e.projectId)).forEach((out) => send(out)));
+  // The cleanup is registered before anything else can throw (review switch-live 1 N3), so a failing subscription below never
+  // leaves the relay subscription behind.
+  let unsettle: (() => void) | undefined;
   cleanups.push(() => {
     endpoints.relay.flush();
     sub.dispose();
     unsettle?.();
   });
+  // Slice 3: a worker's messaging turned off revokes its endpoints; a pause drops the connections of the senders it pauses.
+  unsettle = endpoints.onSettings?.((e) => (e.kind === "cliMessagingOff" ? endpoints.relay.revokeWorker(e.agentId) : endpoints.relay.dropPaused(e.projectId)).forEach((out) => send(out)));
   return {
     mint: (runId) => endpoints.relay.mint(runId),
     revoke: (runId) => {
@@ -313,7 +316,13 @@ export function cliEndpointLive(pty: unknown, endpoints: Parameters<typeof wireC
     on() {
       if (wired !== undefined) return;
       const own: (() => void)[] = [];
-      const cli = wireCliEndpoints(true, pty, endpoints, own);
+      let cli: CliEndpoints | undefined;
+      try {
+        cli = wireCliEndpoints(true, pty, endpoints, own);
+      } catch (e) {
+        own.forEach((c) => c()); // a half-made wiring is undone, never left subscribed
+        throw e;
+      }
       if (cli !== undefined) wired = { cli, cleanups: own };
     },
     off() {
@@ -329,6 +338,7 @@ export function cliEndpointLive(pty: unknown, endpoints: Parameters<typeof wireC
  * turns it off. `live` is required, so the composition cannot leave the eager revocation out. The action holds the mint.
  */
 export function hostCliSwitch(d: Omit<CliEndpointSwitchDeps, "mutex" | "onChanged"> & { readonly live: CliEndpointLive }): CliEndpointSwitchDeps {
+  // `onLiveError` (review switch-live 1 N2): the host logs a closed line when turning the wiring on or off failed.
   const { live, ...rest } = d;
   return { ...rest, mutex: new ProjectMutex(), onChanged: (on) => (on ? live.on() : live.off()) };
 }

@@ -81,3 +81,12 @@ test("the host's switch deps: a committed enable calls on, a committed disable c
   deps.onChanged?.(false);
   assert.deepEqual(calls, ["on", "off"]);
 });
+
+test("a wiring that fails half-way is undone: the relay subscription is disposed, nothing is wired", () => {
+  const f = fakes();
+  const live = cliEndpointLive(f.port, { relay: f.relay as never, source: Symbol("pty-control"), onSettings: () => { throw new Error("settings gone"); } }, []);
+  assert.throws(() => live.on(), /settings gone/);
+  assert.equal(f.subscribed.length, 1, "it had subscribed");
+  assert.equal(f.handler(), undefined, "and the subscription was disposed");
+  assert.equal(live.current(), undefined);
+});

@@ -28,6 +28,8 @@ export interface CliEndpointSwitchDeps {
   readonly onPreview?: (target: string, contentDigest: string, text: string) => void;
   /** After a committed change: the live wiring turns on (the next CLI run gets an endpoint) or off (every endpoint revoked). */
   readonly onChanged?: (enabled: boolean) => void;
+  /** The live wiring failed after a committed change: the host logs a closed line (nothing about the change itself). */
+  readonly onLiveError?: () => void;
 }
 
 /** Tell the live wiring; its failure never undoes the committed change (the relay reads the switch at every mint and message). */
@@ -36,6 +38,11 @@ function changed(deps: CliEndpointSwitchDeps, enabled: boolean): void {
     deps.onChanged?.(enabled);
   } catch {
     // The backstop holds: nothing is minted while off, and every endpoint is revoked at its next message.
+    try {
+      deps.onLiveError?.();
+    } catch {
+      // a failing log line never changes the outcome
+    }
   }
 }
 

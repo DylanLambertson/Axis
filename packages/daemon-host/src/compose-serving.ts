@@ -157,6 +157,7 @@ export function registerServing(registrar: HandlerRegistrar, services: HostServi
       action: createCliEndpointSwitchAction(journal.cliEndpoint, journal.cliEndpoint.takeSwitchMint()),
       store: journal.cliEndpoint,
       live: built.cliLive,
+      onLiveError: () => logger?.warn("request.failed", { reason: "cli_endpoint_live" }),
       platform: config.platform,
       onPreview: approvals.onPreview ?? (() => undefined),
     }),

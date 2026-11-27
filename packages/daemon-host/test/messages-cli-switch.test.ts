@@ -209,10 +209,12 @@ test("the handlers refuse again behind the policy: another caller, no approval, 
 test("a live wiring that throws never undoes the committed change", async (t) => {
   const s = await setup(t);
   switchOnForTests(s.journal.cliEndpoint);
-  const h = createMessagesHandlers({ service: s.m.service, settings: s.m.settings, cliSwitch: { ...s.cliSwitch, onChanged: () => { throw new Error("relay gone"); } } });
+  let logged = 0;
+  const h = createMessagesHandlers({ service: s.m.service, settings: s.m.settings, cliSwitch: { ...s.cliSwitch, onChanged: () => { throw new Error("relay gone"); }, onLiveError: () => void logged++ } });
   const ctx = { identity: { actor: "user", clientKind: "desktop" }, requestId: "q", correlationId: "k", signal: new AbortController().signal } as unknown as HandlerContext;
   assert.deepEqual(await h.disableCliEndpoint(ctx, {} as never), { enabled: false, changed: true });
   assert.equal(s.journal.cliEndpoint.enabled(), false, "off stays off");
+  assert.equal(logged, 1, "and the host is told, to log a closed line");
 });
 
 test("the disable takes the switch mutex: it waits while the enable's spend holds it", async (t) => {
