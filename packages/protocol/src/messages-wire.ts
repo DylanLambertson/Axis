@@ -277,8 +277,10 @@ export const MESSAGES_REFUSALS = {
    * contracts answer their package's policy refusals the same way).
    */
   // After bypass_entry: why enabling a CLI worker's messaging was refused when the launch cannot be judged (PV-M7 slice 1).
-  E_CONFLICT: ["recipient_refused", "cross_project", "paused", "hop_limit", "secret_found", "excerpt_path_refused", "bypass_entry", "wrapper_unparsed", "config_unparsed", "too_many_repo_files", "empty_argv", "unknown_flag", "env_assignment", "config_home", "real_path_unresolved"],
+  E_CONFLICT: ["recipient_refused", "cross_project", "paused", "hop_limit", "secret_found", "excerpt_path_refused", "already_enabled", "bypass_entry", "wrapper_unparsed", "config_unparsed", "too_many_repo_files", "empty_argv", "unknown_flag", "env_assignment", "config_home", "real_path_unresolved"],
   E_BACKPRESSURE: ["rate_limited", "queue_full"],
+  /** The CLI endpoint switch cannot be turned on here: no endpoint exists on Windows in 2a (decision 8). */
+  E_UNAVAILABLE: ["endpoint_unavailable"],
 } as const;
 export type MessagesRefusalCode = keyof typeof MESSAGES_REFUSALS;
 export const MESSAGES_REASONS = Object.values(MESSAGES_REFUSALS).flat();

@@ -15,6 +15,7 @@ import { InvalidMessageRequest } from "../messages/wire.js";
 import type { EnableDecision } from "../messages/enable-rule.js";
 import type { MessagingSettingsService } from "../messages/settings.js";
 import type { HandlerRegistrar } from "./anchor-guard.js";
+import { createCliEndpointSwitchContent, createCliEndpointSwitchHandlers, type CliEndpointSwitchDeps } from "./messages-switch.js";
 
 /**
  * `axis.messages/1` over the bridge (ticket PV-M3; docs/design/messages-contract.md). The bridge serves the user's own
@@ -31,6 +32,8 @@ export interface MessagesHandlerDeps {
   readonly settings: MessagingSettingsService;
   /** The CLI messaging enable rule's facts and decision (PV-M7 slice 1); absent, enabling is refused (`bypass_entry`). */
   readonly checkEnable?: (agentId: string, signal: AbortSignal) => Promise<EnableDecision>;
+  /** The CLI endpoint switch (PV-M7 slice 2, `messages-switch.ts`); absent, both switch methods refuse `endpoint_unavailable`. */
+  readonly cliSwitch?: CliEndpointSwitchDeps;
 }
 
 const fail = (code: "E_CANCELLED" | "E_INTERNAL" | "E_NOT_FOUND" | "E_CONFLICT" | "E_INVALID_ARGUMENT" | "E_BACKPRESSURE", reason?: string): never => {
@@ -74,7 +77,8 @@ export function createMessagesHandlers(deps: MessagesHandlerDeps): Readonly<Reco
     markRead: guarded("markRead", (c, p) => service.markRead(c, p)),
     pause: guarded("pause", (c, p) => settings.pause(c, p)),
     resume: guarded("resume", (c, p) => settings.resume(c, p)),
-    settings: guarded("settings", (c, p) => settings.settings(c, p)),
+    // The project's settings, and beside them the user's one global CLI endpoint switch.
+    settings: guarded("settings", (c, p) => ({ ...settings.settings(c, p), cliEndpoint: deps.cliSwitch?.store.enabled() ?? false })),
     updateSettings: guarded("updateSettings", async (c, p, signal) => {
       // Enabling a CLI worker's messaging: the rule's facts need main (its entry) and the file system, so they are read
       // here, before the service's synchronous write; the service refuses without a decision.
@@ -82,10 +86,11 @@ export function createMessagesHandlers(deps: MessagesHandlerDeps): Readonly<Reco
       const decision = enabling ? await deps.checkEnable!(p.agentId, signal) : undefined;
       return settings.updateSettings(c, p, decision);
     }),
+    ...createCliEndpointSwitchHandlers(deps.cliSwitch),
   };
 }
 
-/** Register `axis.messages/1` through the host's registrar (never the daemon itself). */
+/** Register `axis.messages/1` through the host's registrar (never the daemon itself), with the switch's content hook. */
 export function registerMessagesHandlers(registrar: HandlerRegistrar, deps: MessagesHandlerDeps): void {
-  registrar.register(MESSAGES_CONTRACT, MESSAGES_VERSION, createMessagesHandlers(deps));
+  registrar.register(MESSAGES_CONTRACT, MESSAGES_VERSION, createMessagesHandlers(deps), { content: createCliEndpointSwitchContent(deps.cliSwitch) });
 }

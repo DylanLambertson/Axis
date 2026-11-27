@@ -64,7 +64,7 @@ const send = (to: string, body: string, over: Record<string, unknown> = {}) => (
 
 test("inert in production: the host's binding mints no endpoint; nor for a composer agent, messaging off, Windows, a dead run or twice", async (t) => {
   // The host's agentOf is the run's recorded agent (PV-G3 slice 2): a run started without one (every run until PV-G4) has none.
-  const hostDeps = hostMessagingDeps({ journal: { messages: {} as never, agents: { agentOfRun: () => undefined } as never, getProject: () => undefined, getRun: () => undefined }, audit: { append: () => undefined }, monotonic: () => 0, scan: async () => [], logger: undefined, holdsSecret: () => false });
+  const hostDeps = hostMessagingDeps({ journal: { messages: {} as never, agents: { agentOfRun: () => undefined } as never, getProject: () => undefined, getRun: () => undefined, cliEndpoint: { enabled: () => false } }, audit: { append: () => undefined }, monotonic: () => 0, scan: async () => [], logger: undefined, holdsSecret: () => false });
   assert.equal(hostDeps.agentOf?.("any-run"), undefined);
   const r = await deliveryRig(t, { noDelivery: true });
   const prod = createMessagingBinding({ journal: r.c.journal, audit: r.c.audit, random: { bytes: (n) => randomBytes(n) }, monotonic: () => 0, scan: async () => [], holdsSecret: () => false, directory: { project: () => true, agent: (id) => ({ agentId: id, projectId: "p", groupId: null, kind: "cli" }), group: () => undefined, agents: () => [] }, runLive: () => true, platform: "linux" });
@@ -291,6 +291,20 @@ test("PV-M6 slice 3 backstop: with the stored setting off, the next frame revoke
   assert.deepEqual(afterRevoke(f.ep, await f.open("c-2")), { ok: false, reason: "revoked" });
   assert.deepEqual(await f.r.m.endpoints.relay.onRelay(f.r.m.endpoints.source, { t: "relay-close", endpoint: f.ep, conn: "c-2" }), [{ t: "endpoint-close", endpoint: f.ep, reason: "revoked" }], "review s3 N1: even a close closes the endpoint again, so a lost endpoint-close is repaired");
   assert.deepEqual(await f.r.m.endpoints.relay.onRelay(f.r.m.endpoints.source, { t: "relay-open", endpoint: endpointIdOf("never-minted"), conn: "c-3" }), [{ t: "relay-reply", endpoint: endpointIdOf("never-minted"), conn: "c-3", frame: '{"ok":false,"reason":"refused"}', close: true, authFailed: false }], "an id never minted gets no endpoint-close");
+});
+
+test("PV-M7 slice 2: the user's switch off: nothing is minted even for an enabled worker, and a live endpoint is revoked at its next message", async (t) => {
+  const off = await deliveryRig(t, { noDelivery: true, cliEndpointOff: true });
+  off.c.journal.messages.setAgentSettings("c1", { acceptsFrom: "group", cliMessaging: true, muted: false });
+  assert.equal(off.m.endpoints.relay.mint(off.run("c1")), undefined, "the switch off: no endpoint, though the worker's setting is on");
+  const f = await fx(t);
+  const conn = await f.authed();
+  f.r.c.journal.cliEndpoint.switchOff(); // the user's disable (its handler also takes the switch mutex)
+  const out = await f.frame(conn, { op: "read", id: "r1" });
+  assert.deepEqual(out[0], { t: "endpoint-close", endpoint: f.ep, reason: "revoked" }, "the next message revokes it");
+  assert.deepEqual(json(out[1]), { ok: false, reason: "revoked" });
+  assert.deepEqual(afterRevoke(f.ep, await f.open("c-2")), { ok: false, reason: "revoked" }, "and it stays revoked");
+  assert.equal(f.r.m.endpoints.relay.mint(f.r.run("c1")), undefined, "nothing new is minted");
 });
 
 test("PV-M6 slice 3: dropPaused drops the connections of an endpoint whose sender a pause now covers (worker, group, project), and no other", async (t) => {

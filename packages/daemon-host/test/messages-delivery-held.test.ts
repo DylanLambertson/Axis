@@ -2,7 +2,6 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { test } from "node:test";
-import type { Journal } from "@axis/journal";
 import { encodeMessagingId } from "@axis/protocol";
 import { createMessagingBinding, heldNotice, hostMessagingDeps, type MessageCaller } from "../src/index.js";
 import { deliveryRig, type DeliveryRig } from "./messages-delivery-rig.js";
@@ -157,7 +156,7 @@ test("a log hook that throws never ends the run, on the check path of any sender
 
 test("the host wiring logs a swallowed delivery failure by code and reads live runs from the journal", () => {
   const logged: unknown[] = [];
-  const journal = { messages: {}, agents: {}, getProject: () => undefined, getRun: (id: string) => (id === "live" ? { state: "RUNNING" } : { state: "SUCCEEDED" }) } as unknown as Pick<Journal, "messages" | "getProject" | "getRun" | "agents">;
+  const journal = { messages: {}, agents: {}, getProject: () => undefined, getRun: (id: string) => (id === "live" ? { state: "RUNNING" } : { state: "SUCCEEDED" }), cliEndpoint: { enabled: () => false } } as unknown as Parameters<typeof hostMessagingDeps>[0]["journal"];
   const deps = hostMessagingDeps({ journal, audit: { append: () => undefined }, monotonic: () => 0, scan: async () => [], holdsSecret: () => false, logger: { warn: (...a: unknown[]) => void logged.push(a) } });
   deps.onInternalError?.("notice_failed");
   assert.deepEqual(logged, [["request.failed", { reason: "delivery_notice_failed" }]]);

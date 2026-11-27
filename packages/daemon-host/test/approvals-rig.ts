@@ -93,7 +93,7 @@ export class Client {
     this.port.postMessage({
       type: "hello",
       protocolVersions: [1],
-      contracts: [{ id: "axis.worktrees", versions: [1] }, { id: "axis.approvals", versions: [1] }, { id: "axis.cli-runs", versions: [1] }, { id: "axis.runs", versions: [1] }, { id: "axis.test", versions: [1] }, { id: "axis.pages", versions: [1] }, { id: "axis.tasks", versions: [1] }, { id: "axis.plugins", versions: [1] }],
+      contracts: [{ id: "axis.worktrees", versions: [1] }, { id: "axis.approvals", versions: [1] }, { id: "axis.cli-runs", versions: [1] }, { id: "axis.runs", versions: [1] }, { id: "axis.test", versions: [1] }, { id: "axis.pages", versions: [1] }, { id: "axis.tasks", versions: [1] }, { id: "axis.plugins", versions: [1] }, { id: "axis.messages", versions: [1] }],
     });
     await this.until((m) => m.type !== undefined);
   }
