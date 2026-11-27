@@ -60,4 +60,7 @@ export const CLI_PROJECT_CONFIG: readonly CliProjectConfig[] = Object.freeze([
   Object.freeze({ cli: "claude", segments: Object.freeze([".claude-plugin"]), severity: "warn", source: `precautionary, ${CLAUDE}: a folder with ".claude-plugin/plugin.json" is a plugin whose skills it auto-loads` }),
   Object.freeze({ cli: "codex", segments: Object.freeze([".codex", "config.toml"]), severity: "warn", source: `${CODEX}, whose text reads "Project \`.codex/config.toml\`: settings for a trusted repository, including sandbox, MCP, hooks"` }),
   Object.freeze({ cli: "codex", segments: Object.freeze([".codex", "hooks"]), severity: "warn", source: `${CODEX}: the path string is in its code` }),
+  // Audit B F5, precautionary: the binary names a "hooks.json" of hook events (pre-tool, permission, session start) beside its
+  // configuration layers; its project-relative path is not stated, so the trusted project's own file is listed, warned and protected.
+  Object.freeze({ cli: "codex", segments: Object.freeze([".codex", "hooks.json"]), severity: "warn", source: `precautionary, ${CODEX}: its code names a "hooks.json" of hook events` }),
 ] as const satisfies readonly CliProjectConfig[]);

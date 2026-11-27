@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import https from "node:https";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
@@ -22,7 +22,9 @@ import { opensslMissing } from "../net/openssl.js";
  * child process, a user window through its real connection path, a loopback HTTPS server answering as GitHub, and one canary
  * token in the fake vault. Every case checks every sink for the token in every registered form: the replies and errors, every
  * frame a window received, the pending approvals (no challenge at tier 0), the host's log lines, and, after a graceful stop,
- * every audit row and every byte of the database.
+ * every audit row, every byte of the database and every file under the host's root and the project repository. stdout is
+ * captured too, and both streams are kept uncapped (audit C L2). The host is the test host (testing/slice-host.ts): the daemon
+ * entry has no integrations seam by design (net-read-slice.md §7), so the entry's own stderr path is covered by the entry tests.
  */
 const CANARY = String.raw`canary"T0k3n\x+y/z=Q9w-synthetic-0001`;
 const HEADER = `Bearer ${CANARY}`;
@@ -32,6 +34,17 @@ const PR = { number: 7, title: "Fix the build", state: "open", user: { login: "o
 const REDUCED = { items: [{ number: 7, title: "Fix the build", state: "open", author: "octo" }] };
 const ARGS = { owner: "octo", repo: "hello", state: "open", perPage: 5 };
 const holdsCanary = (text: string): boolean => FORMS.some((f) => text.includes(f));
+/** Every regular file under `root`, symlinks not followed. */
+function walk(root: string): string[] {
+  const out: string[] = [];
+  for (const name of readdirSync(root)) {
+    const p = join(root, name);
+    const st = lstatSync(p);
+    if (st.isDirectory()) out.push(...walk(p));
+    else if (st.isFile()) out.push(p);
+  }
+  return out;
+}
 const unicodeEscaped = (s: string): string => [...s].map((c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`).join("");
 
 type Handler = (req: IncomingMessage, res: ServerResponse) => void;
@@ -68,6 +81,7 @@ describe("headless slice: the integrations read canary", { skip, timeout: 240_00
   const sinksClean = async (what: string): Promise<void> => {
     assert.equal(holdsCanary(transcript.join("\n")), false, `${what}: no frame holds the canary`);
     assert.equal(holdsCanary(sup.stderr), false, `${what}: no log line holds the canary`);
+    assert.equal(holdsCanary(sup.output), false, `${what}: nothing the host wrote to stdout or stderr, uncapped, holds the canary`);
     const pending = await user.ok<{ challenges: unknown[] }>("axis.approvals", "pending", {});
     assert.deepEqual(pending.challenges, [], `${what}: no challenge at tier 0`);
   };
@@ -92,7 +106,8 @@ describe("headless slice: the integrations read canary", { skip, timeout: 240_00
       assert.notEqual(form, CANARY, `${name} differs from the raw token`);
       assert.ok(secretForms(CANARY).includes(form), `${name} is a form secretForms lists`);
     }
-    const h = await startHost(fx, { integrationsConfig: config("main", { canary: CANARY }) });
+    // Audit C L2: stdout piped too, and both streams kept uncapped.
+    const h = await startHost(fx, { integrationsConfig: config("main", { canary: CANARY }), fullOutput: true });
     sup = h.sup;
     await h.ready;
     trustWindow(sup);
@@ -227,6 +242,12 @@ describe("headless slice: the integrations read canary", { skip, timeout: 240_00
     assert.equal(ok["bytesIn"], Buffer.byteLength(JSON.stringify([PR])));
     assert.equal(holdsCanary(JSON.stringify(rows)), false, "no audit row holds the canary");
     assert.equal(holdsCanary(databaseBytes(join(dir, "stopped")).toString("latin1")), false, "no database byte holds the canary");
+    // Audit C L2: every file the host could have written, not only the database: the supervisor's root (data directory, worktree
+    // root, lock and anchor files) and the project repository.
+    const files = [...walk(sup.root), ...walk(fx.repo)];
+    assert.ok(files.length > 3, `the walk reads the host's files (${files.length})`);
+    for (const f of files) assert.equal(holdsCanary(readFileSync(f).toString("latin1")), false, `${f} holds the canary`);
+    assert.equal(holdsCanary(sup.output), false, "nothing the host wrote, up to its exit, holds the canary");
     db.close();
   });
 

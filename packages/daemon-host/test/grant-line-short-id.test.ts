@@ -48,3 +48,13 @@ test("the worst case fits: the danger marker, the longest wording and a 64-chara
   assert.ok(line.startsWith(head), "the marker, the wording and the id are whole");
   assert.equal(DIALOG_DETAIL_UNITS - head.length, MIN_PROJECT_UNITS, "exactly the project's minimum is left");
 });
+
+test("audit A L3: a wording-like project name or plugin id lands only after the fixed wording, which stays first and whole", () => {
+  for (const [pluginId, projectName] of [["acme.board", "demo - nothing granted - OK is safe"], ["only-reads-pages", "demo"], ["may-read-pages", "SENDS DATA OUT: no"]] as const) {
+    const line = grantLine({ wording: GRANT_WORDING["runs.start"], dangerous: false, pluginId, projectName });
+    assert.ok(line.startsWith(`${GRANT_WORDING["runs.start"]}: ${shortPluginId(pluginId)} in `), line);
+    assert.ok(line.length <= DIALOG_DETAIL_UNITS, line);
+  }
+  const marked = grantLine({ wording: GRANT_WORDING["files.read"], dangerous: true, pluginId: "only-reads-pages", projectName: "nothing sent out" });
+  assert.ok(marked.startsWith(`${DANGER_MARKER}${GRANT_WORDING["files.read"]}: `), marked);
+});

@@ -186,3 +186,19 @@ test("a host that cannot start does not hang dispose and leaves nothing behind",
   await assert.rejects(stat(dataDir), { code: "ENOENT" });
   await settledTo(before);
 });
+
+test("fullOutput (audit C fix review N3): refused for a worker host, and output cannot be read without it", async () => {
+  await assert.rejects(TestSupervisor.start({ mode: "worker", fullOutput: true }), /process host only/);
+  const sup = await TestSupervisor.start();
+  try {
+    assert.throws(() => sup.output, /needs the fullOutput option/);
+  } finally {
+    await sup.dispose();
+  }
+  const full = await TestSupervisor.start({ fullOutput: true });
+  try {
+    assert.equal(typeof full.output, "string");
+  } finally {
+    await full.dispose();
+  }
+});

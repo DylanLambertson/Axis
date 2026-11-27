@@ -59,6 +59,9 @@ export const endpointFrame = z.discriminatedUnion("op", [
   z.strictObject({ op: z.literal("read"), id: reqId, threadId: threadIdSchema.optional(), afterSeq: z.number().int().min(0).optional(), limit: z.number().int().min(1).max(MAX_READ_MESSAGES).optional() }),
 ]);
 
+/** Audit B F2: the endpoint's standing changed while a send waited on the scan (thrown by the guard, inside the write). */
+class EndpointGone extends Error {}
+
 export interface EndpointRelayDeps {
   readonly service: Pick<MessageService, "send" | "readWithheld" | "context">;
   readonly directory: MessagingDirectory;
@@ -71,6 +74,12 @@ export interface EndpointRelayDeps {
   readonly cliEndpointOn: () => boolean;
   /** True while the run is RUNNING. */
   readonly runLive: (runId: string) => boolean;
+  /**
+   * Audit B F3: true once the run has ever left RUNNING (its transition history, an indexed read of the run's own few rows). An
+   * endpoint whose run left RUNNING stays revoked even when the run is RUNNING again, and such a run is minted nothing. The read is
+   * bounded: a live endpoint's run has at most its QUEUED and RUNNING rows, since the first transition out of RUNNING revokes it.
+   */
+  readonly runLeftRunning: (runId: string) => boolean;
   /**
    * True while the supervisor is launching the run (QUEUED: spawned but not yet RUNNING). The endpoint is minted in the spawn,
    * before the run is RUNNING, so mint accepts this state; a message before RUNNING answers `not_ready` and revokes nothing.
@@ -226,9 +235,14 @@ export function createEndpointRelay(deps: EndpointRelayDeps): EndpointRelay {
         return [reply(ep.id, conn, { id: f.id, ok: true, messages, more: out.more })];
       }
       const req = { recipients: f.recipients, body: { format: "text" as const, text: f.body }, ...(f.threadId === undefined ? {} : { threadId: f.threadId }), ...(f.inReplyTo === undefined ? {} : { inReplyTo: f.inReplyTo }) };
-      const { message } = await deps.service.send(who, req);
+      // Audit B F2: re-checked inside the write, after the scan: what changed while it ran (the switch, the worker's messaging,
+      // the run, a revoke) refuses, and nothing is written. A pause is the service's own refusal in the same write.
+      const { message } = await deps.service.send(who, req, () => {
+        if (ep.revoked || !enabled(ep) || !deps.runLive(ep.runId) || deps.runLeftRunning(ep.runId)) throw new EndpointGone();
+      });
       return [reply(ep.id, conn, { id: f.id, ok: true, messageId: message.messageId, threadId: message.threadId, seq: message.seq, hop: message.hop })];
     } catch (e) {
+      if (e instanceof EndpointGone) return ep.revoked ? refuse(ep.id, conn, "revoked") : [revokeEndpoint(ep), ...refuse(ep.id, conn, "revoked")];
       // Only a closed reason leaves: a refusal's own, `invalid`, or `failed` for anything else (never an error's text).
       const reason = e instanceof MessageRefusal ? e.reason : e instanceof InvalidMessageRequest ? "invalid" : "failed";
       return [reply(ep.id, conn, { id: f.id, ok: false, reason })];
@@ -237,7 +251,7 @@ export function createEndpointRelay(deps: EndpointRelayDeps): EndpointRelay {
 
   return {
     mint(runId) {
-      if (deps.platform === "win32" || !deps.cliEndpointOn() || byRun.has(runId) || tombstoneRuns.has(runId) || byRun.size >= ENDPOINT_LIMITS.maxEndpoints || !(deps.runLive(runId) || launching(runId))) return undefined;
+      if (deps.platform === "win32" || !deps.cliEndpointOn() || deps.runLeftRunning(runId) || byRun.has(runId) || tombstoneRuns.has(runId) || byRun.size >= ENDPOINT_LIMITS.maxEndpoints || !(deps.runLive(runId) || launching(runId))) return undefined;
       const agentId = deps.agentOf(runId);
       const entry = agentId === undefined ? undefined : deps.directory.agent(agentId);
       if (agentId === undefined || entry === undefined || entry.kind !== "cli") return undefined;
@@ -292,7 +306,7 @@ export function createEndpointRelay(deps: EndpointRelayDeps): EndpointRelay {
         return msg.t === "relay-close" ? [close] : [close, ...refuse(endpoint, conn, "revoked")];
       }
       // The messaging setting is checked BEFORE the launch window: an endpoint whose worker's messaging is off is revoked even while QUEUED.
-      if (!enabled(ep)) return msg.t === "relay-close" ? [revokeEndpoint(ep)] : [revokeEndpoint(ep), ...refuse(endpoint, conn, "revoked")];
+      if (!enabled(ep) || deps.runLeftRunning(ep.runId)) return msg.t === "relay-close" ? [revokeEndpoint(ep)] : [revokeEndpoint(ep), ...refuse(endpoint, conn, "revoked")];
       if (!deps.runLive(ep.runId)) {
         // Still being launched (QUEUED): nothing is relayed as the worker before RUNNING, and the endpoint stays. Any other
         // state (terminal, or REVIEWING and BLOCKED as before) revokes.

@@ -5,7 +5,7 @@
 // sends reaches the user. Turning the switch off revokes that endpoint at once (the socket closes and goes), and the worker's next
 // run is started with no endpoint. The pty port is the production control slot over a real in-process pty service (slice-pty.ts).
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { connect, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -18,22 +18,30 @@ import { awaitRun, confirmNative, disposeHosts, registerProject, startHost, trus
 const SUITE_TIMEOUT_MS = 240_000;
 const skip = gitSkipReason() ?? (process.platform === "win32" ? "no CLI endpoint on Windows in 2a" : undefined);
 
-/** A CLI the enable rule accepts (its real path is named `codex`, no flags) that dumps the two names it was given, then waits. */
+/**
+ * A CLI the enable rule accepts, in the npm layout of the second CLI (the one script layout the rule takes: a script merely named
+ * `codex` is a wrapper, audit B F1), linked as `bin/codex` with no flags. It dumps the two names it was given, then waits.
+ */
 function fakeCodex(dir: string): string {
-  const bin = join(dir, "bin");
-  mkdirSync(join(dir, "dumps"), { recursive: true });
-  mkdirSync(bin, { recursive: true });
-  const path = join(bin, "codex");
+  const dumps = join(dir, "dumps");
+  mkdirSync(dumps, { recursive: true });
+  const pkg = join(dir, "lib", "node_modules", "@openai", "codex");
+  mkdirSync(join(pkg, "bin"), { recursive: true });
+  writeFileSync(join(pkg, "package.json"), JSON.stringify({ name: "@openai/codex", type: "commonjs" }));
+  const script = join(pkg, "bin", "codex.js");
   writeFileSync(
-    path,
+    script,
     `#!${process.execPath}\n` +
-      `const { writeFileSync } = require("node:fs"); const { join, dirname } = require("node:path");\n` +
+      `const { writeFileSync } = require("node:fs"); const { join } = require("node:path");\n` +
       `const out = { endpoint: process.env.AXIS_MESSAGES_ENDPOINT ?? null, token: process.env.AXIS_MESSAGES_TOKEN ?? null };\n` +
-      `writeFileSync(join(dirname(__dirname), "dumps", String(process.pid) + ".json"), JSON.stringify(out));\n` +
+      `writeFileSync(join(${JSON.stringify(dumps)}, String(process.pid) + ".json"), JSON.stringify(out));\n` +
       `setInterval(() => undefined, 60000);\n`,
   );
-  chmodSync(path, 0o755);
-  return path;
+  chmodSync(script, 0o755);
+  mkdirSync(join(dir, "bin"), { recursive: true });
+  const link = join(dir, "bin", "codex");
+  symlinkSync(script, link);
+  return link;
 }
 const frame = (o: unknown): Buffer => {
   const b = Buffer.from(JSON.stringify(o), "utf8");
