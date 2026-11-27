@@ -40,7 +40,7 @@ export interface PtyParentPortLike {
 
 export interface PtyEntryProcess {
   exit(code?: number): unknown;
-  on(event: "SIGTERM" | "SIGINT" | "exit", listener: () => void): unknown;
+  on(event: "SIGTERM" | "SIGINT" | "SIGUSR1" | "exit", listener: () => void): unknown;
   removeListener(event: "SIGTERM" | "SIGINT" | "exit", listener: () => void): unknown;
 }
 
@@ -75,7 +75,26 @@ const closeAll = (ports: readonly MessagePortLike[]): void => {
   }
 };
 
+/** The one closed line the entry writes when SIGUSR1 arrives (the inspector stays closed). */
+export const DEBUG_SIGNAL_LINE = "axis.pty ignored SIGUSR1: the inspector stays closed";
+/** The one `execArgv` the pty process may be forked with: the flag that stops SIGUSR1 from opening the inspector. */
+export const EXEC_ARGV_ALLOWED = "--disable-sigusr1";
+
 export function runPtyEntry(deps: PtyEntryDeps): PtyEntryHandle {
+  // Audit C M1: SIGUSR1 would open Node's unauthenticated inspector on 127.0.0.1:9229, from which any local user could read
+  // this process's heap. The complete fix is `--disable-sigusr1` (EXEC_ARGV_ALLOWED), which holds from the first instruction;
+  // this listener is the second line, for a fork without it, and holds only once this file runs. Installed first, on every
+  // path, and never removed, not even by `dispose`: with no listener the signal's default applies again.
+  let signalled = false;
+  deps.process.on("SIGUSR1", () => {
+    if (signalled) return;
+    signalled = true;
+    try {
+      deps.stderr(DEBUG_SIGNAL_LINE);
+    } catch {
+      /* a failing log line never changes the outcome */
+    }
+  });
   const refuse = (reason: string): PtyEntryHandle => {
     try {
       deps.stderr(`axis.pty refused to start: ${reason}`);
@@ -87,7 +106,8 @@ export function runPtyEntry(deps: PtyEntryDeps): PtyEntryHandle {
   };
   if (deps.parentPort === undefined || typeof deps.parentPort.on !== "function") return refuse("not_utility_process");
   if (deps.execArgv.some((a) => DEBUG_FLAG.test(a))) return refuse("debug_flag_refused");
-  if (deps.execArgv.length > 0) return refuse("exec_args_refused");
+  // The one allowed argument is the flag that keeps the inspector closed, alone (audit C M1).
+  if (!(deps.execArgv.length === 0 || (deps.execArgv.length === 1 && deps.execArgv[0] === EXEC_ARGV_ALLOWED))) return refuse("exec_args_refused");
   const nodeOptions = deps.env["NODE_OPTIONS"];
   if (nodeOptions !== undefined && nodeOptions !== "") return refuse("node_options_refused");
 

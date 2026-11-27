@@ -57,9 +57,10 @@ if (override !== undefined) {
   for (const [name, command, args] of JSON.parse(override)) suites.push(await run(name, command, args));
 } else {
   suites.push(await run("build", npm, ["run", "build"]));
-  const packagesDir = join(root, "packages");
-  for (const dir of readdirSync(packagesDir).sort()) {
-    const file = join(packagesDir, dir, "package.json");
+  // Every workspace with a test script: packages/* first, then apps/* (the desktop app bundles the packages' output).
+  const workspaces = ["packages", "apps"].flatMap((w) => readdirSync(join(root, w)).sort().map((dir) => join(root, w, dir)));
+  for (const dir of workspaces) {
+    const file = join(dir, "package.json");
     if (!existsSync(file)) continue;
     const pkg = JSON.parse(readFileSync(file, "utf8"));
     if (pkg.scripts?.test === undefined) continue;

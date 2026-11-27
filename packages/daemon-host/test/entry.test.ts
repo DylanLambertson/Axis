@@ -67,6 +67,10 @@ test("a debugger or inspector flag, NODE_OPTIONS, NODE_TLS_REJECT_UNAUTHORIZED o
     ["--remote-debugging-port", { execArgv: ["--remote-debugging-port=9222"] }, "debug_flag_refused"],
     ["--require", { execArgv: ["--require", "/tmp/x.js"] }, "exec_args_refused"],
     ["--import", { execArgv: ["--import=data:text/javascript,0"] }, "exec_args_refused"],
+    // Audit C M1: `--disable-sigusr1` is accepted alone, never with anything else and never twice.
+    ["--disable-sigusr1 twice", { execArgv: ["--disable-sigusr1", "--disable-sigusr1"] }, "exec_args_refused"],
+    ["--disable-sigusr1 and --require", { execArgv: ["--disable-sigusr1", "--require", "/tmp/x.js"] }, "exec_args_refused"],
+    ["--disable-sigusr1 with a value", { execArgv: ["--disable-sigusr1=0"] }, "exec_args_refused"],
     ["NODE_OPTIONS", { env: { NODE_OPTIONS: "--require /tmp/x.js" } }, "node_options_refused"],
     ["NODE_TLS_REJECT_UNAUTHORIZED", { env: { NODE_TLS_REJECT_UNAUTHORIZED: "0" } }, "tls_override_refused"],
     ["NODE_TLS_REJECT_UNAUTHORIZED=1", { env: { NODE_TLS_REJECT_UNAUTHORIZED: "1" } }, "tls_override_refused"],
@@ -89,6 +93,7 @@ test("an empty value, or a lower-case name outside Windows, is not a refusal", a
     ["empty", { env: { NODE_OPTIONS: "", NODE_TLS_REJECT_UNAUTHORIZED: "", NODE_USE_ENV_PROXY: "" } }],
     ["win32 empty", { platform: "win32", env: { node_options: "", Node_Tls_Reject_Unauthorized: "", NODE_USE_ENV_PROXY: "" } }],
     ["linux lower-case", { platform: "linux", env: { node_options: "--require x", node_tls_reject_unauthorized: "0", node_use_env_proxy: "1" } }],
+    ["--disable-sigusr1 alone (audit C M1)", { execArgv: ["--disable-sigusr1"] }],
   ] as const) {
     const { port, proc, deps, timers } = rig(over);
     const h = runDaemonEntry(deps);

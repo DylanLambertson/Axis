@@ -1,0 +1,16 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": ".",
+    "outDir": "dist/tsc",
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "jsx": "react-jsx"
+  },
+  "include": ["main", "preload", "renderer", "test"],
+  "references": [
+    { "path": "../../packages/shell-core" },
+    { "path": "../../packages/shell-sdk" },
+    { "path": "../../packages/ui" },
+    { "path": "../../packages/ui-editor" }
+  ]
+}
