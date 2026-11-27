@@ -52,6 +52,7 @@ export { AttentionRecords, MAX_ATTENTION_ROWS, type AttentionRun } from "./atten
 export { TASKS_MIGRATION, TASK_LIMITS, projectTaskBytesSql } from "./schema-tasks.js";
 export { PLUGIN_GRANTS_MIGRATION, PLUGIN_LIMITS, PLUGIN_PERMISSIONS, type PluginPermission } from "./schema-plugins.js";
 export { CLI_ACK_LIMITS, CLI_ACK_MIGRATION } from "./schema-cli-ack.js";
+export { TASKS_KEEP_USER_MIGRATION } from "./schema-tasks-keep.js";
 export { PLUGIN_RECORD_ACTION, PluginGrantRecords, type PluginState } from "./plugin-grant-store.js";
 export { PLUGIN_ISSUES_MIGRATION, PLUGIN_ISSUE_LIMITS } from "./schema-plugin-issues.js";
 export { PluginIssueRecords, type PluginIssueRefusal, type PluginIssueResult } from "./plugin-issue-store.js";
