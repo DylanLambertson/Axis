@@ -16,7 +16,7 @@ import { CANARY, failure, fakeClock, HOST, PUBLIC, rig, skip } from "./egress-ri
 test("a GET goes to the checked address with SNI on the original host, no Accept-Encoding, the parsed path; the body comes back whole", { skip }, async (t) => {
   const r = await rig(t);
   r.handle((_q, s) => s.writeHead(200, { "content-type": "application/json" }).end('{"ok":true}'));
-  const res = await r.client().send(r.req({ url: `${r.origin}/v1/a/%2e%2e/items?q=1`, headers: { Authorization: `Bearer ${CANARY}` } }));
+  const res = await r.client().send(r.req({ url: `${r.origin}/v1/a/%2e%2e/items?q=1`, headers: { "X-Api-Version": `v${CANARY}` } }));
   assert.equal(res.status, 200);
   assert.equal(res.body.toString(), '{"ok":true}');
   const hit = r.hits[0]!;
@@ -24,7 +24,8 @@ test("a GET goes to the checked address with SNI on the original host, no Accept
   assert.equal(hit.servername, HOST);
   assert.equal(hit.headers.host, `${HOST}:${r.port}`);
   assert.equal(hit.headers["accept-encoding"], undefined, "no Accept-Encoding is sent");
-  assert.equal(hit.headers.authorization, `Bearer ${CANARY}`);
+  assert.equal(hit.headers["x-api-version"], `v${CANARY}`);
+  assert.equal(hit.headers.authorization, undefined, "send() never carries a credential");
 });
 
 test("a POST sends its body with the computed length; exactly 1 MiB is sent, one byte more is refused before anything leaves", { skip }, async (t) => {

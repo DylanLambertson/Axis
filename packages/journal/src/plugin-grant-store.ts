@@ -5,7 +5,8 @@ import { PLUGIN_PERMISSIONS, type PluginPermission } from "./schema-plugins.js";
 /**
  * Plugin grants (schema version 16, ticket PV-K1b). Every write is the user's own act: no method takes an actor, the rows say
  * `user`, and each write appends one `journal.plugin.record` audit event that names ids and a fixed field, never anything else.
- * The contract methods that will call these (PV-K2) must be tier 4 or main-owned; nothing in K1b calls them but tests.
+ * The contract methods that will call these (PV-K2): `grant` and `enable` at tier 4 or main-owned, `revoke` and `disable` at tier 2
+ * (a decrease applies at once; `docs/design/plugin-grant-contract.md`). Nothing in K1b calls them but tests.
  *
  * `state` is what the daemon's policy reads for every plugin call: whether the plugin is enabled in the project, its generation
  * (OI-3 binds challenges to it) and its granted permissions. A plugin that was never added is `undefined`.

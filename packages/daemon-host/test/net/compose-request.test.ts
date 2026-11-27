@@ -142,6 +142,45 @@ test("every code point is judged by the normalisation RULE in a text path segmen
   assert.equal(reason(() => composeRequest(ISSUE, "gh", ORIGIN, { ...BASE, search: "\u2025" })), "composed", "a query value is not a path segment");
 });
 
+test("a default-ignorable character in a path value is refused, by the Unicode property (N1e review 3 nit 1)", () => {
+  for (const v of [".\u200b.", "a\u200bb", "\u00ad", "a\u200cb", "a\u200db", "a\u2060b", "a\ufe0fb", "a\u180eb", "a\u{e0020}b", "\u034f", "a\u3164b", "a\ufeffb"]) {
+    assert.equal(reason(() => composeRequest(NAMED, "gh", ORIGIN, { name: v })), "argument_refused", JSON.stringify(v));
+  }
+  let ignorable = 0;
+  for (let cp = 0; cp <= 0x10ffff; cp++) {
+    if (cp >= 0xd800 && cp <= 0xdfff) continue;
+    const v = `a${String.fromCodePoint(cp)}b`;
+    if (!/\p{Default_Ignorable_Code_Point}/u.test(v)) continue;
+    ignorable++;
+    assert.equal(reason(() => placeholderText(v, { kind: "text" }, true)), "argument_refused", `U+${cp.toString(16).toUpperCase()}`);
+  }
+  assert.ok(ignorable > 4000, `${ignorable} default-ignorable code points`);
+  assert.equal(reason(() => composeRequest(ISSUE, "gh", ORIGIN, { ...BASE, search: "a\u200bb" })), "composed", "a query value is not a path segment");
+});
+
+test("invisible characters that are not default-ignorable are refused in a path value too (N1f review 1 nit 5)", () => {
+  // Format characters (Cf), every space separator but the ASCII space (Zs), and blank glyphs no property covers.
+  for (const v of ["a\u2800b", "a\u{1d159}b", "a\u{13430}b", "a\u{16fe4}b", "a\u00a0b", "a\u2000b", "a\u200ab", "a\u202fb", "a\u205fb", "a\u3000b", "\u00a0", ".\u00a0."]) {
+    assert.equal(reason(() => composeRequest(NAMED, "gh", ORIGIN, { name: v })), "argument_refused", JSON.stringify(v));
+  }
+  let checked = 0;
+  for (let cp = 0; cp <= 0x10ffff; cp++) {
+    if (cp >= 0xd800 && cp <= 0xdfff) continue;
+    const c = String.fromCodePoint(cp);
+    if (!/[\p{Cf}\p{Zs}]/u.test(c) || c === " ") continue;
+    checked++;
+    assert.equal(reason(() => placeholderText(`a${c}b`, { kind: "text" }, true)), "argument_refused", `U+${cp.toString(16).toUpperCase()}`);
+  }
+  assert.ok(checked > 150, `${checked} format and space code points`);
+  assert.equal(reason(() => composeRequest(NAMED, "gh", ORIGIN, { name: "good first issue" })), "composed", "the ASCII space stays allowed (label names hold spaces)");
+  assert.equal(reason(() => composeRequest(NAMED, "gh", ORIGIN, { name: "cafe\u0301" })), "composed", "a combining mark after a base letter stays allowed");
+  assert.equal(reason(() => composeRequest(ISSUE, "gh", ORIGIN, { owner: "o", repo: "r", number: 1, search: "a\u00a0b" })), "composed", "a query value is not a path segment");
+});
+
+test("a multi-character path value is judged as a whole: a letter beside a character outside the look-alike list (N1e review 3 nit 2)", () => {
+  for (const v of ["a\uff05", "x\uff0fy", "\uff1fq", "a\uff03b", "a\uff3cb"]) assert.equal(reason(() => composeRequest(NAMED, "gh", ORIGIN, { name: v })), "argument_refused", JSON.stringify(v));
+});
+
 test("the integration is recorded on the composed request, and checked", () => {
   assert.equal(composeRequest(NAMED, "gh", ORIGIN, { name: "x" }).integration, "gh");
   assert.equal(composeRequest(NAMED, "gl", ORIGIN, { name: "x" }).integration, "gl");
