@@ -12,14 +12,19 @@
  * everything below it. Root-anchored on purpose: a copy in a subdirectory (`sub/.claude/settings.json`) is not matched,
  * although a CLI started in that subdirectory would read it (a residual: the worktree root is where Axis starts CLI runs).
  *
- * Not listed, deliberately: instruction ("memory") files, `.claude/rules/`, `CLAUDE.local.md`, and the instruction-like
- * `.claude/output-styles/` and `.claude/loop.md` (both in the CLI's own protected-path table), which the CLI also reads.
- * They instruct rather than run or pre-approve, the same class as `CLAUDE.md` and `AGENTS.md`, which are not protected
- * either; protecting instruction files is one decision for the whole class (owner decisions OD-1). In review, git-snapshot
- * shows `CLAUDE.local.md` as an `instruction-file` and `.claude/rules/` as `hidden-config` (its generic dot-name rule).
+ * Not listed, deliberately: instruction ("memory") files, `.claude/rules/` and `CLAUDE.local.md`, the same class as
+ * `CLAUDE.md` and `AGENTS.md`, which are not protected either; protecting instruction files is one decision for the whole
+ * class (owner decisions OD-1). In review, git-snapshot shows `CLAUDE.local.md` as an `instruction-file` and
+ * `.claude/rules/` as `hidden-config` (its generic dot-name rule).
  *
- * Not listed, unsourced (residuals): `.lsp.json` (not in the Claude Code 2.1.330 binary); Codex's exec policies, which its
- * text names among "project-local config, hooks, and exec policies" without a path this environment shows.
+ * Not listed yet, recommended (OD-1): `.claude/output-styles/` and `.claude/loop.md`. The CLI's own protected-path table
+ * (Claude Code 2.1.332) protects them with the same fixed flag as `skills`, `commands`, `agents`, `hooks`, `settings.json`
+ * and `.mcp.json`, all of which are listed here; the recommendation is to list them too.
+ *
+ * Not listed, residuals: `.lsp.json`, which Claude Code 2.1.332 reads only at a PLUGIN's root (language-server commands it
+ * launches), not at a project's; a repository that is itself a plugin (`.claude-plugin/`) has one at its root, so it is
+ * a candidate for a precautionary row like `.claude-plugin/`. Codex's exec policies, which its text names among
+ * "project-local config, hooks, and exec policies" without a path this environment shows.
  */
 export interface CliProjectConfig {
   readonly cli: "claude" | "codex";
@@ -29,7 +34,7 @@ export interface CliProjectConfig {
   readonly source: string;
 }
 
-const CLAUDE = "Claude Code 2.1.330: the path string is in the installed binary (~/.local/share/claude/versions/2.1.330)";
+const CLAUDE = "Claude Code 2.1.332: the path string is in the installed binary (~/.local/share/claude/versions/2.1.332; first sourced in 2.1.330, every path checked again in 2.1.332)";
 const CODEX = "codex-cli 0.166.0: the installed package (@openai/codex)";
 
 export const CLI_PROJECT_CONFIG: readonly CliProjectConfig[] = Object.freeze([
@@ -41,7 +46,7 @@ export const CLI_PROJECT_CONFIG: readonly CliProjectConfig[] = Object.freeze([
   Object.freeze({ cli: "claude", segments: Object.freeze([".mcp.json"]), severity: "warn", source: `${CLAUDE}: project MCP servers` }),
   Object.freeze({ cli: "claude", segments: Object.freeze([".claude", "skills"]), severity: "warn", source: CLAUDE }),
   Object.freeze({ cli: "claude", segments: Object.freeze([".claude", ["age", "nts"].join("")]), severity: "warn", source: `${CLAUDE}: subagent definitions` }),
-  Object.freeze({ cli: "claude", segments: Object.freeze([".claude", "plugins"]), severity: "warn", source: "precautionary: Claude Code 2.1.330's binary shows only the user-level ~/.claude/plugins, not a project one" }),
+  Object.freeze({ cli: "claude", segments: Object.freeze([".claude", "plugins"]), severity: "warn", source: "precautionary: Claude Code 2.1.332's binary (as 2.1.330's) shows only the user-level ~/.claude/plugins, not a project one" }),
   Object.freeze({ cli: "claude", segments: Object.freeze([".claude", "commands"]), severity: "warn", source: `${CLAUDE}: slash commands (marked deprecated there, still loaded)` }),
   Object.freeze({ cli: "claude", segments: Object.freeze([".claude", "workflows"]), severity: "warn", source: `${CLAUDE}: a project workflow is ".claude/workflows/<name>.js", which "resolves to a self-contained script"` }),
   // Named in the CLI's own table of project paths it protects (it joins ".claude" with each name): a preview launch
