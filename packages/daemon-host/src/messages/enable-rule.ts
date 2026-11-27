@@ -37,7 +37,13 @@ export const BYPASS_FLAGS: readonly FlagRow[] = Object.freeze([
   row("codex.approve-for-me", "codex", ["--approve-for-me"], CODEX_HELP),
   row("codex.config.approval_policy.never", "codex", ["--config", "-c"], CODEX_HELP, "approval_policy=never"),
   row("codex.config.sandbox_mode.danger-full-access", "codex", ["--config", "-c"], CODEX_HELP, "sandbox_mode=danger-full-access"),
+  // A settings or profile file named in argv can switch auto-approval on from content the rule never reads (review 1:
+  // decided by master, 2026-11-26). `-p` is Codex's profile only: in Claude Code `-p` is print.
+  row("claude.settings", "claude", ["--settings"], CLAUDE_HELP),
+  row("codex.profile", "codex", ["--profile", "-p"], CODEX_HELP),
 ]);
+// No Gemini rows: Gemini is not installed in the environment the table was sourced in (only a wrapper with no binary), so
+// its flags are left to the pattern rule (`yolo`, `bypass`, ...) until a row can be verified in its own help.
 
 /** Words that mark a bypass in any CLI's argument (decision 2: fail closed for what the table does not know), folded. */
 export const BYPASS_WORDS: readonly string[] = Object.freeze([
@@ -50,6 +56,8 @@ export type EnableDecision = { readonly allowed: false; readonly rule: string } 
 /** The facts the rule decides over. `argv` is the whole launch argv, `argv[0]` the executable. */
 export interface EnableFacts {
   readonly argv: readonly string[];
+  /** The executable's real path when the host resolved it (a link to a versioned binary): its base name counts too. */
+  readonly executableReal?: string;
   readonly bypassesPrompts: boolean;
   /** Whether the root-relative path (folded segments) exists in the worker's workspace. */
   readonly exists: (segments: readonly string[]) => boolean;
@@ -59,22 +67,47 @@ export interface EnableFacts {
 const fold = (s: string): string => s.toLowerCase().replace(/["'\s]/g, "");
 /** Which CLI an executable is: its base name without a Windows extension; anything else is unknown (the pattern rule still applies). */
 export function cliOf(executable: string): string {
-  const base = executable.split(/[\\/]/).pop() ?? "";
-  return base.toLowerCase().replace(/\.(exe|cmd|bat|ps1|js|mjs)$/, "");
+  const base = (executable.split(/[\\/]/).pop() ?? "").replace(/[. ]+$/, "");
+  return base.toLowerCase().replace(/\.(exe|com|cmd|bat|ps1|js|mjs|cjs)$/, "");
 }
 
-/** The table row an argv matches, if any: `--flag value`, `--flag=value`, or the bare flag for a row without a value. */
-function tableHit(cli: string, args: readonly string[]): FlagRow | undefined {
+const KNOWN_CLIS: ReadonlySet<string> = new Set(["claude", "codex"]);
+/**
+ * Shells and interpreters whose inline code the rule cannot parse (review 1 SF2 b): with an inline-code argument they are
+ * refused outright (`wrapper_unparsed`), since the CLI and its flags would be inside a string.
+ */
+const shellInline = (a: string): boolean => /^-[a-z]*c[a-z]*$/i.test(a) || a === "--command";
+const INLINE: ReadonlyMap<string, (arg: string) => boolean> = new Map<string, (arg: string) => boolean>([
+  ...["sh", "bash", "zsh", "dash", "ksh", "ash", "fish", "busybox"].map((n): [string, (a: string) => boolean] => [n, shellInline]),
+  ["cmd", (a) => /^\/[ck]$/i.test(a)],
+  ...["powershell", "pwsh"].map((n): [string, (a: string) => boolean] => [n, (a) => /^-(c|e|command|encodedcommand|ec)/i.test(a)]),
+  ...["python", "python3", "pythonw", "py"].map((n): [string, (a: string) => boolean] => [n, (a) => /^-[a-z]*c$/i.test(a)]),
+  ...["node", "deno", "bun"].map((n): [string, (a: string) => boolean] => [n, (a) => /^-(e|p|pe|ep)$|^--(eval|print)(=|$)/.test(a)]),
+  ...["perl", "ruby"].map((n): [string, (a: string) => boolean] => [n, (a) => /^-[a-z]*e[a-z]*$/i.test(a)]),
+  ["env", (a) => /^-[a-z]*s[a-z]*$/i.test(a) || a.startsWith("--split-string")],
+]);
+
+/**
+ * One argument against one flag: `--flag`, `--flag=value`, `--flag value`, and for a short flag also with the value attached
+ * (`-anever`, `-capproval_policy=never`: how the CLIs' parsers read it, review 1 SF1). The value, if any.
+ */
+function flagValue(flag: string, args: readonly string[], i: number): { readonly hit: boolean; readonly value: string | undefined } {
+  const tok = args[i] as string;
+  if (tok === flag) return { hit: true, value: args[i + 1] };
+  if (tok.startsWith(`${flag}=`)) return { hit: true, value: tok.slice(flag.length + 1) };
+  if (flag.length === 2 && !tok.startsWith("--") && tok.startsWith(flag) && tok.length > 2) return { hit: true, value: tok.slice(2) };
+  return { hit: false, value: undefined };
+}
+
+/** The table row an argv matches, if any. `clis`: the rows that apply (every CLI's when the executable is not a known one). */
+function tableHit(clis: ReadonlySet<string>, args: readonly string[]): FlagRow | undefined {
   for (let i = 0; i < args.length; i++) {
-    const tok = args[i] as string;
-    const eq = tok.indexOf("=");
-    const name = eq > 0 && tok.startsWith("-") ? tok.slice(0, eq) : tok;
-    const inline = eq > 0 && tok.startsWith("-") ? tok.slice(eq + 1) : undefined;
     for (const r of BYPASS_FLAGS) {
-      if (r.cli !== cli || !r.flags.includes(name)) continue;
-      if (r.value === undefined) return r;
-      const v = inline ?? args[i + 1];
-      if (v !== undefined && fold(v) === fold(r.value)) return r;
+      if (!clis.has(r.cli)) continue;
+      for (const flag of r.flags) {
+        const { hit, value } = flagValue(flag, args, i);
+        if (hit && (r.value === undefined || (value !== undefined && fold(value) === fold(r.value)))) return r;
+      }
     }
   }
   return undefined;
@@ -83,9 +116,18 @@ function tableHit(cli: string, args: readonly string[]): FlagRow | undefined {
 /** `config`: the repository-configuration rows (the shared list; a test passes its own to reach a `refuse` row). */
 export function decideCliMessaging(facts: EnableFacts, config: readonly CliProjectConfig[] = CLI_PROJECT_CONFIG): EnableDecision {
   if (facts.bypassesPrompts) return { allowed: false, rule: "user_marked" };
+  if (facts.argv.length === 0 || facts.argv[0] === "") return { allowed: false, rule: "empty_argv" };
   const [executable = "", ...args] = facts.argv;
-  const cli = cliOf(executable);
-  const hit = tableHit(cli, args);
+  const names = [cliOf(executable), ...(facts.executableReal === undefined ? [] : [cliOf(facts.executableReal)])];
+  for (const n of names) {
+    const inline = INLINE.get(n);
+    if (inline !== undefined && args.some(inline)) return { allowed: false, rule: "wrapper_unparsed" };
+  }
+  // A known CLI's rows; an unknown executable (a wrapper such as `env`, `npx`, `node cli.js`) gets EVERY CLI's rows over
+  // all of its arguments, so a wrapper cannot hide a row (review 1 SF2 a).
+  const known = names.find((n) => KNOWN_CLIS.has(n));
+  const cli = known ?? "";
+  const hit = tableHit(known === undefined ? KNOWN_CLIS : new Set([known]), args);
   if (hit !== undefined) return { allowed: false, rule: hit.id };
   for (const a of args) {
     const f = fold(a).replace(/_/g, "-");
@@ -94,10 +136,10 @@ export function decideCliMessaging(facts: EnableFacts, config: readonly CliProje
   const warnings: EnableWarning[] = [];
   for (const r of config) {
     // A row of another known CLI does not apply; an unknown executable (a wrapper) gets every row.
-    if ((cli === "claude" || cli === "codex") && r.cli !== cli) continue;
+    if (cli !== "" && r.cli !== cli) continue;
     if (!facts.exists(r.segments)) continue;
     const path = r.segments.join("/");
-    if (r.severity === "refuse") return { allowed: false, rule: `repo_config:${path}` };
+    if (r.severity === "refuse") return { allowed: false, rule: "repo_config" }; // never a path in the audit row
     if (warnings.length < 8) warnings.push({ code: "repo_config", path, cli: r.cli });
   }
   return { allowed: true, warnings };

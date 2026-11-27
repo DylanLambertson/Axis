@@ -1,6 +1,6 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
-import { lstatSync } from "node:fs";
-import { join } from "node:path";
+import { lstatSync, realpathSync } from "node:fs";
+import { isAbsolute, join } from "node:path";
 import type { Journal } from "@axis/journal";
 import { resolveCliAgentsSetting } from "@axis/pty-policy";
 import { MESSAGE_AUDIT } from "./audit.js";
@@ -29,6 +29,16 @@ const present = (p: string): boolean => {
   }
 };
 
+/** The real path of an absolute executable (a link to a versioned binary), or undefined. */
+export const realOf = (exe: string): string | undefined => {
+  if (!isAbsolute(exe)) return undefined;
+  try {
+    return realpathSync(exe);
+  } catch {
+    return undefined;
+  }
+};
+
 /** The launch entry of a CLI worker as main has it now, and its home's worktree path; undefined for any gap. */
 export async function cliWorkerLaunch(deps: EnableCheckDeps, agentId: string, signal: AbortSignal): Promise<{ readonly argv: readonly string[]; readonly bypassesPrompts: boolean; readonly root: string } | undefined> {
   const worker = deps.journal.agents.get(agentId);
@@ -53,7 +63,8 @@ export function hostEnableCheck(deps: EnableCheckDeps): (agentId: string, signal
   return async (agentId, signal) => {
     const launch = await cliWorkerLaunch(deps, agentId, signal);
     if (launch === undefined) return { allowed: false, rule: "no_entry" };
-    return decideCliMessaging({ argv: launch.argv, bypassesPrompts: launch.bypassesPrompts, exists: (segments) => exists(join(launch.root, ...segments)) });
+    const real = realOf(launch.argv[0] ?? "");
+    return decideCliMessaging({ argv: launch.argv, ...(real === undefined ? {} : { executableReal: real }), bypassesPrompts: launch.bypassesPrompts, exists: (segments) => exists(join(launch.root, ...segments)) });
   };
 }
 
@@ -69,7 +80,7 @@ export function hostMintRecheck(deps: EnableCheckDeps & { readonly agentOfRun: (
     const worker = deps.agentOfRun(spec.runId);
     if (worker === undefined) return true;
     const launch = await cliWorkerLaunch(deps, worker, AbortSignal.timeout(2_000));
-    const decision = launch === undefined ? { allowed: false as const, rule: "no_entry" } : decideCliMessaging({ argv: spec.argv, bypassesPrompts: launch.bypassesPrompts, exists: (segments) => exists(join(launch.root, ...segments)) });
+    const decision = launch === undefined ? { allowed: false as const, rule: "no_entry" } : decideCliMessaging({ argv: spec.argv, ...((r) => (r === undefined ? {} : { executableReal: r }))(realOf(spec.argv[0] ?? "")), bypassesPrompts: launch.bypassesPrompts, exists: (segments) => exists(join(launch.root, ...segments)) });
     if (decision.allowed) return true;
     deps.audit.append({ actor: "daemon", action: MESSAGE_AUDIT.endpoint, target: `run:${spec.runId}`, outcome: "denied", payload: { runId: spec.runId, agentId: worker, event: "mint_refused", rule: decision.rule } });
     deps.noteWrite?.();

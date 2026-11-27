@@ -97,3 +97,11 @@ test("handler: enabling asks the check first and passes its decision; other sett
   await h.updateSettings(ctx, { setting: "cliMessaging", agentId: "c1", value: false } as never);
   assert.deepEqual(asked, ["c1"], "only an enable asks");
 });
+
+test("review 1 SF5: an entry the user marks as bypassing prompts after enabling gets no endpoint at the next mint", async () => {
+  const rows: unknown[] = [];
+  const marked = hostMintRecheck({ ...fakeDeps({ value: [{ id: "e1", label: "E", command: ["claude"], args: [], bypassesPrompts: true }] }), agentOfRun: () => "w1", audit: { append: (e) => void rows.push(e.payload) } });
+  assert.equal(await marked({ runId: "r", argv: ["/usr/bin/claude"] }), false);
+  assert.deepEqual(rows, [{ runId: "r", agentId: "w1", event: "mint_refused", rule: "user_marked" }]);
+});
+
