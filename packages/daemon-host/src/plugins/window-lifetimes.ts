@@ -42,7 +42,8 @@ interface Live {
 }
 
 export function createWindowLifetimes(options: WindowLifetimesOptions): WindowLifetimes {
-  const ringSize = Math.max(1, options.endedRing ?? 1024);
+  const ringSize = options.endedRing ?? 1024;
+  if (!Number.isSafeInteger(ringSize) || ringSize < 1) throw new Error("window lifetimes: endedRing must be a positive integer");
   const live = new Map<string, Live>();
   /** `windowId` NUL `epoch`, oldest first. */
   const ended = new Set<string>();
