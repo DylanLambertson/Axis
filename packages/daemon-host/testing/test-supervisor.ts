@@ -15,6 +15,7 @@ import {
   outboundMessageSchema,
   signAttestation,
   type Attestation,
+  type ChannelFlow,
   type DisposableChannel,
   type OutboundMessage,
 } from "../src/index.js";
@@ -76,7 +77,7 @@ export class TestSupervisor {
   settings: Record<string, unknown> = {};
   stderr = "";
 
-  readonly #channel: DisposableChannel;
+  readonly #channel: DisposableChannel & Partial<ChannelFlow>;
   readonly #root: string;
   readonly #ownsRoot: boolean;
   readonly #kill: (signal?: NodeJS.Signals) => void;
@@ -104,6 +105,13 @@ export class TestSupervisor {
     this.mux = new ChannelMux(channel);
     this.mux.onControl((raw) => this.#onControl(raw));
     appendStderr((t) => void (this.stderr = (this.stderr + t).slice(-MAX_STDERR_CHARS)));
+  }
+
+  /** The backlog of the control channel (the web host reads it); a worker port writes at once, so its backlog is always 0. */
+  get flow(): ChannelFlow {
+    const c = this.#channel;
+    if (typeof c.pending === "function" && typeof c.onDrain === "function") return { pending: () => (c.pending as () => number)(), onDrain: (h) => (c.onDrain as ChannelFlow["onDrain"])(h) };
+    return { pending: () => 0, onDrain: () => () => undefined };
   }
 
   static async start(options: TestSupervisorOptions = {}): Promise<TestSupervisor> {

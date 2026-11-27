@@ -185,6 +185,7 @@ test("bridge: a nativeConfirm that throws leaves nothing behind", async () => {
 const port = (over: Partial<ApprovalsPort> = {}): ApprovalsPort => ({
   resolve: () => ({ challengeId: ID, state: "approved", nativeRequired: false }),
   pending: () => [],
+  detail: () => undefined,
   ...over,
 });
 const resolveReq = { challengeId: ID, decision: "approve", digest: DIGEST };

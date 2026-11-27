@@ -1,17 +1,20 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 // `npm run gate`: every pre-push check, in order, without stopping at the first failure.
 // Environment: GATE_BASE (default origin/main), GATE_GITLEAKS (binary path),
-// GATE_SKIP (comma-separated step ids; a run with skips is reported INCOMPLETE, exit 2).
+// GATE_SKIP (comma-separated step ids; a run with skips is reported INCOMPLETE, exit 2),
+// GATE_OVERLAY_TREE (a builder's PRIVATE Code OSS vendor dir: the overlay tests run there; unset, they are reported as
+// skipped and the verdict says so), AXIS_REQUIRE_OVERLAY_TESTS=1 (a missing tree then FAILS the gate).
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   countLines, exitCode, findLongFiles, formatReport, formatTable, gitleaksInstallSteps,
-  parseGitleaksPin, parseLog, parseSidecarHash, scanCommits, versionMatchesPin
+  overlayNotRun, parseGitleaksPin, parseLog, parseSidecarHash, pinnedNodeHints, scanCommits, validSummary, versionMatchesPin, wrongNodeLine
 } from "./gate/lib.mjs";
+import { failureDigest, splitSuites } from "./gate/failures.mjs";
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const config = JSON.parse(readFileSync(join(scriptDir, "gate", "config.json"), "utf8"));
@@ -23,7 +26,7 @@ function sh(command, args, options = {}) {
   const r = spawnSync(command, args, {
     encoding: "utf8", maxBuffer: 512 * 1024 * 1024, timeout: 20 * 60 * 1000, ...options
   });
-  return { ok: r.status === 0 && r.error === undefined, out: `${r.stdout ?? ""}${r.stderr ?? ""}`, error: r.error };
+  return { ok: r.status === 0 && r.error === undefined, status: r.status, signal: r.signal, out: `${r.stdout ?? ""}${r.stderr ?? ""}`, error: r.error };
 }
 
 const top = sh("git", ["rev-parse", "--show-toplevel"]);
@@ -35,6 +38,15 @@ const root = top.out.trim();
 const git = (...args) => sh("git", args, { cwd: root });
 const tail = (text, n = 12) => text.trimEnd().split("\n").slice(-n).join("\n");
 const range = `${base}..HEAD`;
+
+// A wrong Node makes the node-version step, the typecheck and the pinning test fail for a reason that is not in them, so say it first.
+if (!skip.has("node-version")) {
+  let pinned;
+  try { pinned = JSON.parse(readFileSync(join(root, "code-oss", "upstream.json"), "utf8")).node; } catch { /* the node-version step reports it */ }
+  const { hints, unusable } = pinnedNodeHints({ env: process.env, root, pinned, platform: process.platform, arch: process.arch, fs: { exists: existsSync, isFile: (p) => statSync(p).isFile() } });
+  const line = wrongNodeLine({ running: process.version, pinned, execPath: process.execPath, hints, unusable });
+  if (line !== undefined) console.log(line);
+}
 
 const head = git("rev-parse", "HEAD").out.trim();
 const branchName = git("rev-parse", "--abbrev-ref", "HEAD").out.trim();
@@ -135,19 +147,64 @@ step("typecheck", "typecheck", () => {
   return r.ok ? { status: "pass" } : { status: "fail", detail: tail(r.out) };
 });
 
+// The whole tests step has its own limit (each suite keeps its own 20 minute one in scripts/gate/run-suite.mjs): at a load of 20 to 37 the
+// run took about 20 minutes, and the fixed 20 minutes of `sh` killed it before its summary, leaving a failure with no suite named.
+const MAX_TIMER_MS = 2 ** 31 - 1;
+const TESTS_LIMIT_MS = (() => {
+  const raw = process.env.AXIS_GATE_TESTS_TIMEOUT_MS;
+  if (raw === undefined) return 3 * 60 * 60 * 1000;
+  return /^[1-9][0-9]*$/.test(raw) && Number(raw) <= MAX_TIMER_MS ? Number(raw) : raw; // above this a timer fires at once
+})();
+
 let packageCounts = [];
 step("test", "tests", () => {
+  if (typeof TESTS_LIMIT_MS !== "number") return { status: "fail", detail: `AXIS_GATE_TESTS_TIMEOUT_MS must be a positive integer of at most ${MAX_TIMER_MS}, got ${JSON.stringify(TESTS_LIMIT_MS)}` };
   const dir = mkdtempSync(join(tmpdir(), "axis-gate-"));
   const file = join(dir, "tests.json");
+  let keep = false;
   try {
-    const r = sh(process.execPath, [join(root, "scripts", "test-all.mjs"), "--json", file], { cwd: root });
+    // ADR 0009's first test (PV-N1d) may skip on a dev machine without openssl, never under the gate.
+    const r = sh(process.execPath, [join(root, "scripts", "test-all.mjs"), "--json", file], { cwd: root, timeout: TESTS_LIMIT_MS, env: { ...process.env, AXIS_REQUIRE_PINNING_TEST: "1" } });
     try { packageCounts = JSON.parse(readFileSync(file, "utf8")); } catch { /* summary missing */ }
-    if (r.ok) return { status: "pass", detail: `${packageCounts.length} suites` };
+    if (!validSummary(packageCounts)) packageCounts = []; // forged or damaged: not a summary
+    // A run that exits 0 with no summary, or with a summary of no suite, ran nothing: that is a failure, never "pass, 0 suites".
+    // `every(ok)` cannot fail today (the runner exits non-zero when a suite fails); it stays as defence in depth against a runner that does not.
+    if (r.ok && packageCounts.every((s) => s.ok) && packageCounts.length > 0) return { status: "pass", detail: `${packageCounts.length} suites` };
+    if (r.ok) return { status: "fail", detail: "the test run ended without a summary of any suite (zero suites ran, or no summary was written)" };
     const bad = packageCounts.filter((s) => !s.ok).map((s) => s.name);
-    return { status: "fail", detail: bad.length > 0 ? `failed: ${bad.join(", ")}` : tail(r.out) };
+    // Passing suites stay quiet. A failing one prints its failing tests' names and first error lines here and
+    // keeps its whole output in a file, because a flake that cannot be named cannot be chased.
+    const saved = [];
+    for (const s of splitSuites(r.out).filter((x) => !x.ok)) {
+      keep = true;
+      const log = join(dir, `${s.name.replace(/[^A-Za-z0-9._-]+/g, "_")}.log`);
+      writeFileSync(log, s.text);
+      saved.push(log);
+      console.log(`\n== ${s.name}: failing tests\n${failureDigest(s.text) || "(no failing test name in the output; see the full output)"}\n== full output: ${log}\n`);
+    }
+    const where = saved.length > 0 ? `; full output: ${saved.join(", ")}` : "";
+    if (bad.length > 0) return { status: "fail", detail: `failed: ${bad.join(", ")}${where}` };
+    // No suite is marked failed: the run itself ended without its summary. Say why, and which suite it was in (the runner names it on a signal).
+    const started = [...r.out.matchAll(/^== running (.+)$/gm)].map((m) => m[1]);
+    const running = started.at(-1);
+    const why = r.error?.code === "ETIMEDOUT" ? `timed out after ${Math.round(TESTS_LIMIT_MS / 1000)}s` : r.signal ? `killed by ${r.signal}` : `exit ${r.status}`;
+    return { status: "fail", detail: `the test run ended without a summary (${why})${running ? ` while running ${running}` : ""}\n${tail(r.out)}` };
   } finally {
-    rmSync(dir, { recursive: true, force: true });
+    if (!keep) rmSync(dir, { recursive: true, force: true });
   }
+});
+
+// PV-X3: the overlay's node unit tests (vs/axis/**/test/common), which no other gate step or CI job runs. They need an
+// applied, installed Code OSS tree, so they run only when GATE_OVERLAY_TREE names one; otherwise the step is "absent":
+// loud, and the verdict says "PASSED (overlay tests skipped)", or a FAIL with AXIS_REQUIRE_OVERLAY_TESTS=1.
+step("overlay-tests", "overlay tests", () => {
+  const required = process.env.AXIS_REQUIRE_OVERLAY_TESTS === "1";
+  const tree = process.env.GATE_OVERLAY_TREE;
+  if (!tree) return overlayNotRun("no Code OSS tree: set GATE_OVERLAY_TREE to your private vendor dir", required);
+  const r = sh("bash", [join(root, "scripts", "code-oss", "overlay-tests.sh")], { cwd: root, env: { ...process.env, AXIS_CODE_OSS_VENDOR_DIR: tree } });
+  if (r.status === 3) return overlayNotRun(tail(r.out, 2), required);
+  const passing = /(\d+) passing/.exec(r.out)?.[1];
+  return r.ok ? { status: "pass", detail: `${passing ?? "?"} passing` } : { status: "fail", detail: tail(r.out) };
 });
 
 const results = [];
@@ -162,6 +219,7 @@ for (const s of steps) {
   }
   results.push({ name: s.name, ...r });
   console.log(`${r.status.toUpperCase().padEnd(4)} ${s.name}`);
+  if (r.status === "absent") console.error(`WARNING: ${s.name} did not run (${r.detail}); the verdict says so`);
 }
 
 console.log(`\n${formatTable(results)}\n`);

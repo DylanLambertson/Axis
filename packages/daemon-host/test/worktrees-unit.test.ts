@@ -8,7 +8,7 @@ import { AxisError } from "@axis/audit";
 import { newKey } from "./approvals-rig.js";
 import { ProjectMutex, toDaemonError, fromWorktreeError, workspaceSlug } from "../src/index.js";
 import { worktreesCapability } from "../src/gate/worktrees-confirm.js";
-import { createWs, gitSkipReason, worktreesRig } from "./worktrees-rig.js";
+import { finaliseApproved, createWs, gitSkipReason, worktreesRig } from "./worktrees-rig.js";
 import { wait } from "./helpers.js";
 
 const skip = gitSkipReason();
@@ -67,11 +67,14 @@ test("worktreesCapability: only finalise and remove of axis.worktrees/1, bound t
 
 test("errors: closed codes, fixed texts, nothing from the cause", () => {
   const nasty = "/home/u/secret-repo ghp" + "_" + "Ab1".repeat(12);
-  for (const e of [new Error(nasty), new AxisError("E_INTERNAL", nasty), new AxisError("E_POLICY_DENIED", nasty), "x", null]) {
+  for (const e of [new Error(nasty), new AxisError("E_INTERNAL", nasty), "x", null]) {
     const d = toDaemonError(e);
     assert.equal(d.code, "E_INTERNAL");
     assert.ok(!d.message.includes("secret"));
   }
+  // The project trust gate's internal refusal answers E_CONFLICT untrusted on the wire (only the daemon says E_POLICY_DENIED).
+  const gate = toDaemonError(new AxisError("E_POLICY_DENIED", nasty, { reason: "untrusted" }));
+  assert.deepEqual([gate.code, gate.details?.["reason"], gate.message.includes("secret")], ["E_CONFLICT", "untrusted", false], "mutant: passed through as E_INTERNAL");
   const c = toDaemonError(new AxisError("E_CONFLICT", nasty, { state: nasty }));
   assert.equal(c.code, "E_CONFLICT");
   assert.ok(!JSON.stringify([c.message, c.details]).includes("secret"));
@@ -80,6 +83,15 @@ test("errors: closed codes, fixed texts, nothing from the cause", () => {
   assert.equal(fromWorktreeError("E_CONFLICT", nasty).details, undefined, "an unknown reason is dropped");
   const same = new DaemonError("E_NOT_FOUND", "kept");
   assert.equal(toDaemonError(same), same);
+});
+
+test("a snapshot refused by the REF-1 secret scan reaches the wire as its own closed reason, with fixed text", () => {
+  for (const [pkg, wire] of [["snapshot-secret", "snapshot_secret"], ["snapshot-unscanned", "snapshot_unscanned"]] as const) {
+    const d = fromWorktreeError("E_POLICY_DENIED", pkg);
+    assert.equal(d.code, "E_CONFLICT");
+    assert.deepEqual(d.details, { reason: wire });
+    assert.match(d.message, /no snapshot was written/);
+  }
 });
 
 test("a failure after the journal row leaves it FAILED and unlocked, and the error text names no path or ref", { skip }, async (t) => {
@@ -106,7 +118,7 @@ test("errors on the wire never echo a path, a ref or a secret-shaped input", { s
     await user.call("axis.worktrees", "create", { projectId: "proj-1", name: "n", baseRef: canary }, newKey()),
     await user.call("axis.worktrees", "create", { projectId: canary.slice(0, 20), name: "n" }, newKey()),
     await user.call("axis.worktrees", "status", { ids: [canary.slice(0, 30)] }),
-    await user.call("axis.worktrees", "finalise", { id: "ws-missing", outcome: "archived" }, newKey()),
+    await finaliseApproved(r, user, "ws-missing", "archived"),
   ];
   for (const a of answers) {
     assert.equal(a.ok, false);

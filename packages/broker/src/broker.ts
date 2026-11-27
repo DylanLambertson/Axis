@@ -5,12 +5,13 @@ import type { GitRunResult, GitRunner } from "@axis/git-ops";
 import { BrokerAudit, BROKER_ACTIONS } from "./audit.js";
 import { foldName } from "./lexical.js";
 import { readContained, resolveRoot, resolveTarget, writeContained, type ContainDeps, type TargetGuard } from "./contain.js";
+import { swapContained, type SwapResult } from "./swap.js";
 import { buildToolEnv, type EnvGrantSource } from "./env.js";
 import { BrokerError, denied, invalid, toBrokerError } from "./errors.js";
 import type { BrokerFs } from "./fs.js";
 import { checkGitCall, createBrokerGit, gitCallTier, gitKey, snapGit, GIT_COMMANDS, type BrokerGit, type GitCall } from "./git.js";
 import { pinProgram, type PinnedProgram } from "./program.js";
-import { clip, clipText, escapeDisplay, printable, sha } from "./text.js";
+import { callDigest, clip, clipText, escapeDisplay, printable } from "./text.js";
 import { ApprovalLedger, ToolPolicy, verifyApproval, type ApprovalHook, type PolicyOptions, type VerifiedApproval } from "./policy.js";
 import type { CommandRunner, RunRecord } from "./runner.js";
 import { matchProtected } from "./protectedPaths.js";
@@ -28,6 +29,8 @@ export interface ToolContext {
   readonly signal: AbortSignal;
   readFile(path: string, maxBytes: number): Promise<Buffer>;
   writeFile(path: string, data: Uint8Array, o: { readonly mode: "overwrite" | "create" | "upsert"; readonly maxBytes: number }): Promise<void>;
+  /** A compare-and-swap write (`swap.ts`): refused `E_CONFLICT` / `stale` unless the path holds `base`. The caller holds the write lock. */
+  swapFile(path: string, data: Uint8Array, o: { readonly base: string; readonly maxBytes: number }): Promise<SwapResult>;
   /** `command` is a bare name (resolved on PATH outside the worktree) or an absolute path. No shell. */
   run(o: { readonly command: string; readonly args?: readonly string[]; readonly cwd?: string; readonly timeoutMs: number; readonly maxOutputBytes: number; readonly stdin?: Uint8Array }): Promise<RunRecord>;
   git(call: GitCall): Promise<GitRunResult>;
@@ -76,7 +79,7 @@ export interface BrokerDeps {
   readonly redactor?: Redactor;
   /** Needed only for git tools. */
   readonly gitRunner?: GitRunner;
-  readonly assertNoDrift?: (w: WorktreeRef) => Promise<void>;
+  readonly assertNoDrift?: (w: WorktreeRef, signal?: AbortSignal) => Promise<void>;
   readonly clock?: Clock;
   readonly platform?: NodeJS.Platform;
   readonly policy?: PolicyOptions;
@@ -285,11 +288,11 @@ export class ToolBroker {
       ...(argv0 !== undefined && declaredArgv === undefined ? { argsAtRunTime: true } : {}),
       ...(raised === undefined ? {} : { raisedTier: raised }),
     });
-    if (decision.effect === "deny") return refuse(denied("invalid-tier", "the tool tier is not valid"));
+    if (decision.effect === "deny") return refuse(decision.reason === "invalid-tier" ? denied("invalid-tier", "the tool tier is not valid") : denied(decision.reason, "the call could not be judged"));
 
     let digest: string;
     try {
-      digest = sha(canonicalize({ tool: tool.name, worktreeId, actor, tier: decision.tier, paths: ops.map((o) => `${o.access}:${o.path}`), commands, args: args as never }));
+      digest = callDigest({ tool: tool.name, worktreeId, actor, tier: decision.tier, paths: ops.map((o) => `${o.access}:${o.path}`), commands, args });
     } catch {
       return refuse(invalid("invalid-args", "the arguments cannot be approved"), { tier: decision.tier });
     }
@@ -421,6 +424,13 @@ export class ToolBroker {
         const r = await writeContained(contain, worktreeId, path, data, { ...o, guard: guardFor("write"), signal });
         stats.effects++;
         stats.bytesWritten += r.bytes;
+      },
+      swapFile: async (path, data, o) => {
+        alive();
+        const r = await swapContained(contain, worktreeId, path, data, { base: o.base, maxBytes: o.maxBytes, guard: guardFor("write"), signal });
+        stats.effects++;
+        stats.bytesWritten += r.bytes;
+        return r;
       },
       run: async (o) => {
         alive();

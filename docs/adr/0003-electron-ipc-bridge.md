@@ -1,6 +1,7 @@
 # ADR 0003: Electron IPC bridge for Axis services
 
 - **Status:** Proposed. Becomes Accepted after the Phase 1 bridge spike meets the validation criteria below.
+- **To be amended by:** ADR 0011 (Proposed 2026-11-26; takes effect when it is accepted): D1's handshake and sender checks move to our own window registry, D6 and I7 have no upstream footprint, D7 allows one fixed preload, and validation criteria 1 and 4 to 7 are re-stated there.
 - **Date:** 2026-11-01.
 - **Depends on:** ADR 0002 (Code OSS integration strategy, Proposed): Axis shell code in `src/vs/axis`, no deep upstream patches, decision 6 (Copilot and agent host removal as a separate patch set) and decision 7 (security-hardening patch range).
 - **Related:** `docs/security/threat-model-phase0.md`. Threat IDs such as EL-2 and DMN-1 refer to that document.
@@ -113,7 +114,7 @@ sequenceDiagram
   D-->>R: welcome {selected versions, limits}
 ```
 
-1. Main forks the daemon at startup with a **fixed** entry point, through upstream `utilityProcess` support (`src/vs/platform/utilityProcess/electron-main/utilityProcess.ts`) [V].
+1. Main forks the daemon at startup with a **fixed** entry point, through upstream `utilityProcess` support (`src/vs/platform/utilityProcess/electron-main/utilityProcess.ts`) [V]. *As built (X1):* the seam calls Electron's `utilityProcess.fork` directly, because the `UtilityProcess` class injects `VSCODE_*` variables and the `bootstrap-fork` entry; see `docs/design/daemon-host-entry.md`.
    - It is **never** launched through the renderer-reachable `UtilityProcessWorker` channel, whose `moduleId` the renderer chooses (`app.ts:1532`) [V].
    - The daemon opens **no listening socket or port** in Phases 1–3 (threat model DMN-4).
 2. The handshake channel is `vscode:axisConnect` / `vscode:axisConnectResult`. The `vscode:` prefix passes upstream validation with no patch. The renderer uses upstream `acquirePort`, which sends only the nonce (`src/vs/base/parts/ipc/electron-browser/ipc.mp.ts:51`) [V]. Protocol versions and contract lists are negotiated in the first message on the port (`hello`/`welcome`), not in the handshake.
@@ -147,6 +148,7 @@ sequenceDiagram
   - Within a major version, changes are additive only: new optional fields and new methods.
   - Removing or retyping anything requires a new major version, and the daemon serves N and N-1 for at least one release.
   - The handshake negotiates versions; an unknown method yields `E_METHOD_NOT_FOUND`.
+  - **Recorded pre-release exception (2026-11-05, P1d):** `axis.worktrees/1.finalise` moved from `write`, tier 2 to `destructive`, tier 4 with an `approval` field, inside major version 1. No client has shipped and every in-repo caller was updated in the same change, so no N-1 was served. Once 1a ships, a tier or side-effect change is a new major version (or a policy raise, which never lowers). See `docs/design/worktrees-tier4.md`.
 - **Validation is authoritative in the daemon.** Every request is checked in this order:
   1. A hand-written **envelope check** (about 100 lines, no library) runs before any schema work: maximum message size (default 1 MiB, lower per method), maximum depth, known envelope keys, and string length limits.
   2. **Payload schema:** strict objects, so unknown keys are rejected.
@@ -388,3 +390,11 @@ export interface IAxisPolicyEngine { evaluate(req: PolicyRequest, token: Cancell
 2. Should tier-3 actions (network, package install) also require native confirmation, or is the renderer approval UI enough?
 3. Should Axis also remove upstream's renderer-reachable `UtilityProcessWorker` channel (`app.ts:1532`)? The agent-host channels are already covered by ADR 0002 decision 6. This one is a footprint versus surface-reduction tradeoff, to be decided with M3.
 4. How long should idempotency records and audit records be retained?
+
+## Amendment (2026-11-22, ADR 0008)
+
+ADR 0008 ("Axis plugins") adds a fourth principal kind, `plugin:<id>`, to D4. Main mints one connection per plugin view when it creates the view, signed like a window connection with `clientKind: plugin` and a `p<n>` window id; a plugin view never uses `vscode:axisConnect`, and D1.3's checks still refuse it there. A plugin actor never resolves an approval, the D5 record may name it, and D7 is unchanged (the plugin port shim adds no `contextBridge` global). Its section "Amendment to ADR 0003" governs where wording differs.
+
+## Amendment (2026-11-26, PV-K1e-a2)
+
+A challenge raised by a `plugin:<id>` request is addressed to the plugin view's attested host window: it is listed and resolved there by a `user` actor only, under the same window rule as any challenge, and consumed only by the plugin's own connection. The plugin learns only the challenge id. The approval is bound to the plugin's grant generation and host window, and is refused if either changes before it is consumed. The full request a user approves is read through `axis.approvals/1.detail`, built by the daemon; the 192-character summary stays as it is. Native confirmation applies only at tier >= 4; a plugin run start is tier 3 and is resolved by the renderer's own resolve. "A `user` actor only" means the host window's renderer connection: any code running there can resolve a tier-3 challenge, so the protection is the run's taint, the full request on the card and an approval for each side effect of the run, not proof of the user's intent. (`docs/design/plugin-run-start.md` section 2.)

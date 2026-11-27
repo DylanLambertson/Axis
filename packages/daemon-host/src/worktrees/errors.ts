@@ -21,9 +21,13 @@ const REASONS: Readonly<Record<string, string>> = {
   "no-archive": "no_archive",
   "no-base-branch": "no_base_branch",
   "not-merged": "not_merged",
+  "base-rewritten": "base_rewritten",
   "branch-mismatch": "branch_mismatch",
   "runbase-moved": "runbase_moved",
   "git-path": "git_path",
+  "worktree-mismatch": "path_changed",
+  "snapshot-secret": "snapshot_secret",
+  "snapshot-unscanned": "snapshot_unscanned",
 };
 
 const REASON_TEXT: Readonly<Record<string, string>> = {
@@ -38,9 +42,12 @@ const REASON_TEXT: Readonly<Record<string, string>> = {
   no_archive: "The workspace has no archive ref.",
   no_base_branch: "The base branch is not available.",
   not_merged: "The workspace is not merged into its base branch.",
+  base_rewritten: "The base branch no longer contains the commit it held when the workspace was created.",
   branch_mismatch: "The branch does not belong to this workspace.",
   runbase_moved: "The run base moved since the run started.",
   git_path: "The git executable is not usable.",
+  snapshot_secret: "The workspace holds a file that looks like a secret, so no snapshot was written; ignore or remove it first.",
+  snapshot_unscanned: "A file in the workspace could not be scanned for secrets, so no snapshot was written; ignore or remove it first.",
 };
 
 const CODE_TEXT = {
@@ -55,12 +62,14 @@ export type WorktreeFailureCode = keyof typeof CODE_TEXT;
 
 /** Reasons the host itself states (not from the manager). */
 const EXTRA_TEXT: Readonly<Record<string, string>> = {
+  untrusted: "The project is not trusted to run.",
   already_finalised: "The workspace is already finalised.",
   not_ready: "The workspace is not ready for this.",
   base_moved: "The base moved while the workspace was created.",
   base_ref: "The base ref does not exist.",
   busy: "The workspace is busy.",
   needs_attention: "This workspace needs attention and is unavailable.",
+  not_available: "This operation is not available yet.",
   path_changed: "The workspace location changed.",
   unverified: "The earlier finalise could not be verified; it needs attention.",
   unsafe_path: "A path in the request is not a plain file path inside the workspace.",
@@ -105,6 +114,9 @@ export function toDaemonError(error: unknown): DaemonError {
       case "E_BACKPRESSURE":
       case "E_UNAVAILABLE":
         return error.code === "E_BACKPRESSURE" ? new DaemonError("E_BACKPRESSURE", "Too many requests are waiting.") : worktreeFailure(error.code);
+      // The project trust gate refuses with it internally; only the daemon may answer E_POLICY_DENIED on the wire.
+      case "E_POLICY_DENIED":
+        return worktreeFailure("E_CONFLICT", "untrusted");
       default:
         break;
     }

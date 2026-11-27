@@ -1,11 +1,13 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
+import { trustCallOf } from "../src/gate/project-trust.js";
+import { attestedWindow } from "../testing/attested.js";
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { test, type TestContext } from "node:test";
 import * as path from "node:path";
 import { DaemonError } from "@axis/daemon";
 import { newKey, type Client, type Msg } from "./approvals-rig.js";
-import { createWs as createWsRaw, finishedRun, gitSkipReason, worktreesRig, type Rig, type RigOptions } from "./worktrees-rig.js";
+import { finaliseApproved, createWs as createWsRaw, finishedRun, gitSkipReason, worktreesRig, type Rig, type RigOptions } from "./worktrees-rig.js";
 import { worktreesMethods } from "@axis/protocol";
 
 const skip = gitSkipReason();
@@ -82,12 +84,12 @@ test("B1: the manager refuses a write that resolves into another worktree even w
   const real = r.binding.service.restoreFromRunBase.bind(r.binding.service);
   symlinkSync(dirOf(r, b), path.join(wa, "late"));
   await assert.rejects(
-    real({ id: a, runId, paths: ["late/a.txt"] }, { caller: { actor: "user", connectionId: "c", windowId: "w" }, signal: new AbortController().signal }),
+    real({ id: a, runId, paths: ["late/a.txt"] }, { caller: { actor: "user", connectionId: "c", windowId: "win-1" }, signal: new AbortController().signal, trust: (scope) => r.gate.admit({ ...scope, caller: trustCallOf(attestedWindow("win-1")), signal: new AbortController().signal }) }),
   );
   untouched(r, b);
   // A normal restore still works.
   writeFileSync(path.join(wa, "a.txt"), "edited\n");
-  const ok = await real({ id: a, runId, paths: ["a.txt"] }, { caller: { actor: "user", connectionId: "c", windowId: "w" }, signal: new AbortController().signal });
+  const ok = await real({ id: a, runId, paths: ["a.txt"] }, { caller: { actor: "user", connectionId: "c", windowId: "win-1" }, signal: new AbortController().signal, trust: (scope) => r.gate.admit({ ...scope, caller: trustCallOf(attestedWindow("win-1")), signal: new AbortController().signal }) });
   assert.equal(worktreesMethods.restoreFromRunBase.response.safeParse(ok).success, true);
   assert.equal(readFileSync(path.join(wa, "a.txt"), "utf8"), "alpha\n");
 });
@@ -98,7 +100,7 @@ test("finalise: an audit failure before git leaves git untouched; a git failure 
   let fail = true;
   const { r, user } = await setup(t, { failAudit: (e) => fail && e.action === "worktree.finalise.intent" });
   const { id } = await createWs(user);
-  const bad = await user.call(WT, "finalise", { id, outcome: "archived" }, newKey());
+  const bad = await finaliseApproved(r, user, id, "archived");
   assert.equal(bad.ok, false);
   assert.equal(r.git(r.repo, "for-each-ref", "refs/axis/archive"), "", "git was not touched");
   assert.equal(r.journal.getWorkspace(id)?.state, "READY");
@@ -106,10 +108,10 @@ test("finalise: an audit failure before git leaves git untouched; a git failure 
   fail = false;
   // git failure: a commit that is not in the base branch, so "merged" is refused by the manager; the journal stays READY.
   r.git(dirOf(r, id), "commit", "-q", "--allow-empty", "-m", "work");
-  const notMerged = await user.call(WT, "finalise", { id, outcome: "merged" }, newKey());
+  const notMerged = await finaliseApproved(r, user, id, "merged");
   assert.equal(notMerged.error?.code, "E_CONFLICT");
   assert.equal(r.journal.getWorkspace(id)?.state, "READY");
-  assert.equal((await user.call(WT, "finalise", { id, outcome: "archived" }, newKey())).ok, true);
+  assert.equal((await finaliseApproved(r, user, id, "archived")).ok, true);
   assert.equal(r.journal.getWorkspace(id)?.state, "FINALISED");
 });
 
@@ -117,7 +119,7 @@ test("finalise: git done but the journal write failed is recoverable over the wi
   let fail = true;
   const { r, user } = await setup(t, { failAudit: (e) => fail && e.action === "worktree.finalise" && (e.payload as { phase?: string }).phase === "done" });
   const { id } = await createWs(user);
-  const bad = await user.call(WT, "finalise", { id, outcome: "archived" }, newKey());
+  const bad = await finaliseApproved(r, user, id, "archived");
   assert.equal(bad.ok, false);
   assert.equal(r.journal.getWorkspace(id)?.state, "READY", "the transaction rolled back");
   assert.ok(r.git(r.repo, "for-each-ref", "refs/axis/archive").includes(id), "git did finalise");
@@ -125,7 +127,7 @@ test("finalise: git done but the journal write failed is recoverable over the wi
   assert.deepEqual(report.needsAttention, [{ workspaceId: id, reason: "finalise_incomplete" }]);
   fail = false;
   const before = r.git(r.repo, "for-each-ref");
-  const done = await user.call(WT, "finalise", { id, outcome: "archived" }, newKey());
+  const done = await finaliseApproved(r, user, id, "archived");
   assert.equal(done.ok, true, JSON.stringify(done.error));
   assert.equal(r.journal.getWorkspace(id)?.state, "FINALISED");
   assert.equal(r.git(r.repo, "for-each-ref"), before, "git was not run again");
@@ -148,7 +150,7 @@ test("content hooks refuse before any challenge: wrong state, needs attention, a
   const e1 = await hookError(r, "remove", id);
   assert.deepEqual([e1.code, e1.details], ["E_CONFLICT", { reason: "not_finalised" }]);
   assert.equal(await hookError(r, "remove", "ws-nope").then((e) => e.code), "E_NOT_FOUND");
-  assert.equal((await user.call(WT, "finalise", { id, outcome: "archived" }, newKey())).ok, true);
+  assert.equal((await finaliseApproved(r, user, id, "archived")).ok, true);
   const e2 = await hookError(r, "finalise", id);
   assert.deepEqual([e2.code, e2.details], ["E_CONFLICT", { reason: "already_finalised" }]);
   r.active.add(id);
@@ -175,7 +177,7 @@ const svcCtx = { caller: { actor: "user", connectionId: "c", windowId: "w" }, si
 test("service.remove: an active run seen by the service stops it before REMOVING; one seen only by the manager returns the row to FINALISED", { skip }, async (t) => {
   const { r, user } = await setup(t);
   const { id } = await createWs(user);
-  assert.equal((await user.call(WT, "finalise", { id, outcome: "archived" }, newKey())).ok, true);
+  assert.equal((await finaliseApproved(r, user, id, "archived")).ok, true);
   // The service's own check (the hook is bypassed by calling the service directly; a clean workspace needs no token).
   r.script.push(true);
   await assert.rejects(r.binding.service.remove({ id }, svcCtx), (e: unknown) => e instanceof DaemonError && e.details?.["reason"] === "active_run");
@@ -207,16 +209,16 @@ test("a repair whose journal transaction fails leaves the workspace flagged (the
   let fail = true;
   const { r, user } = await setup(t, { failAudit: (e) => fail && e.action === "worktree.finalise" && (e.payload as { phase?: string }).phase === "done" });
   const { id } = await createWs(user);
-  assert.equal((await user.call(WT, "finalise", { id, outcome: "archived" }, newKey())).ok, false);
+  assert.equal((await finaliseApproved(r, user, id, "archived")).ok, false);
   await r.binding.service.reconcile(new AbortController().signal);
   assert.equal(r.binding.needsAttention(id), true);
   // The repair runs (finalise_incomplete allows it) and its own journal write fails: still READY, still flagged.
-  const again = await user.call(WT, "finalise", { id, outcome: "archived" }, newKey());
+  const again = await finaliseApproved(r, user, id, "archived");
   assert.equal(again.ok, false);
   assert.equal(r.journal.getWorkspace(id)?.state, "READY");
   assert.equal(r.binding.needsAttention(id), true, "not lifted by a repair that did not commit");
   assert.equal((await user.call(WT, "status", { ids: [id] })).error?.code, "E_UNAVAILABLE");
   fail = false;
-  assert.equal((await user.call(WT, "finalise", { id, outcome: "archived" }, newKey())).ok, true);
+  assert.equal((await finaliseApproved(r, user, id, "archived")).ok, true);
   assert.equal(r.binding.needsAttention(id), false);
 });

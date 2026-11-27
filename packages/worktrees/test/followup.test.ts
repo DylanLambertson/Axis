@@ -3,14 +3,14 @@
 
 import assert from 'node:assert/strict';
 import { execFileSync, spawn } from 'node:child_process';
-import { existsSync, mkdirSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { after, describe, it } from 'node:test';
 import { createExecGitRunner, redact, WorktreeError, WorktreeManager, type GitRunner } from '../src/index.js';
 import { readRegularFile } from '../src/fsSafe.js';
 import { acquireFileLock, processStartOf } from '../src/lock.js';
-import { confirmFor, makeFixture, sh, write, type Fixture } from './helpers.js';
+import { confirmFor, makeFixture, sh, write, type Fixture, exp } from './helpers.js';
 
 const fixtures: Fixture[] = [];
 function fresh(extra: Parameters<typeof makeFixture>[0] = {}): Fixture {
@@ -30,8 +30,8 @@ describe('NS-2: the branch tip is recorded before any branch is deleted', () => 
     sh(ws.path, 'add', '-A');
     sh(ws.path, 'commit', '-q', '-m', 'work');
     const tip = sh(ws.path, 'rev-parse', 'HEAD').trim();
-    await fx.manager.finalise({ path: ws.path, outcome: 'archived' });
-    const res = await fx.manager.remove({ path: ws.path, deleteBranch: true });
+    await fx.manager.finalise({ path: ws.path, expectedWorktree: exp(ws.path), outcome: 'archived' });
+    const res = await fx.manager.remove({ path: ws.path, expectedWorktree: exp(ws.path), deleteBranch: true });
     assert.equal(res.branchDeleted, true);
     assert.match(res.branchBackupRef ?? '', /^refs\/axis\/backup\/[^/]+\/branch-\d{8}T\d{6}Z-[0-9a-f]{32}$/);
     assert.equal(sh(fx.repo, 'rev-parse', res.branchBackupRef as string).trim(), tip);
@@ -41,8 +41,8 @@ describe('NS-2: the branch tip is recorded before any branch is deleted', () => 
   it('keeps the branch and reports no backup ref when the branch is not deleted', async () => {
     const fx = fresh();
     const ws = await fx.manager.create({ repoPath: fx.repo, slug: 'keep' });
-    await fx.manager.finalise({ path: ws.path, outcome: 'archived' });
-    const res = await fx.manager.remove({ path: ws.path });
+    await fx.manager.finalise({ path: ws.path, expectedWorktree: exp(ws.path), outcome: 'archived' });
+    const res = await fx.manager.remove({ path: ws.path , expectedWorktree: exp(ws.path)});
     assert.equal(res.branchBackupRef, null);
     assert.notEqual(sh(fx.repo, 'branch', '--list', 'axis/keep').trim(), '');
   });
@@ -52,20 +52,20 @@ describe('NS-3: nested repositories are part of the confirmation', () => {
   it('lists the nested repo, binds it into the fingerprint, and requires a confirmation to remove', async () => {
     const fx = fresh();
     const ws = await fx.manager.create({ repoPath: fx.repo, slug: 'nest' });
-    await fx.manager.finalise({ path: ws.path, outcome: 'archived' });
-    const before = await fx.manager.previewDiscard(ws.path);
+    await fx.manager.finalise({ path: ws.path, expectedWorktree: exp(ws.path), outcome: 'archived' });
+    const before = await fx.manager.previewDiscard(ws.path, exp(ws.path));
     assert.deepEqual(before.skippedUnsupported, []);
     mkdirSync(path.join(ws.path, 'tool'));
     sh(path.join(ws.path, 'tool'), 'init', '-q');
-    const after1 = await fx.manager.previewDiscard(ws.path);
+    const after1 = await fx.manager.previewDiscard(ws.path, exp(ws.path));
     assert.deepEqual(after1.skippedUnsupported, ['tool/']);
     assert.notEqual(after1.fingerprint, before.fingerprint);
     await assert.rejects(
-      fx.manager.remove({ path: ws.path }),
+      fx.manager.remove({ path: ws.path , expectedWorktree: exp(ws.path)}),
       (e: unknown) => e instanceof WorktreeError && e.code === 'E_CONFLICT'
         && Array.isArray(e.details['skippedUnsupported']) && (e.details['skippedUnsupported'] as string[]).includes('tool/'),
     );
-    const res = await fx.manager.remove({ path: ws.path, discardConfirmation: await confirmFor(fx.manager, ws.path, ws.id, 'remove') });
+    const res = await fx.manager.remove({ path: ws.path, expectedWorktree: exp(ws.path), discardConfirmation: await confirmFor(fx.manager, ws.path, ws.id, 'remove') });
     assert.deepEqual(res.skippedUnsupported, ['tool/']);
   });
 });
@@ -93,7 +93,7 @@ describe('NS-5: records are read as bounded regular files', () => {
     const gitDir = sh(ws.path, 'rev-parse', '--absolute-git-dir').trim();
     execFileSync('rm', ['-f', path.join(gitDir, 'axis-gitsnap.json')]);
     execFileSync('mkfifo', [path.join(gitDir, 'axis-gitsnap.json')]);
-    const st = await fx.manager.status(ws.path);
+    const st = await fx.manager.status(ws.path, exp(ws.path));
     assert.equal(st.baselineMissing, true);
   });
 });
@@ -145,11 +145,24 @@ describe('nits', () => {
 
   it('N-D: the snapshot index lives in a private daemon directory, not in $TMPDIR', async () => {
     const fx = fresh();
-    const before = new Set(readdirSync(os.tmpdir()).filter((n) => n.startsWith('axis-snap-')));
-    const ws = await fx.manager.create({ repoPath: fx.repo, slug: 'scratch' });
-    write(path.join(ws.path, 'a.txt'), 'edit\n');
-    await fx.manager.restoreFromRunBase({ path: path.join(ws.path, 'a.txt') });
-    assert.deepEqual(readdirSync(os.tmpdir()).filter((n) => n.startsWith('axis-snap-') && !before.has(n)), []);
+    // The temp directory is private to this test: other suites (and other agents' gate runs) create axis-snap-* entries in the shared
+    // one at the same time, and only what this test's own git runs put in $TMPDIR may be counted. Git and the manager read the
+    // variable at spawn time, so it is restored (and the directory removed) once the test is done.
+    const own = mkdtempSync(path.join(fx.tmp, 'private-tmp-'));
+    const saved = { TMPDIR: process.env['TMPDIR'], TEMP: process.env['TEMP'], TMP: process.env['TMP'] };
+    process.env['TMPDIR'] = process.env['TEMP'] = process.env['TMP'] = own;
+    try {
+      assert.equal(path.resolve(os.tmpdir()), path.resolve(own), 'the test sees its own temp directory');
+      const ws = await fx.manager.create({ repoPath: fx.repo, slug: 'scratch' });
+      write(path.join(ws.path, 'a.txt'), 'edit\n');
+      await fx.manager.restoreFromRunBase({ path: path.join(ws.path, 'a.txt') , expectedWorktree: exp(path.join(ws.path, 'a.txt'))});
+      assert.deepEqual(readdirSync(os.tmpdir()).filter((n) => n.startsWith('axis-snap-')), []);
+    } finally {
+      for (const [k, v] of Object.entries(saved)) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+    }
     const scratch = path.join(fx.root, '.axis-tmp');
     assert.equal(existsSync(scratch), true);
     assert.equal(statSync(scratch).mode & 0o077, 0);

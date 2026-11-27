@@ -64,3 +64,11 @@ export type ChallengeReference = z.infer<typeof challengeReferenceSchema>;
 export const approvalRequiredDetailsSchema = z.strictObject({
   challenge: challengeSchema,
 });
+
+/**
+ * What a plugin connection gets instead (PV-K1e-a2): the challenge id only. The user sees what the plugin asked for in the
+ * plugin's host window; nothing about it is echoed to the plugin.
+ */
+export const pluginApprovalRequiredDetailsSchema = z.strictObject({
+  challenge: z.strictObject({ challengeId: challengeIdSchema }),
+});

@@ -5,13 +5,13 @@ import { chmodSync, mkdirSync, unlinkSync, writeFileSync } from 'node:fs';
 import * as path from 'node:path';
 import { afterEach, beforeEach, describe, it } from 'node:test';
 import { WorktreeError } from '../src/index.js';
-import { makeFixture, sh, write, type Fixture } from './helpers.js';
+import { makeFixture, sh, write, type Fixture, exp } from './helpers.js';
 
 describe('GIT-SNAP-1 drift detection', () => {
   let fx: Fixture;
   let wt: string;
   const common = () => path.join(fx.repo, '.git');
-  const driftIds = async () => (await fx.manager.status(wt)).drift.map((d) => d.id);
+  const driftIds = async () => (await fx.manager.status(wt, exp(wt))).drift.map((d) => d.id);
 
   beforeEach(async () => {
     fx = makeFixture();
@@ -20,7 +20,7 @@ describe('GIT-SNAP-1 drift detection', () => {
   afterEach(() => fx.cleanup());
 
   it('has no drift right after create', async () => {
-    const st = await fx.manager.status(wt);
+    const st = await fx.manager.status(wt, exp(wt));
     assert.deepEqual(st.drift, []);
     assert.equal(st.baselineMissing, false);
   });
@@ -33,7 +33,7 @@ describe('GIT-SNAP-1 drift detection', () => {
     assert.ok(ids.includes('file:info/attributes'));
     assert.ok(ids.includes('file:config'));
     assert.ok(ids.includes('config:filter.evil.clean'));
-    const item = (await fx.manager.status(wt)).drift.find((d) => d.id === 'config:filter.evil.clean');
+    const item = (await fx.manager.status(wt, exp(wt))).drift.find((d) => d.id === 'config:filter.evil.clean');
     assert.equal(item?.change, 'added');
     assert.match(item?.after ?? '', /touch \/tmp\/pwned/);
   });
@@ -65,7 +65,7 @@ describe('GIT-SNAP-1 drift detection', () => {
     await fx.manager.acknowledgeDrift(wt);
     assert.deepEqual(await driftIds(), []);
     write(hook, '#!/bin/sh\ncurl evil\n');
-    const mod = (await fx.manager.status(wt)).drift[0];
+    const mod = (await fx.manager.status(wt, exp(wt))).drift[0];
     assert.equal(mod?.change, 'modified');
     assert.match(mod?.before ?? '', /exit 0/);
     assert.match(mod?.after ?? '', /curl evil/);
@@ -74,7 +74,7 @@ describe('GIT-SNAP-1 drift detection', () => {
     assert.deepEqual(await driftIds(), ['file:hooks/pre-commit']);
     await fx.manager.acknowledgeDrift(wt);
     unlinkSync(hook);
-    assert.equal((await fx.manager.status(wt)).drift[0]?.change, 'removed');
+    assert.equal((await fx.manager.status(wt, exp(wt))).drift[0]?.change, 'removed');
   });
 
   it('detects config.worktree files (main and per-worktree)', async () => {
@@ -97,10 +97,10 @@ describe('GIT-SNAP-1 drift detection', () => {
     const baseline = await fx.manager.takeGitSnapshot(wt);
     const { unlinkSync: rm } = await import('node:fs');
     rm(path.join(sh(wt, 'rev-parse', '--absolute-git-dir').trim(), 'axis-gitsnap.json'));
-    const st = await fx.manager.status(wt);
+    const st = await fx.manager.status(wt, exp(wt));
     assert.equal(st.baselineMissing, true);
     assert.equal(st.hasDrift, true);
-    const ok = await fx.manager.status(wt, { baseline });
+    const ok = await fx.manager.status(wt, exp(wt), { baseline });
     assert.equal(ok.hasDrift, false);
   });
 
@@ -190,15 +190,15 @@ describe('GIT-SNAP-1 drift detection', () => {
   });
 
   it('assertNoDrift refuses on drift until acknowledged and fails closed without a baseline', async () => {
-    await assert.doesNotReject(fx.manager.assertNoDrift(wt));
+    await assert.doesNotReject(fx.manager.assertNoDrift(wt, exp(wt)));
     sh(fx.repo, 'config', 'core.sshCommand', 'evil');
-    await assert.rejects(fx.manager.assertNoDrift(wt), (e) =>
+    await assert.rejects(fx.manager.assertNoDrift(wt, exp(wt)), (e) =>
       e instanceof WorktreeError && e.code === 'E_CONFLICT' && e.details['reason'] === 'git-drift' &&
       (e.details['items'] as string[]).includes('config:core.sshcommand'));
     await fx.manager.acknowledgeDrift(wt);
-    await assert.doesNotReject(fx.manager.assertNoDrift(wt));
+    await assert.doesNotReject(fx.manager.assertNoDrift(wt, exp(wt)));
     unlinkSync(path.join(sh(wt, 'rev-parse', '--absolute-git-dir').trim(), 'axis-gitsnap.json'));
-    await assert.rejects(fx.manager.assertNoDrift(wt), (e) =>
+    await assert.rejects(fx.manager.assertNoDrift(wt, exp(wt)), (e) =>
       e instanceof WorktreeError && e.details['reason'] === 'git-drift' && e.details['baselineMissing'] === true);
   });
 });

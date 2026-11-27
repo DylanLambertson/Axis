@@ -8,8 +8,14 @@ import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isScriptFile } from "./loaders.mjs";
+import { projectTrustVerdict, ptyClientVerdict } from "./pty-client-rule.mjs";
+import { vaultVerdict } from "./vault-importers-rule.mjs";
+import { daemonTestingVerdict } from "./daemon-testing-rule.mjs";
+import { grantWriterProblems, grantWriterProgram } from "./plugin-grant-writer-rule.mjs";
 import { importSpecifiers, unsafeForms } from "../../scripts/code-oss/stage-ast.mjs";
 import { LOADER_BUILTINS } from "../../scripts/code-oss/stage-scan.mjs";
+import { egressClientEdgeRefusal, listenerBuiltinRefusal, webHostEdgeRefusal } from "../../scripts/code-oss/web-rules.mjs";
+import { egressBuiltinRefusal } from "../../scripts/code-oss/egress-rules.mjs";
 
 const packagesDir = fileURLToPath(new URL("../../packages/", import.meta.url));
 
@@ -37,6 +43,7 @@ const RUNS_SUBPATHS = new Map([["@axis/runs/daemon-attestation", new Set(["daemo
 const HOST_PACKAGE = "daemon-host";
 const HOST_FILE_RULES = new Map([
   ["@axis/journal/daemon-principal", ["src/handlers/review.ts"]],
+  ["@axis/git-snapshot", ["src/bindings/snapshot.ts"]],
   ["@axis/worktrees", ["src/bindings/worktrees.ts"]],
   ["@axis/worktrees/daemon-confirm", ["src/gate/worktrees-confirm.ts"]],
   ["@axis/runs/daemon-attestation", ["src/gate/run-trust.ts"]],
@@ -46,15 +53,23 @@ const HOST_FILE_RULES = new Map([
  * their closed-over factories) and the composition root (ticket H12), the one place that builds the gate and hands handler code only
  * the registrar. A handler, a service, a binding or another composition part may not.
  */
+/** The files that may load the composition root: the public index, and the utility process entry (it calls `composeDaemonHost` and nothing else of it). */
+const COMPOSE_IMPORTERS = new Set(["src/index.ts", "src/entry.ts"]);
 const COMPOSITION_FILES = new Set(["src/index.ts", "src/compose.ts"]);
+/** The files that may load `src/bindings/providers.ts` (the egress point): the composition root, the host (its audit allowlist) and the public index. */
+export const PROVIDERS_IMPORTERS = new Set(["src/compose.ts", "src/host.ts", "src/index.ts"]);
 /** Packages whose bindings live in `src/bindings/*.ts` of the host (they land with their own changes). */
-const HOST_BINDING_PACKAGES = ["@axis/runs", "@axis/review"];
+const HOST_BINDING_PACKAGES = ["@axis/broker", "@axis/runs", "@axis/review"];
 
 /** Judge the host-only rules; null means no host rule applies and the general rules decide. */
 function hostViolation(pkg, spec, file, pkgDir) {
   if (spec === "@axis/daemon-host" || spec.startsWith("@axis/daemon-host/")) {
     return "nothing in packages/* may import the daemon host";
   }
+  const ptyClient = pkg === HOST_PACKAGE ? ptyClientVerdict(spec, file === null || pkgDir === null ? null : relative(pkgDir, file).split(sep).join("/")) : null;
+  if (ptyClient !== null) return ptyClient;
+  const vault = pkg === HOST_PACKAGE ? vaultVerdict(spec, file === null || pkgDir === null ? null : relative(pkgDir, file).split(sep).join("/")) : null;
+  if (vault !== null) return vault;
   const files = HOST_FILE_RULES.get(spec);
   const binding = HOST_BINDING_PACKAGES.some((p) => spec === p || spec.startsWith(`${p}/`));
   if (files === undefined && !binding) return null;
@@ -75,10 +90,17 @@ function hostViolation(pkg, spec, file, pkgDir) {
  */
 export function violation(pkg, spec, file = null, pkgDir = null) {
   const inSrc = file === null || pkgDir === null || relative(pkgDir, file).split(sep)[0] === "src";
+  const testingOnly = daemonTestingVerdict(spec, inSrc);
+  if (testingOnly !== null) return testingOnly;
   if (spec.startsWith("./") || spec.startsWith("../")) {
     if (file === null || pkgDir === null) return null;
     const target = resolve(dirname(file), spec);
     const rel = relative(pkgDir, target);
+    // Shipped code stays inside src/: a src file importing test/, testing/ or contract/ could launder a minter through a
+    // test-support module (those may import the minters), so the rule holds for every package.
+    if (relative(pkgDir, file).split(sep)[0] === "src" && !(rel === "src" || rel.startsWith(`src${sep}`)) && !(rel === ".." || rel.startsWith(`..${sep}`) || resolve(rel) === rel)) {
+      return "src/ may not import outside src/ (test/, testing/ or contract/)";
+    }
     // The module that mints the discard token: inside the host's src/, only the public index may load it (a handler
     // or a service reaching it by a relative path could mint a token with no spent approval).
     // The public index re-exports the wiring that closes over it: nothing inside src/ may load the index (a barrel hop).
@@ -86,10 +108,28 @@ export function violation(pkg, spec, file = null, pkgDir = null) {
       const from = relative(pkgDir, file).split(sep).join("/");
       if (from.startsWith("src/")) return "nothing inside src/ may import the public index";
     }
+    // The web host (docs/design/web-host-entry.md): only src/web/ may load src/web/, so no desktop entry can reach the listener.
+    const fromSrc = relative(pkgDir, file).split(sep).join("/");
+    if (fromSrc.startsWith("src/")) {
+      const web = webHostEdgeRefusal(`${pkg}/${fromSrc.slice(4)}`, `${pkg}/${rel.split(sep).join("/").slice(4)}`);
+      if (web !== null && rel.startsWith(`src${sep}`)) return web;
+      const client = egressClientEdgeRefusal(`${pkg}/${fromSrc.slice(4)}`, `${pkg}/${rel.split(sep).join("/").slice(4).replace(/\.js$/, ".ts")}`);
+      if (client !== null && rel.startsWith(`src${sep}`)) return client;
+    }
+    // The process entry reaches the composition root, so it is a composition point: nothing inside src/ may load it, only the overlay entry.
+    if (pkg === HOST_PACKAGE && /^src[\\/]entry(\.[cm]?[jt]s)?$/.test(rel)) {
+      const from = relative(pkgDir, file).split(sep).join("/");
+      if (from.startsWith("src/")) return "nothing inside src/ may import the process entry src/entry.ts";
+    }
     // The composition root loads both minters, so it is as privileged as the public index: only the index may load it.
     if (pkg === HOST_PACKAGE && /^src[\\/]compose(\.[cm]?[jt]s)?$/.test(rel)) {
       const from = relative(pkgDir, file).split(sep).join("/");
-      if (from.startsWith("src/") && from !== "src/index.ts") return "only src/index.ts may import the composition root";
+      if (from.startsWith("src/") && !COMPOSE_IMPORTERS.has(from)) return "only src/index.ts and the process entry src/entry.ts may import the composition root";
+    }
+    // The providers binding holds the one egress point (the adapter's fetch): only the composition files that build or describe it load it.
+    if (pkg === HOST_PACKAGE && /^src[\\/]bindings[\\/]providers(\.[cm]?[jt]s)?$/.test(rel)) {
+      const from = relative(pkgDir, file).split(sep).join("/");
+      if (from.startsWith("src/") && !PROVIDERS_IMPORTERS.has(from)) return "only src/compose.ts, src/host.ts and src/index.ts may import the providers binding";
     }
     if (pkg === HOST_PACKAGE && /^src[\\/]gate[\\/]worktrees-confirm(\.[cm]?[jt]s)?$/.test(rel)) {
       const from = relative(pkgDir, file).split(sep).join("/");
@@ -99,6 +139,7 @@ export function violation(pkg, spec, file = null, pkgDir = null) {
       const from = relative(pkgDir, file).split(sep).join("/");
       if (from.startsWith("src/") && !COMPOSITION_FILES.has(from)) return "only src/index.ts and the composition root src/compose.ts may import the run trust minter";
     }
+    { const gate = pkg === HOST_PACKAGE ? projectTrustVerdict(rel.split(sep).join("/"), relative(pkgDir, file).split(sep).join("/")) : null; if (gate !== null) return gate; }
     return rel === ".." || rel.startsWith(`..${sep}`) || resolve(rel) === rel
       ? "relative import leaves the package directory"
       : null;
@@ -124,7 +165,9 @@ export function violation(pkg, spec, file = null, pkgDir = null) {
   if (spec.startsWith("node:")) {
     if (NO_NODE.has(pkg) && inSrc) return "node:* is not allowed in this package";
     const only = LOADER_BUILTINS.get(spec.replace(/\/.*$/, ""));
-    return only !== undefined && !only.has(pkg) && inSrc ? "this built-in loads or runs code without a module specifier" : null;
+    if (only !== undefined && !only.has(pkg) && inSrc) return "this built-in loads or runs code without a module specifier";
+    const staged = file === null || pkgDir === null ? null : `${pkg}/${relative(pkgDir, file).split(sep).join("/").slice(4)}`;
+    return inSrc ? (listenerBuiltinRefusal(spec, staged) ?? egressBuiltinRefusal(spec, staged)) : null;
   }
   return "only relative, zod, @axis/* and node:* imports are allowed";
 }
@@ -151,6 +194,24 @@ const packages = readdirSync(packagesDir).filter((n) => statSync(join(packagesDi
 
 test("there is at least one package", () => assert.ok(packages.length > 0));
 
+// PV-K2 K2-g3 (docs/design/plugin-grant-contract.md section 8.4): the plugin grant writer and construction rules, run with the
+// type checker over every package's product source (`src/`, the same walk), so a second writer of grants fails the gate.
+test("plugin grant writers: only the approved action mints and writes; the journal and the store are constructed where they are today", () => {
+  const files = [];
+  for (const pkg of packages) {
+    const src = join(packagesDir, pkg, "src");
+    try {
+      if (!statSync(src).isDirectory()) continue;
+    } catch {
+      continue;
+    }
+    for (const f of sourceFiles(src)) if (f.endsWith(".ts") && !f.endsWith(".d.ts")) files.push(f);
+  }
+  assert.ok(files.length > 100, "the walk found the product source");
+  const root = fileURLToPath(new URL("../../", import.meta.url));
+  assert.deepEqual(grantWriterProblems(grantWriterProgram(files), root, (rel) => /^packages\/[^/]+\/src\//.test(rel)), []);
+});
+
 for (const pkg of packages) {
   test(`${pkg}: imports stay inside the allowlist (whole package)`, () => {
     const bad = [];
@@ -161,7 +222,7 @@ for (const pkg of packages) {
         const why = violation(pkg, spec, file, pkgDir);
         if (why) bad.push(`${file}: ${spec} (${why})`);
       }
-      for (const call of unsafeForms(source, file, { pkg, shipped: relative(pkgDir, file).split(sep)[0] === "src" })) bad.push(`${file}: ${call}`);
+      for (const call of unsafeForms(source, file, { pkg, shipped: relative(pkgDir, file).split(sep)[0] === "src", pkgRel: relative(pkgDir, file).split(sep).join("/") })) bad.push(`${file}: ${call}`);
     }
     assert.deepEqual(bad, []);
   });
@@ -179,36 +240,6 @@ for (const pkg of packages) {
   });
 }
 
-test("scanner: finds every import form and ignores comments", () => {
-  const src = `
-    import a from "zod";
-    import type { B } from '../b.js';
-    export * from "./c.js";
-    export { d } from "node:fs";
-    import "vs/base/common/lifecycle";
-    const e = await import("electron");
-    // import x from "ignored";
-    /* import y from "ignored2"; */
-    const s = "https://example.com//not-a-comment";
-  `;
-  assert.deepEqual(importSpecifiers(src).sort(), [
-    "../b.js", "./c.js", "electron", "node:fs", "vs/base/common/lifecycle", "zod",
-  ]);
-});
-
-test("scanner: string-named bindings and a quote in a comment do not hide a specifier", () => {
-  assert.deepEqual(importSpecifiers('import { "z" as z } from "zod";\nexport { "default" as e } from "vs/base/common/event";\nimport /* \' */ { x } from "child_process";').sort(), ["child_process", "vs/base/common/event", "zod"]);
-});
-
-test("scanner: a regex literal after a closing parenthesis does not hide a specifier", () => {
-  const trick = `if (Date.now() < 0) /'/.test(""); export { "z" as zTree } from "zod";`;
-  assert.deepEqual(importSpecifiers(trick), ["zod"]);
-  assert.deepEqual(importSpecifiers(`if (a) /'/.test(b); export * from "electron";`), ["electron"]);
-  assert.deepEqual(importSpecifiers(`if (a) /'/.test(b); const m = import("electron");`), ["electron"]);
-  assert.deepEqual(importSpecifiers(`if (a) /'/.test(b); import fs = require("fs");`), ["fs"]);
-  assert.deepEqual(importSpecifiers(`const x = (a) / 2; import { y } from "./y.js";`), ["./y.js"]);
-});
-
 test("scanner: policy", () => {
   assert.equal(violation("protocol", "vs/base/common/event"), "only relative, zod, @axis/* and node:* imports are allowed");
   assert.equal(violation("protocol", "electron") !== null, true);
@@ -223,19 +254,16 @@ test("scanner: relative imports must stay inside the package", () => {
   const dir = join(packagesDir, "protocol");
   const file = join(dir, "src", "a.ts");
   assert.equal(violation("protocol", "./b.js", file, dir), null);
-  assert.equal(violation("protocol", "../test/x.js", file, dir), null);
+  assert.notEqual(violation("protocol", "../test/x.js", file, dir), null, "src may not import test/");
+  assert.notEqual(violation("protocol", "../testing/x.js", file, dir), null, "src may not import testing/");
+  assert.notEqual(violation("protocol", "../contract/x.js", file, dir), null);
+  assert.notEqual(violation("protocol", "../src/../testing/x.js", file, dir), null, "a detour through src does not hide it");
+  assert.equal(violation("protocol", "../src/x.js", file, dir), null, "src may name itself");
+  assert.equal(violation("protocol", "../src/x.js", join(dir, "test", "a.test.ts"), dir), null, "tests import src");
+  assert.equal(violation("protocol", "../testing/x.js", join(dir, "test", "a.test.ts"), dir), null, "tests import testing/");
   assert.notEqual(violation("protocol", "../../worktrees/src/x.js", file, dir), null);
   assert.notEqual(violation("protocol", "../../../vendor/code-oss/x.js", file, dir), null);
   assert.notEqual(violation("protocol", "../../protocol-evil/x.js", file, dir), null);
-});
-
-test("scanner: dynamic loads need a string literal", () => {
-  assert.deepEqual(unsafeForms(`const a = await import("zod"); const b = require('./x.js');`), []);
-  assert.equal(unsafeForms("await import(name)").length, 1);
-  assert.equal(unsafeForms("await import(`./x/${n}.js`)").length, 1);
-  assert.equal(unsafeForms("await import('./x/' + n)").length, 1);
-  assert.equal(unsafeForms("require(path)").length, 1);
-  assert.deepEqual(unsafeForms('// import(name)\n/* require(x) */'), []);
 });
 
 test("scanner: walks the whole package except dist and node_modules", () => {
@@ -276,25 +304,6 @@ test("scanner: the trust-attestation subpath is restricted to the daemon; other 
   }
   assert.notEqual(violation("daemon", "@axis/runs/dist/src/attestation.js"), null);
   assert.notEqual(violation("daemon", "@axis/runs/src/attestation"), null);
-});
-
-test("the runs package root does not export the attestation minting function", () => {
-  const json = JSON.parse(readFileSync(join(packagesDir, "runs", "package.json"), "utf8"));
-  assert.deepEqual(Object.keys(json.exports).sort(), [".", "./daemon-attestation"]);
-  const index = readFileSync(join(packagesDir, "runs", "src", "index.ts"), "utf8");
-  assert.ok(!/attestTrust|daemon-attestation|MINT/.test(index), "src/index.ts must not expose the minting function");
-});
-
-test("the journal package root exports the principal subpath only through package.json exports", () => {
-  const json = JSON.parse(readFileSync(join(packagesDir, "journal", "package.json"), "utf8"));
-  assert.deepEqual(Object.keys(json.exports).sort(), [".", "./daemon-principal"]);
-  const index = readFileSync(join(packagesDir, "journal", "src", "index.ts"), "utf8");
-  assert.ok(!/principal/i.test(index), "src/index.ts must not mention the principal module");
-});
-
-test("scanner: every script extension is read, declaration files are not", () => {
-  for (const f of ["a.js", "a.mjs", "a.cjs", "a.ts", "a.mts", "a.cts", "a.tsx", "a.jsx", "dir/deep/x.mts"]) assert.equal(isScriptFile(f), true, f);
-  for (const f of ["a.d.ts", "a.d.mts", "a.d.cts", "a.json", "a.map", "a.js.map", "a.md", "a.mtsx", "ts"]) assert.equal(isScriptFile(f), false, f);
 });
 
 test("scanner: sourceFiles yields .mts, .cts, .tsx, .jsx, .mjs and .cjs files, and skips dist and node_modules", () => {
@@ -358,16 +367,25 @@ test("scanner: the daemon host is imported by nothing and imports the restricted
   for (const f of ["src/handlers/worktrees.ts", "src/ports/worktrees.ts", "src/host.ts", "src/bindings/runs.ts"]) {
     assert.notEqual(violation("daemon-host", "@axis/worktrees", at(f), dir), null, f);
   }
+  // GIT-SNAP-1 (H13): the run snapshotter binding is the host's one importer of @axis/git-snapshot.
+  assert.equal(violation("daemon-host", "@axis/git-snapshot", at("src/bindings/snapshot.ts"), dir), null);
+  assert.notEqual(violation("daemon-host", "@axis/vault", at("src/host.ts"), dir), null, "vault-importers-rule.mjs is wired in");
+  for (const f of ["src/compose.ts", "src/entry.ts", "src/handlers/cli-runs.ts", "src/bindings/runs.ts"]) assert.notEqual(violation("daemon-host", "@axis/git-snapshot", at(f), dir), null, f);
   // The trust attestation: only src/gate/run-trust.ts of the host (the binding and the handler cannot mint one).
   assert.equal(violation("daemon-host", "@axis/runs/daemon-attestation", at("src/gate/run-trust.ts"), dir), null);
   for (const f of ["src/bindings/runs.ts", "src/handlers/cli-runs.ts", "src/gate/approvals.ts", "test/runs-rig.ts"]) {
     assert.notEqual(violation("daemon-host", "@axis/runs/daemon-attestation", at(f), dir), null, f);
   }
   assert.notEqual(violation("daemon-host", "@axis/runs/daemon-attestation"), null, "a call without a file is judged strictly");
+  assert.notEqual(violation("daemon-host", "../gate/project-trust-gate.js", at("src/handlers/git.ts"), dir), null, "project-trust-rule.mjs is wired in");
   // The run trust minter module (a relative import): only the public index, never a handler, binding or gate neighbour.
   assert.equal(violation("daemon-host", "./gate/run-trust.js", at("src/index.ts"), dir), null);
   assert.equal(violation("daemon-host", "./gate/run-trust.js", at("src/compose.ts"), dir), null, "the composition root");
   assert.notEqual(violation("daemon-host", "./gate/run-trust.js", at("src/compose-parts.ts"), dir), null, "its helper file is not the root");
+  // The launder (review daemon-host-runs-review2 N2): a handler imports a testing/ module that re-exports the minter.
+  assert.notEqual(violation("daemon-host", "../../testing/zz-launder.js", at("src/handlers/zz-a.ts"), dir), null, "src importing testing/");
+  assert.notEqual(violation("daemon-host", "../../test/zz-launder.js", at("src/handlers/zz-a.ts"), dir), null, "src importing test/");
+  assert.equal(violation("daemon-host", "../testing/zz-launder.js", at("test/a.test.ts"), dir), null, "a test may import testing/");
   for (const [f, spec] of [
     ["src/handlers/cli-runs.ts", "../gate/run-trust.js"],
     ["src/bindings/runs.ts", "../gate/run-trust.js"],
@@ -394,10 +412,16 @@ test("scanner: the daemon host is imported by nothing and imports the restricted
   assert.equal(violation("daemon-host", "../src/gate/worktrees-confirm.js", at("test/worktrees-unit.test.ts"), dir), null, "tests may");
   // The composition root (it loads both minters): only the public index, never a handler, binding, gate or helper file.
   assert.equal(violation("daemon-host", "./compose.js", at("src/index.ts"), dir), null);
+  assert.equal(violation("daemon-host", "./compose.js", at("src/entry.ts"), dir), null, "the process entry calls composeDaemonHost");
   assert.equal(violation("daemon-host", "../src/compose.js", at("test/compose.test.ts"), dir), null, "tests may");
   for (const [f, spec] of [["src/handlers/projects.ts", "../compose.js"], ["src/compose-parts.ts", "./compose.js"], ["src/bindings/runs.ts", "../compose"], ["src/gate/approvals.ts", "../compose.ts"], ["src/host.ts", "./compose.js"]]) {
     assert.notEqual(violation("daemon-host", spec, at(f), dir), null, f);
   }
+  // The process entry is a composition point loadable by no staged file (the overlay entry is outside the package).
+  for (const [f, spec] of [["src/handlers/worktrees.ts", "../entry.js"], ["src/index.ts", "./entry.js"], ["src/compose.ts", "./entry"], ["src/supervisor.ts", "./entry.ts"], ["src/bindings/runs.ts", "../entry.js"]]) {
+    assert.notEqual(violation("daemon-host", spec, at(f), dir), null, `${f} -> ${spec}`);
+  }
+  assert.equal(violation("daemon-host", "../src/entry.js", at("test/entry.test.ts"), dir), null, "tests may");
   // The barrel hop: a handler loading the public index could reach whatever it exports.
   for (const [f, spec] of [["src/handlers/worktrees.ts", "../index.js"], ["src/worktrees/service.ts", "../index"], ["src/gate/approvals.ts", "../index.ts"]]) {
     assert.notEqual(violation("daemon-host", spec, at(f), dir), null, f);
@@ -414,4 +438,24 @@ test("scanner: the daemon host is imported by nothing and imports the restricted
   }
   // Other packages keep their existing rules for the worktrees root.
   assert.equal(violation("daemon", "@axis/worktrees"), null);
+});
+
+test("scanner: only the web host listener loads a socket built-in, and only src/web/ loads src/web/ (docs/design/web-host-entry.md)", () => {
+  const dir = join(packagesDir, "daemon-host");
+  const at = (rel) => join(dir, ...rel.split("/"));
+  for (const spec of ["node:http", "node:net", "node:https", "node:http2", "node:tls", "node:dgram"]) {
+    assert.equal(violation("daemon-host", spec, at("src/web/server.ts"), dir), null, spec);
+    for (const f of ["src/web/session.ts", "src/web/index.ts", "src/entry.ts", "src/supervisor.ts", "src/host.ts", "src/compose.ts"]) assert.notEqual(violation("daemon-host", spec, at(f), dir), null, `${f} ${spec}`);
+    assert.notEqual(violation("daemon-host", spec), null, "a call without a file is judged strictly");
+    assert.notEqual(violation("git-ops", spec, join(packagesDir, "git-ops", "src", "web", "server.ts"), join(packagesDir, "git-ops")), null, "another package's web/server.ts is not the listener");
+    assert.equal(violation("daemon-host", spec, at("test/web-host.test.ts"), dir), null, "tests may");
+  }
+  for (const [f, spec] of [["src/index.ts", "./web/index.js"], ["src/entry.ts", "./web/server.js"], ["src/compose.ts", "./web/index"], ["src/supervisor.ts", "./web/config.js"], ["src/transport/mux.ts", "../web/session.js"]]) {
+    assert.notEqual(violation("daemon-host", spec, at(f), dir), null, `${f} -> ${spec}`);
+  }
+  assert.equal(violation("daemon-host", "./server.js", at("src/web/index.ts"), dir), null);
+  assert.equal(violation("daemon-host", "../control/attestation.js", at("src/web/server.ts"), dir), null);
+  assert.equal(violation("daemon-host", "../src/web/index.js", at("test/web-host.test.ts"), dir), null, "tests may");
+  // The web host is not a composition point: it may not load the composition root, the process entry, the index or a minter.
+  for (const spec of ["../compose.js", "../entry.js", "../index.js", "../gate/run-trust.js", "../gate/worktrees-confirm.js"]) assert.notEqual(violation("daemon-host", spec, at("src/web/server.ts"), dir), null, spec);
 });

@@ -1,10 +1,11 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
-import { chmodSync, cpSync, readFileSync, readdirSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { chmodSync, cpSync, readFileSync, readdirSync, realpathSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { type ChainHead } from "@axis/audit";
-import { MAX_AUDIT_LIST } from "@axis/protocol";
+import { MAX_AUDIT_LIST, approvalRequiredDetailsSchema } from "@axis/protocol";
 import type { GitFixture } from "./git-fixture.js";
 import { TestSupervisor, type TestSupervisorOptions } from "./test-supervisor.js";
 import { TestClient, newKey, until } from "./test-client.js";
@@ -30,13 +31,16 @@ export interface SliceHost {
 }
 
 /** Start the composed host as a child process on `fx`'s environment. `agents` is what `axis.cliAgents` answers. */
-export async function startHost(fx: GitFixture, over: Partial<TestSupervisorOptions> & { scanMode?: "refuse" | "warn"; agents?: unknown; probeMutex?: boolean; breakPutFile?: string } = {}): Promise<SliceHost> {
-  const { scanMode, agents, probeMutex, breakPutFile, ...rest } = over;
+export async function startHost(fx: GitFixture, over: Partial<TestSupervisorOptions> & { scanMode?: "refuse" | "warn"; agents?: unknown; probeMutex?: boolean; breakPutFile?: string; finalWaitMs?: number; composerConfig?: string; integrationsConfig?: string } = {}): Promise<SliceHost> {
+  const { scanMode, agents, probeMutex, breakPutFile, finalWaitMs, composerConfig, integrationsConfig, ...rest } = over;
   // The host's git environment is checked by git-ops: the pty one must not set GIT_CONFIG_NOSYSTEM (the fixture's own git calls do).
   const { GIT_CONFIG_NOSYSTEM: _fixtureOnly, ...hostBase } = fx.env;
   const env: Record<string, string> = { ...hostBase, AXIS_SLICE_SCAN_MODE: scanMode ?? "refuse" };
   if (breakPutFile !== undefined) env["AXIS_SLICE_BREAK_PUT"] = breakPutFile;
+  if (finalWaitMs !== undefined) env["AXIS_SLICE_FINAL_WAIT_MS"] = String(finalWaitMs);
   if (probeMutex === true) env["AXIS_SLICE_MUTEX_PROBE"] = "1";
+  if (composerConfig !== undefined) env["AXIS_SLICE_COMPOSER"] = composerConfig; // a `SliceComposerConfig` file (slice-composer.ts)
+  if (integrationsConfig !== undefined) env["AXIS_SLICE_INTEGRATIONS"] = integrationsConfig; // a `SliceIntegrationsConfig` file
   for (const n of DENIED_SEEDS) env[n] = "placeholder";
   const sup = await TestSupervisor.start({ entry: SLICE_HOST, env, ...rest });
   started.push(sup);
@@ -50,7 +54,9 @@ export async function startHost(fx: GitFixture, over: Partial<TestSupervisorOpti
 export async function registerProject(sup: TestSupervisor, path: string): Promise<string> {
   const requestId = `reg-${newKey().slice(0, 8)}`;
   const from = sup.received.length;
-  sup.mux.sendControl({ type: "projects.register", requestId, path, trusted: true });
+  // As main does after its dialog: the repository's real path and its `.git` (the host re-derives both).
+  const real = realpathSync(path);
+  sup.mux.sendControl({ type: "projects.register", requestId, path: real, commonDir: join(real, ".git"), trusted: true });
   const reply = await sup.waitFor("projects.result", from);
   if (!reply.ok) throw new Error(`projects.register refused: ${reply.code}`);
   return reply.projectId;
@@ -135,15 +141,34 @@ export function damagedCopy(dataDir: string, into: string, damage: (db: Database
 
 /**
  * The user's native confirmation of a challenge, answered through the supervisor, and the wait until the host has RECORDED it (the
- * audit log says so): after this the approved retry is accepted at once, so a test never polls an approval it could spend.
+ * audit log says so): after this the approved retry is accepted at once, so a test never polls an approval it could spend. The
+ * row is matched by THIS challenge's audit ref (the first 12 digits of the SHA-256 of its id, as the challenge manager writes it),
+ * not by a count of confirmations among the newest rows: on a long log an older confirmation can leave that window as the new
+ * one enters, and a count would then never rise.
  */
-export async function confirmNative(sup: TestSupervisor, client: TestClient, challengeId: string): Promise<void> {
-  const confirmed = async (): Promise<number> => {
+export async function confirmNative(sup: TestSupervisor, client: TestClient, challengeId: string, tries?: number): Promise<void> {
+  const ref = createHash("sha256").update(challengeId, "utf8").digest("hex").slice(0, 12);
+  const recorded = async (): Promise<boolean> => {
     const { head } = await client.ok<{ head: { seq: number } | null }>("axis.audit", "status", {});
     const { events } = await client.ok<{ events: Array<{ action: string; payload: Record<string, unknown> }> }>("axis.audit", "list", { afterSeq: Math.max(0, (head?.seq ?? 0) - MAX_AUDIT_LIST), limit: MAX_AUDIT_LIST });
-    return events.filter((e) => e.action === "tier4.challenge" && e.payload["phase"] === "native" && e.payload["decision"] === "confirm").length;
+    return events.some((e) => e.action === "tier4.challenge" && e.payload["phase"] === "native" && e.payload["decision"] === "confirm" && e.payload["ref"] === ref);
   };
-  const before = await confirmed();
   sup.answerNative(challengeId, true);
-  await until(async () => (await confirmed()) > before, "the native confirmation to be recorded");
+  await until(recorded, "the native confirmation to be recorded", tries);
+}
+
+/**
+ * `worktrees.finalise` is tier 4: the call is refused with a challenge, the user approves it and confirms natively, and the
+ * retry (same key) runs it. Returns the answer that decided the call (the first call's when no challenge was needed).
+ */
+export async function finaliseApproved(sup: TestSupervisor, client: TestClient, id: string, outcome: "merged" | "archived" | "abandoned" = "archived"): ReturnType<TestClient["call"]> {
+  const request = { id, outcome };
+  const key = newKey();
+  const asked = await client.call("axis.worktrees", "finalise", request, key);
+  if (asked.error?.code !== "E_APPROVAL_REQUIRED") return asked;
+  const { challenge } = approvalRequiredDetailsSchema.parse(asked.error.details);
+  await until(() => sup.nativeConfirms.some((c) => c.challengeId === challenge.challengeId), "native.confirm");
+  await client.ok("axis.approvals", "resolve", { challengeId: challenge.challengeId, decision: "approve", digest: challenge.digest });
+  await confirmNative(sup, client, challenge.challengeId);
+  return client.call("axis.worktrees", "finalise", { ...request, approval: { challengeId: challenge.challengeId } }, key);
 }

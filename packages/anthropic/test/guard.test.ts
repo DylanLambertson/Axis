@@ -7,10 +7,26 @@ import { createRunBudget, type StreamEvent } from "@axis/providers";
 import { CREDENTIAL, PATTERN_KEY, drain, failure, guarded, live, make, req, run, secretForms, views } from "./support/harness.js";
 import { MODEL } from "./support/scenarios.js";
 import { jsonResponse, sseResponse, textReply, type Handler } from "./support/transport.js";
+import { budget } from "./support/load-margin.js";
 
 const ok: Handler = (call, counter) =>
   call.url.endsWith("/count_tokens") ? jsonResponse(counter, 200, { input_tokens: 31 }) : sseResponse(counter, textReply("fine", { usageIn: 20 }));
 const posts = (calls: ReturnType<typeof make>["fake"]["calls"]) => calls.filter((c) => c.init.method === "POST");
+
+/** Two macrotasks: every promise continuation queued so far has run. Not a duration. */
+async function settle(): Promise<void> {
+  await new Promise((r) => setImmediate(r));
+  await new Promise((r) => setImmediate(r));
+}
+
+/** Wait by condition; the bound only turns a stuck test into a named failure (a busy host reaches the condition late, not wrongly). */
+async function until(pred: () => boolean, what: string, guardMs = 10_000): Promise<void> {
+  const deadline = Date.now() + guardMs;
+  while (!pred()) {
+    if (Date.now() > deadline) throw new Error(`condition not reached: ${what}`);
+    await new Promise((r) => setTimeout(r, 5));
+  }
+}
 
 test("a request through the guard works and its log names the destination (PRV-4)", async () => {
   const { adapter } = make(ok);
@@ -92,7 +108,8 @@ test("a cancelled stream is still charged for the input that was sent (usage arr
     seen.push(ev);
     if (ev.type === "usage") break;
   }
-  await new Promise((r) => setTimeout(r, 20));
+  await until(() => recorded.length >= 1, "the cancelled stream's usage was recorded");
+  await settle(); // one settle, then one assert: usage is charged once, not again by a late path
   assert.equal(recorded.length, 1);
   assert.equal(recorded[0]?.tokens, 123);
 });
@@ -104,6 +121,7 @@ test("an endless stream of pings ends in a timeout: pings do not reset the guard
     if (call.init.method !== "POST") return jsonResponse(counter, 200, {});
     let first = true;
     let live = true;
+    let pings = 0;
     open += 1;
     const end = (): void => {
       if (live) {
@@ -123,6 +141,10 @@ test("an endless stream of pings ends in a timeout: pings do not reset the guard
               return { done: false, value: new TextEncoder().encode(startEvt) };
             }
             await new Promise((r) => setTimeout(r, 15));
+            // "Endless" for the guard (its idle timer fires after about ten pings) but not for the test: a guard that never fires ends the stream here
+            // after about nine seconds, with an error other than the timeout the assertions below want, so a broken guard fails instead of hanging.
+            // The self-end does NOT count as a release (`open` stays up): only the guard cancelling the response may bring `open` to 0.
+            if (++pings > 600) live = false;
             return live ? { done: false, value: new TextEncoder().encode("event: ping\ndata: {\"type\":\"ping\"}\n\n") } : { done: true };
           },
           cancel: async () => end(),
@@ -136,8 +158,8 @@ test("an endless stream of pings ends in a timeout: pings do not reset the guard
   const err = await failure(drain(g.stream(req(), run())));
   assert.equal(err.code, "timeout");
   assert.equal(err.details.reason, "idle");
-  assert.ok(Date.now() - t0 < 3_000);
-  await new Promise((r) => setTimeout(r, 50));
+  assert.ok(Date.now() - t0 < budget(3_000));
+  await settle(); // the guard releases the response in the same turns as it fails the call: settle once, assert once
   assert.equal(open, 0, "the response was released");
 });
 

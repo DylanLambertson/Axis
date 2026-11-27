@@ -4,7 +4,7 @@ import { stat } from "node:fs/promises";
 import { test } from "node:test";
 import type { Connection } from "@axis/daemon";
 import { TestSupervisor, type TestSupervisorOptions } from "../testing/test-supervisor.js";
-import { processSnapshot, wait } from "./helpers.js";
+import { processSnapshot, settledTo } from "./helpers.js";
 
 const MODES = ["process", "worker"] as const;
 
@@ -59,8 +59,7 @@ async function withSupervisor(options: TestSupervisorOptions, body: (s: TestSupe
     await sup.dispose();
   }
   await assert.rejects(stat(dataDir), { code: "ENOENT" }, "the temporary directory is removed");
-  await wait(5);
-  assert.deepEqual(processSnapshot(), before, "no timers or process listeners left in the test process");
+  await settledTo(before, "no timers or process listeners left in the test process");
 }
 
 const ask = async (c: ReturnType<typeof watch>, conn: Connection, m: Record<string, unknown>): Promise<Record<string, unknown>> => {
@@ -185,6 +184,5 @@ test("a host that cannot start does not hang dispose and leaves nothing behind",
   const dataDir = sup.dataDir;
   assert.equal(await within(10_000, sup.dispose()), "done");
   await assert.rejects(stat(dataDir), { code: "ENOENT" });
-  await wait(5);
-  assert.deepEqual(processSnapshot(), before);
+  await settledTo(before);
 });

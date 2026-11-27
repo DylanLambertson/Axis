@@ -101,6 +101,30 @@ export const verifier: IdentityVerifier = {
 
 export const allowAll: Policy = { evaluate: () => ({ effect: "allow" }) };
 
+/**
+ * The wait of every inbox call is by condition (a message or the close wakes it); this bound only turns a stuck test into a failure
+ * instead of a hang. It is far above any delay a loaded host adds, and no test relies on it elapsing.
+ */
+export const HANG_GUARD_MS = 30_000;
+
+/** Wait by condition (event loop turns) until `pred` holds, with the same hang guard. */
+export async function untilTrue(pred: () => boolean, guardMs = HANG_GUARD_MS, what = "the condition"): Promise<void> {
+  const deadline = Date.now() + guardMs;
+  while (!pred()) {
+    if (Date.now() > deadline) throw new Error(`condition not reached: ${what}`);
+    await new Promise((res) => setImmediate(res));
+  }
+}
+
+/**
+ * Two macrotasks: every promise continuation queued so far has run (code with no timers or I/O has gone as far as it can).
+ * Not a duration. For a negative check, settle once and assert once: never poll for the absence of something.
+ */
+export async function drain(): Promise<void> {
+  await new Promise((res) => setImmediate(res));
+  await new Promise((res) => setImmediate(res));
+}
+
 export class Inbox {
   readonly all: unknown[] = [];
   #waiters: Array<() => void> = [];
@@ -115,7 +139,7 @@ export class Inbox {
       this.#waiters.splice(0).forEach((w) => w());
     });
   }
-  async until<T>(pred: (m: unknown) => m is T, ms = 1500): Promise<T> {
+  async until<T>(pred: (m: unknown) => m is T, ms = HANG_GUARD_MS): Promise<T> {
     const deadline = Date.now() + ms;
     for (;;) {
       const hit = this.all.find(pred);
@@ -134,7 +158,7 @@ export class Inbox {
   response(id: string, ms?: number): Promise<{ id: string; ok: boolean; result?: unknown; error?: { code: string; message: string; details?: Record<string, unknown> } }> {
     return this.until((m): m is never => typeof m === "object" && m !== null && (m as { id?: unknown }).id === id, ms) as never;
   }
-  async closedWithin(ms = 1000): Promise<boolean> {
+  async closedWithin(ms = HANG_GUARD_MS): Promise<boolean> {
     const deadline = Date.now() + ms;
     while (!this.closed && Date.now() < deadline) await new Promise((r) => setTimeout(r, 5));
     return this.closed;

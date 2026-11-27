@@ -47,3 +47,20 @@ export async function assertUnder(expected: string, p: string): Promise<void> {
     }
   }
 }
+
+/**
+ * For an operation on a worktree root: `p` must be exactly the expected root, spelled canonically, so neither the root
+ * nor any parent of it is a symlink (a `realpath` that differs from the lexical path names one).
+ */
+export async function assertIsRoot(expected: string, p: string, platform: NodeJS.Platform): Promise<void> {
+  assertNoTraversal(expected, 'expected worktree');
+  const fold = (x: string): string => (platform === 'win32' ? x.toLowerCase() : x);
+  const lexical = path.resolve(p);
+  if (fold(lexical) !== fold(path.resolve(expected))) {
+    throw new WorktreeError('E_POLICY_DENIED', 'path is not the expected worktree', { reason: 'worktree-mismatch' });
+  }
+  const real = await fs.realpath(lexical).catch(() => null);
+  if (real === null || fold(real) !== fold(lexical)) {
+    throw new WorktreeError('E_POLICY_DENIED', 'the path has a symlinked component', { reason: 'symlink-component' });
+  }
+}

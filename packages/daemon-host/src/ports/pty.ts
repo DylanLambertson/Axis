@@ -1,4 +1,6 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
+import type { RelayIn, RelayOut } from "../messages/endpoint.js";
+import type { ForgeListRequest, ForgeReply } from "@axis/protocol";
 
 /**
  * The Axis pty process, as `@axis/runs` uses it (same shapes as its `PtyPort`, repeated here because only
@@ -16,6 +18,8 @@ export interface PtySpawn {
   readonly env: Readonly<Record<string, string>>;
   readonly cols: number;
   readonly rows: number;
+  /** PV-M6: the run's messaging endpoint (the daemon's id and token), set by the daemon host only; the supervisor never sets it. */
+  readonly messagesEndpoint?: { readonly endpoint: string; readonly token: string };
 }
 
 export interface PtyExit {
@@ -39,4 +43,76 @@ export interface PtyHandle {
 
 export interface PtyPort {
   spawn(spec: PtySpawn): Promise<PtyHandle>;
+}
+
+/**
+ * The messaging endpoint relay over the pty control channel (PV-M6, ADR 0007 decision 7.1): the relayed messages in, the
+ * daemon's answers out. The envelopes are `@axis/pty-process`'s `relayInbound` / `relayOutbound`, parsed by the port.
+ */
+export interface PtyRelayPort {
+  onRelay(handler: (msg: RelayIn) => void): { dispose(): void };
+  relay(msg: RelayOut): boolean;
+}
+
+/**
+ * A plain, bounded git command in the pty process (the `exec` message, docs/design/daemon-host-hooks.md §4.1), repeated from
+ * `@axis/pty-process` (`PtyExecCall`, `PtyExecOutcome`; `test/types/pty-exec-port.test.ts` compares both directions). `repo`
+ * is what the service emits as `--git-dir`/`--work-tree`; the argv carries no global option. Only `createPtyGitRunner`
+ * (`src/bindings/pty-git.ts`) builds one.
+ */
+export interface PtyExecCall {
+  readonly argv: readonly string[];
+  readonly cwd: string;
+  readonly env: Readonly<Record<string, string>>;
+  readonly stdin?: string;
+  readonly timeoutMs: number;
+  readonly maxOutput: number;
+  readonly repo: { readonly gitDir: string; readonly workTree: string };
+}
+
+export interface PtyExecOutcome {
+  readonly code: number | null;
+  readonly signal: string | null;
+  readonly stdout: string;
+  readonly stderr: string;
+  readonly truncated: boolean;
+}
+
+/** The pty process's `exec`. A rejection carries at most a closed `code` (`PtyExecError` of `@axis/pty-process`). */
+export interface PtyExecPort {
+  exec(call: PtyExecCall): Promise<PtyExecOutcome>;
+}
+
+/**
+ * `git push` of the one pinned refspec as a terminal-bound run in the pty process (the `push` message, H9-hooks §5.2, S4 part 1),
+ * repeated from `@axis/pty-process` (`PtyPushCall`; `test/types/pty-exec-port.test.ts` compares both directions). The pty process
+ * builds the argv, the pins and the environment; `env` carries only its allow-list. Only `createPtyGitRunner` builds one.
+ */
+export interface PtyPushCall {
+  readonly runId: string;
+  readonly repo: { readonly gitDir: string; readonly workTree: string };
+  readonly remote: string;
+  readonly refspec: string;
+  /** git-ops' `pushUrlsDigest` of the push URLs it read; the pty process refuses (`remote_refused`) when its own read differs. */
+  readonly pushUrls: string;
+  readonly env: Readonly<Record<string, string>>;
+  /** The configuration and ssh variables the host validated, `null` for unset; the pty process refuses a push whose own differ. */
+  readonly expectEnv: Readonly<Record<"HOME" | "XDG_CONFIG_HOME" | "GIT_CONFIG" | "GIT_CONFIG_GLOBAL" | "GIT_CONFIG_SYSTEM" | "GIT_CONFIG_NOSYSTEM" | "GIT_SSH" | "GIT_SSH_COMMAND" | "GIT_SSH_VARIANT" | "GIT_PROXY_COMMAND", string | null>>;
+  readonly cols: number;
+  readonly rows: number;
+}
+
+/** The pty process's `push`. The handle reports the exit status only; a rejection carries at most a closed `code`. */
+export interface PtyPushPort {
+  push(call: PtyPushCall): Promise<PtyHandle>;
+}
+
+/**
+ * The pty process's `forge-list` (PV-D2 slice 2, docs/design/forge-pr-list.md §1), repeated from `@axis/pty-process`
+ * (`PtyProcessPort.forgeList`; `test/types/pty-exec-port.test.ts` compares it). The request is the shared `@axis/protocol`
+ * schema's; the reply comes back parsed by the shared reply schema, or `undefined` when it failed it. A rejection carries at most
+ * a closed `code`.
+ */
+export interface PtyForgePort {
+  forgeList(request: ForgeListRequest): Promise<ForgeReply | undefined>;
 }

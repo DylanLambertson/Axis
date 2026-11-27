@@ -1,6 +1,6 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import { createHash } from "node:crypto";
-import { AxisError, canonicalize, isWellFormedString, type AuditActor } from "@axis/audit";
+import { ACTOR_PATTERN, AxisError, canonicalize, isWellFormedString, type AuditActor } from "@axis/audit";
 import { z } from "zod";
 import type { UserPrincipal } from "./principal.js";
 import {
@@ -17,7 +17,8 @@ import {
 
 const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const REASON = /^[A-Z][A-Z0-9_]{0,63}$/;
-const ACTOR = /^(?:user|daemon|agent:[A-Za-z0-9._-]{1,64})$/;
+/** The audit log's actor rule: `user`, `daemon`, `agent:<id>`, and `plugin:<id>` for a run a plugin started (PV-K1e). */
+const ACTOR = ACTOR_PATTERN;
 const noControl = (s: string): boolean => !/[\u0000-\u001f\u007f]/.test(s);
 /** Printable, well-formed (lone surrogates would be rewritten by SQLite), bounded. */
 const text = (max: number) => z.string().min(1).max(max).refine(noControl).refine(isWellFormedString);
@@ -43,6 +44,8 @@ export const createRunSchema = z
     /** Required: the authenticated principal, never a default. */
     createdBy: actorSchema,
     idempotencyKey: idempotencyKey.optional(),
+    /** The agent the run is started for (PV-G4); the v12 trigger refuses one archived, of another kind or homed elsewhere. */
+    agentId: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/).optional(),
   })
   .strict();
 
@@ -85,6 +88,10 @@ export interface Workspace {
   readonly reviewedTreeHash: string | null;
   readonly reviewedAt: string | null;
   readonly finaliseOutcome: FinaliseOutcome | null;
+  /** The full `refs/heads/...` name the base resolved to at create, recorded by the daemon; null when unknown (refuse `merged`). */
+  readonly baseBranch: string | null;
+  /** The commit `baseBranch` pointed at when it was recorded (FU-WT-BASE2); null when unknown (refuse `merged`). */
+  readonly baseTip: string | null;
 }
 
 export interface Project {
@@ -92,6 +99,10 @@ export interface Project {
   readonly path: string;
   readonly displayName: string;
   readonly trusted: boolean;
+  /** The repository binding (schema v11): `realpath(<path>/.git)` and `<dev>:<ino>` of it; null on a row not yet bound. */
+  readonly commonDir: string | null;
+  readonly gitDirId: string | null;
+  readonly trustChangedAt: string | null;
   readonly createdAt: string;
   readonly updatedAt: string;
 }
@@ -101,6 +112,9 @@ export interface ProjectRow {
   path: string;
   display_name: string;
   trusted: number;
+  common_dir: string | null;
+  git_dir_id: string | null;
+  trust_changed_at: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -110,6 +124,9 @@ export const toProject = (r: ProjectRow): Project => ({
   path: r.path,
   displayName: r.display_name,
   trusted: r.trusted === 1,
+  commonDir: r.common_dir ?? null,
+  gitDirId: r.git_dir_id ?? null,
+  trustChangedAt: r.trust_changed_at ?? null,
   createdAt: r.created_at,
   updatedAt: r.updated_at,
 });
@@ -153,6 +170,8 @@ export interface CreateRunInput {
   /** The authenticated principal of the connection that asked, never a value taken from a request payload. */
   readonly createdBy: AuditActor;
   readonly idempotencyKey?: string;
+  /** The agent this run is started for (PV-G4), recorded in `agent_runs.agent_id` in the same insert. */
+  readonly agentId?: string;
 }
 
 export interface TransitionOptions {
@@ -208,6 +227,8 @@ export interface WorkspaceRow {
   reviewed_tree_hash: string | null;
   reviewed_at: string | null;
   finalise_outcome: string | null;
+  base_branch: string | null;
+  base_tip: string | null;
 }
 export interface RunRow {
   id: string;
@@ -239,6 +260,8 @@ export const toWorkspace = (r: WorkspaceRow): Workspace => ({
   reviewedTreeHash: r.reviewed_tree_hash,
   reviewedAt: r.reviewed_at,
   finaliseOutcome: r.finalise_outcome as FinaliseOutcome | null,
+  baseBranch: r.base_branch,
+  baseTip: r.base_tip,
 });
 export const toRun = (r: RunRow): Run => ({
   id: r.id,

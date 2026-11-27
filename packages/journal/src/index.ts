@@ -11,8 +11,70 @@ export {
   type TransitionOptions,
   type Workspace,
 } from "./model.js";
-export { type RegisterProjectInput } from "./records.js";
+export {
+  ACTIVITY_TYPES,
+  COMPOSER_RUN_MODES,
+  ComposerRecords,
+  DEFAULT_ACTIVITY_BOUNDS,
+  MAX_ACTIVITY_ROW_BYTES,
+  checkActivityBounds,
+  type ActivityBounds,
+  type ActivityRecord,
+  type ActivityType,
+  type BudgetTotals,
+  type ComposerRunMeta,
+  type ComposerRunRecord,
+  type ComposerUsageRecord,
+} from "./composer-store.js";
+export {
+  MAX_STORED_PARTICIPANTS,
+  MessageRecords,
+  type AgentMessagingSettings,
+  type AppendMessage,
+  type MessageRecord,
+  type ParticipantRecord,
+  type ThreadRecord,
+} from "./message-store.js";
+export { DeliveryRecords, type PendingDelivery } from "./delivery-store.js";
+export { ForgePinRecords, type ForgePin } from "./forge-pin-store.js";
+export { FORGE_PINS_MIGRATION } from "./schema-forge-pins.js";
+export { PAGES_MIGRATION, PAGE_LIMITS, projectBytesSql } from "./schema-pages.js";
+export {
+  PageRecords,
+  type PageAttachmentRecord,
+  type PageAuthor,
+  type PageReadTaint,
+  type PageSummary,
+  type PageVersionMeta,
+  type PageVersionRecord,
+} from "./page-store.js";
+export { AttentionRecords, MAX_ATTENTION_ROWS, type AttentionRun } from "./attention-records.js";
+export { TASKS_MIGRATION, TASK_LIMITS, projectTaskBytesSql } from "./schema-tasks.js";
+export { PLUGIN_GRANTS_MIGRATION, PLUGIN_LIMITS, PLUGIN_PERMISSIONS, type PluginPermission } from "./schema-plugins.js";
+export { CLI_ACK_LIMITS, CLI_ACK_MIGRATION } from "./schema-cli-ack.js";
+export { CLI_ENDPOINT_SWITCH_MIGRATION } from "./schema-cli-endpoint.js";
+export { CLI_ENDPOINT_RECORD_ACTION, CliEndpointSwitchRecords, type CliEndpointSwitchWrite } from "./cli-endpoint-store.js";
+export { TASKS_KEEP_USER_MIGRATION } from "./schema-tasks-keep.js";
+export { PLUGIN_RECORD_ACTION, PluginGrantRecords, type PluginGrantWrite, type PluginState } from "./plugin-grant-store.js";
+export { PLUGIN_ISSUES_MIGRATION, PLUGIN_ISSUE_LIMITS } from "./schema-plugin-issues.js";
+export { PluginIssueRecords, type PluginIssueRefusal, type PluginIssueResult } from "./plugin-issue-store.js";
+export {
+  TASK_USER_RESERVE,
+  TaskRecords,
+  type TaskAssignee,
+  type TaskAuthor,
+  type TaskLink,
+  type TaskRecord,
+  type TaskRevisionMeta,
+  type TaskRevisionRecord,
+  type TaskSource,
+  type TaskStatus,
+} from "./task-store.js";
+export { baseBranchSchema, baseTipSchema, type ProjectTrustVia, type RegisterProjectInput, type SetProjectTrustInput } from "./records.js";
+export { MAX_TAIL_ROWS, lastTransitionId, transitionsSince, type TransitionTail } from "./tail.js";
 export { JOURNAL_MIGRATIONS, JOURNAL_SCHEMA_VERSION } from "./schema.js";
+export { NAME_REFUSED_RANGES } from "./schema-agents.js";
+export { AGENT_RECORD_ACTION, AgentRecords, MAX_AGENTS, MAX_GROUPS, type AgentLaunch, type AgentRecord, type Changed, type GroupRecord } from "./agent-store.js";
 export {
   FINALISE_OUTCOMES,
   LOCK_STATES,
@@ -37,3 +99,4 @@ export {
   type StoredJson,
   type UnknownReason,
 } from "./idempotency-store.js";
+export { type ProjectUsage, type UsageTotals } from "./usage-totals.js";

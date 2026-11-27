@@ -2,9 +2,9 @@
 import assert from "node:assert/strict";
 import { readFileSync, rmSync } from "node:fs";
 import { test, type TestContext } from "node:test";
-import { newKey, type Client } from "./approvals-rig.js";
+import { type Client } from "./approvals-rig.js";
 import { reconcileWorktrees } from "../src/index.js";
-import { createWs, gitSkipReason, worktreesRig, type Rig } from "./worktrees-rig.js";
+import { finaliseApproved, createWs, gitSkipReason, worktreesRig, type Rig } from "./worktrees-rig.js";
 
 const skip = gitSkipReason();
 const ok = (_m: "create", x: Parameters<typeof createWs>[1] extends (a: never, b: infer M) => unknown ? M : never) => (assert.equal(x.ok, true), x);
@@ -61,7 +61,7 @@ test("reconcile reports and never repairs: repository and journal are byte for b
   assert.equal(report.needsAttention.length, 1);
   assert.equal(snapshot(r), before);
   assert.equal(r.binding.needsAttention(id), true);
-  const res = await user.call("axis.worktrees", "finalise", { id, outcome: "archived" }, newKey());
+  const res = await finaliseApproved(r, user, id, "archived");
   assert.equal(res.error?.code, "E_UNAVAILABLE");
   assert.deepEqual(res.error?.details, { reason: "needs_attention" });
   // Other workspaces are not affected, and a clean reconcile lifts the flag.
@@ -80,7 +80,7 @@ test("an aborted reconcile fails CLOSED: every workspace needs attention until a
   assert.equal(r.binding.needsAttention(id), true, "an aborted run never means nothing is wrong");
   assert.equal(r.binding.needsAttention("any-other-id"), true);
   assert.equal((await user.call("axis.worktrees", "status", { ids: [id] })).error?.code, "E_UNAVAILABLE");
-  assert.equal((await user.call("axis.worktrees", "finalise", { id, outcome: "archived" }, newKey())).error?.code, "E_UNAVAILABLE");
+  assert.equal((await finaliseApproved(r, user, id, "archived")).error?.code, "E_UNAVAILABLE");
   assert.equal((await user.call("axis.worktrees", "list", { projectId: "proj-1" })).ok, true, "listing still works");
   assert.deepEqual((await r.binding.service.reconcile(live)).needsAttention, []);
   assert.equal(r.binding.needsAttention(id), false, "a full reconcile lifts it");

@@ -9,8 +9,13 @@ import { KeyCode } from '../../../../base/common/keyCodes.js';
 import { Disposable, DisposableStore } from '../../../../base/common/lifecycle.js';
 import { localize } from '../../../../nls.js';
 import { ICommandService } from '../../../../platform/commands/common/commands.js';
+import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
+import { AxisProjectBanner } from '../../projects/browser/axisProjectBanner.js';
+import { AxisApprovalCards } from './approvalCards.js';
+import { plainName, projectChip, trustSource } from '../../../services/projects/common/axisProjectActions.js';
 import { IAxisCliRun } from '../../../services/workspaces/common/axisWorkspaceData.js';
-import { AxisRowState, branchLabel, IAxisWorkspaceEntry, rowStateOf } from '../../../services/workspaces/common/axisWorkspaceModel.js';
+import { AxisRowState, branchLabel, changesLabel, IAxisWorkspaceEntry, rowStateOf } from '../../../services/workspaces/common/axisWorkspaceModel.js';
+import { approvalsAvailability, daemonNotice } from '../../../services/workspaces/common/axisDaemonNotice.js';
 import { IAxisWorkspaceService } from '../../../services/workspaces/browser/axisWorkspaceService.js';
 import { MAX_DISCOVERED_WORKTREES } from '../../../services/workspaces/common/worktreeDiscovery.js';
 
@@ -50,6 +55,8 @@ export function runLabel(run: IAxisCliRun): string {
 export class AxisDashboardView extends Disposable {
 
 	readonly element: HTMLElement;
+	/** One persistent live region: it is updated only when its text changes, so an unchanged poll is not announced again. */
+	private readonly notice: HTMLElement;
 	private readonly header: HTMLElement;
 	private readonly list: HTMLElement;
 	private readonly rowDisposables = this._register(new DisposableStore());
@@ -60,22 +67,41 @@ export class AxisDashboardView extends Disposable {
 		private readonly terminalCounts: IAxisTerminalCounts,
 		@IAxisWorkspaceService private readonly workspaceService: IAxisWorkspaceService,
 		@ICommandService private readonly commandService: ICommandService,
+		@IInstantiationService instantiationService: IInstantiationService,
 	) {
 		super();
 		this.element = $('.axis-dashboard');
+		this.notice = append(this.element, $('.axis-dashboard-note.axis-dashboard-notice'));
+		this.notice.setAttribute('role', 'status');
 		this.header = append(this.element, $('.axis-dashboard-header'));
+		// This window's project, its run trust and the one action that fits (S3); main draws every confirmation.
+		this.element.appendChild(this._register(instantiationService.createInstance(AxisProjectBanner)).element);
 		this.list = append(this.element, $('.axis-dashboard-list'));
 		this.list.setAttribute('role', 'listbox');
 		this.list.tabIndex = -1;
 		this.list.setAttribute('aria-label', localize('axis.dashboard.listLabel', "Workspaces"));
+		// Below the list: a card appearing never moves a workspace row (docs/design/axis-shell-a4.md, layout).
+		this.element.appendChild(this._register(new AxisApprovalCards(this.workspaceService)).element);
 		this._register(addDisposableListener(this.list, EventType.KEY_DOWN, e => this.onKeyDown(new StandardKeyboardEvent(e))));
 		this._register(this.workspaceService.onDidChangeWorkspaces(() => this.render()));
 		this.render();
 	}
 
 	render(): void {
+		this.renderNotice();
 		this.renderHeader();
 		this.renderRows();
+	}
+
+	private renderNotice(): void {
+		const service = this.workspaceService;
+		const notice = daemonNotice({ status: service.daemonStatus, notRegistered: service.notRegistered, staleError: service.staleError, truncatedProjects: service.truncatedProjects });
+		const sample = localize('axis.dashboard.sampleRuns', "Agent runs are sample data (axis.preview.sampleRuns); the Axis service is not running.");
+		const text = service.runsProvenance !== 'sample' ? notice.text : service.daemonStatus.kind === 'down' ? sample : `${notice.text} ${sample}`;
+		if (this.notice.textContent !== text) {
+			this.notice.textContent = text;
+		}
+		this.notice.dataset.severity = notice.severity;
 	}
 
 	private renderHeader(): void {
@@ -84,12 +110,27 @@ export class AxisDashboardView extends Disposable {
 		title.textContent = localize('axis.dashboard.title', "Workspaces");
 		const projects = this.workspaceService.projects;
 		if (projects.length) {
-			append(this.header, $('span.axis-dashboard-project')).textContent = projects.map(p => p.trusted ? p.name : localize('axis.project.restricted', "{0} (Restricted Mode)", p.name)).join(', ');
+			// Run trust (the daemon's record), never Code OSS Workspace Trust: shown only when the data came from the daemon (S3, review PV-E0 N6).
+			const source = trustSource(this.workspaceService.daemonStatus, this.workspaceService.dataOrigin);
+			const list = append(this.header, $('span.axis-dashboard-project'));
+			for (const project of projects) {
+				const chip = projectChip(project, source);
+				const el = append(list, $('span.axis-project-chip'));
+				el.dataset.trust = source === 'daemon' ? (project.trusted ? 'trusted' : 'read-only') : source;
+				el.title = `${plainName(project.name)}\n${chip.hint}`; // the full name: the label may cut it short
+				const glyph = append(el, $('span.axis-project-chip-glyph'));
+				glyph.textContent = chip.glyph;
+				glyph.setAttribute('aria-hidden', 'true');
+				const label = append(el, $('span.axis-project-chip-label'));
+				label.textContent = chip.label;
+			}
 		}
-		const note = append(this.header, $('span.axis-dashboard-note'));
-		note.textContent = this.workspaceService.runsProvenance === 'sample'
-			? localize('axis.dashboard.sampleRuns', "Agent runs are sample data (axis.preview.sampleRuns); the Axis service is not running.")
-			: localize('axis.dashboard.noService', "Read from the worktrees on disk. The Axis service is not running, so no agent runs are shown.");
+		const pending = approvalsAvailability(this.workspaceService.daemonStatus).cards ? this.workspaceService.pendingApprovals : 0;
+		if (pending) {
+			append(this.header, $('span.axis-dashboard-note')).textContent = pending === 1
+				? localize('axis.dashboard.approvalsOne', "1 approval waiting")
+				: localize('axis.dashboard.approvals', "{0} approvals waiting", pending);
+		}
 		const refused = this.workspaceService.refusedWorktrees;
 		if (refused) {
 			const warning = append(this.header, $('span.axis-dashboard-note.axis-dashboard-refused'));
@@ -161,7 +202,7 @@ export class AxisDashboardView extends Disposable {
 			['state', rowStateLabel(state)],
 			['agents', runs],
 			['terminals', String(terminals)],
-			['changes', localize('axis.changes.notRead', "not read")],
+			['changes', changesLabel(entry.worktree)],
 			['activity', lastOutput ? fromNow(lastOutput, true) : '—'],
 		];
 		for (const [kind, text] of cells) {

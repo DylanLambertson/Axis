@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import { z } from "zod";
 import { challengeReferenceSchema } from "./challenge.js";
-import { guarded } from "./guard.js";
+import { countSchema, displayTextSchema, guarded } from "./guard.js";
 
 /**
  * `axis.worktrees/1` (docs/design/axis-agent-shell.md section 5.3).
@@ -121,6 +121,11 @@ export type WorktreeInfo = z.infer<typeof worktreeInfoSchema>;
 
 export const MAX_STATUS_IDS = 100;
 export const MAX_RESTORE_PATHS = 500;
+export const MAX_DISCARD_PATHS = 500;
+export const MAX_USER_EDITING_PATHS = 200;
+/** Paths named in a reply about files a backup could not keep; the rest are only counted. */
+export const MAX_UNBACKED_PATHS = 50;
+export const MAX_UNBACKED_DISPLAY = 256;
 
 // list (read, tier 0)
 export const listRequestSchema = z.strictObject({ projectId: projectIdSchema });
@@ -147,10 +152,14 @@ export const createResponseSchema = z.strictObject({
   worktree: worktreeInfoSchema,
 });
 
-// finalise (write, tier 2, idempotency required)
+// finalise (destructive, tier 4: challenge plus native confirmation, idempotency required). A finalise can discard
+// uncommitted work, and a discard token is minted only for a challenge issued at tier 4 or above (a tier 3 approval has
+// no native dialog), so the method floor is 4 and `approval` is the retry reference after the user confirmed.
 export const finaliseRequestSchema = z.strictObject({
   id: workspaceIdSchema,
   outcome: finaliseOutcomeSchema,
+  /** Present on the retry after the user approved the challenge. */
+  approval: challengeReferenceSchema.optional(),
 });
 export const finaliseResponseSchema = z.strictObject({
   id: workspaceIdSchema,
@@ -183,6 +192,37 @@ export const restoreFromRunBaseResponseSchema = z.strictObject({
   backupRef: z.string().max(256),
   restored: z.array(relativePathSchema).max(MAX_RESTORE_PATHS),
 });
+
+// discard (write, tier 2, idempotency required): reject. The daemon writes a backup commit of the worktree to
+// `refs/axis/backup/<id>/<ts>` first, then restores exactly these paths. The backup does NOT keep files over the size limit,
+// ignored files or entries a snapshot cannot hold (nested repositories and the like), so a discard is reversible only for
+// what it holds. The service must therefore REFUSE a request that names such a path (`E_CONFLICT`, reason `unbacked_data`):
+// a tier 2 call has no native dialog, and this contract has no confirmed variant. `unbacked` is for the day a confirmed path
+// exists: it says how much was not backed up, and its paths are display text only (`toDisplayPath`), never an identity.
+export const discardRequestSchema = z.strictObject({
+  id: workspaceIdSchema,
+  paths: z.array(relativePathSchema).min(1).max(MAX_DISCARD_PATHS),
+});
+export const discardResponseSchema = z.strictObject({
+  backupRef: z.string().max(256),
+  discarded: z.array(relativePathSchema).max(MAX_DISCARD_PATHS),
+  /** Present only when something discarded was not in the backup. `count` is the total, `paths` the first few, for display. */
+  unbacked: z
+    .strictObject({
+      count: countSchema.max(MAX_DISCARD_PATHS),
+      paths: z.array(displayTextSchema(MAX_UNBACKED_DISPLAY)).max(MAX_UNBACKED_PATHS),
+    })
+    .optional(),
+});
+
+// setUserEditing (write, tier 2, no idempotency key): the renderer reports, as the user, the paths with unsaved editors.
+// The list REPLACES the previous one (an empty list clears it), so a repeat is harmless. Advisory only: it never blocks
+// a user action and is never an authorisation.
+export const setUserEditingRequestSchema = z.strictObject({
+  id: workspaceIdSchema,
+  paths: z.array(relativePathSchema).max(MAX_USER_EDITING_PATHS),
+});
+export const setUserEditingResponseSchema = z.strictObject({ id: workspaceIdSchema });
 
 export type SideEffect = "none" | "read" | "write" | "network" | "destructive" | "credential";
 
@@ -224,8 +264,8 @@ export const worktreesMethods = {
   finalise: {
     request: guarded(finaliseRequestSchema),
     response: guarded(finaliseResponseSchema),
-    sideEffect: "write",
-    tier: 2,
+    sideEffect: "destructive",
+    tier: 4,
     idempotency: "required",
     timeoutMs: 30_000,
   },
@@ -244,6 +284,22 @@ export const worktreesMethods = {
     tier: 2,
     idempotency: "required",
     timeoutMs: 30_000,
+  },
+  discard: {
+    request: guarded(discardRequestSchema),
+    response: guarded(discardResponseSchema),
+    sideEffect: "write",
+    tier: 2,
+    idempotency: "required",
+    timeoutMs: 30_000,
+  },
+  setUserEditing: {
+    request: guarded(setUserEditingRequestSchema),
+    response: guarded(setUserEditingResponseSchema),
+    sideEffect: "write",
+    tier: 2,
+    idempotency: "none",
+    timeoutMs: 10_000,
   },
 } as const satisfies Record<string, MethodSpec>;
 

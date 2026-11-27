@@ -8,12 +8,14 @@ export {
   isUnder, resolveRoot, resolveTarget, openContained, readContained, writeContained,
   type ContainDeps, type ResolveMode, type ResolvedRoot, type ResolvedTarget, type OpenFile, type ReadOptions, type WriteOptions,
 } from "./contain.js";
+export { swapContained, contentDigest, ABSENT, type SwapOptions, type SwapResult } from "./swap.js";
 export { buildToolEnv, sanitizePath, assertEnv, BASE_NAMES, type EnvGrant, type EnvGrantSource, type ToolEnvSpec, type ToolEnvOptions, type BuiltToolEnv, type EnvRemovalReason } from "./env.js";
 export { createCommandRunner, type CommandRunner, type CommandSpec, type RunRecord, type RunnerOptions, type EndReason, type SpawnFn } from "./runner.js";
 export { createBrokerGit, checkGitCall, gitCallTier, GIT_COMMANDS, type BrokerGit, type BrokerGitDeps, type GitCall, type GitCommand } from "./git.js";
 export {
   ToolPolicy, ApprovalLedger, verifyApproval, isLauncher, approvalGrantSchema,
-  type ApprovalHook, type ApprovalRequest, type Decision, type PolicyInput, type PolicyOptions, type VerifiedApproval,
+  type ApprovalHook, type ApprovalRequest, type Decision, type DecisionHook, type PolicyInput, type PolicyOptions, type VerifiedApproval,
 } from "./policy.js";
 export { BrokerAudit, BROKER_ACTIONS, BROKER_PAYLOAD_ALLOWLIST, type AuditRecord } from "./audit.js";
+export { callDigest, escapeDisplay, type CallDigestInput } from "./text.js";
 export { ToolBroker, type BrokerDeps, type ToolCall, type ToolContext, type ToolDefinition } from "./broker.js";

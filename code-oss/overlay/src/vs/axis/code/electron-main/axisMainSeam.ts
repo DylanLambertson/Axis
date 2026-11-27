@@ -1,0 +1,184 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) 2026 Dylan Lambertson. All rights reserved.
+ *--------------------------------------------------------------------------------------------*/
+
+// The Axis main seam: starts and supervises the daemon utility process (ADR 0003 D1 and D6, ticket X1,
+// docs/design/daemon-host-entry.md), brokers renderer connections to it (ticket X1b) and answers its requests (ticket X1c,
+// docs/design/main-answers.md). Started once from `CodeApplication.startup` (patch 0210).
+//
+// - The entry is FIXED: `vs/axis/daemon/node/axisDaemonMain.js` of this application. It is never launched through the
+//   renderer-reachable utility process worker channel and no path, argument or environment comes from a renderer.
+// - The process gets an explicit minimal environment (never main's own), no `execArgv`, no inspector, and its stdio piped so
+//   nothing reaches a terminal; no listening socket is created.
+// - The data directory and the attestation key come from here (the key is made per spawn and kept by the supervisor, which signs
+//   every brokered connection with it).
+// - `vscode:axisConnect`: the sender checks, the rate limit and the identity are `ConnectBroker`'s; the renderer gets one end of a
+//   fresh `MessageChannelMain`, the daemon the other with a signed `connect`.
+// - The answers (anchor, native confirmation, trust, settings) are `createMainAnswers`'; the anchor store is read BEFORE the first
+//   spawn, so a keychain prompt cannot use up the daemon's 5 s anchor wait.
+// - The pty process (ticket PV-X1b, axisMainPty.ts) starts first, under the same gate; each daemon child is reported to its control
+//   hand-over, so both get one new channel whenever either (re)starts. Shutdown stops the daemon first, then the pty process.
+import { createHmac, randomBytes } from 'crypto';
+import { homedir } from 'os';
+import { utilityProcess, type MessagePortMain } from 'electron';
+import { validatedIpcMain } from '../../../base/parts/ipc/electron-main/ipcMain.js';
+import { FileAccess } from '../../../base/common/network.js';
+import type { IInstantiationService } from '../../../platform/instantiation/common/instantiation.js';
+import { anchorFilePath, createAnchorFile } from '../../packages/daemon-host/main/anchor-file.js';
+import { createAnchorStore } from '../../packages/daemon-host/main/anchor-store.js';
+import { createMainAnswers } from '../../packages/daemon-host/main/answers.js';
+import { createProjectActions, type ProjectActions } from '../../packages/daemon-host/main/project-actions.js';
+import { checkSender, ConnectBroker } from '../../packages/daemon-host/main/connect-broker.js';
+import { DaemonSupervisor, axisDataRoots, daemonEnvironment, shouldStartDaemon, type DaemonChild, type SupervisedConfig, type SupervisorTimers } from '../../packages/daemon-host/supervisor.js';
+import { startAxisPty } from './axisMainPty.js';
+import { connectSender, messageChannel, nativeDialog, projectDialog, resolveMainServices, resolvedShellEnv, safeStorageCipher, settingsSource, trustSource, windowFolder, windowTrusted, workbenchUrls, workspaceTrusted } from './axisMainPorts.js';
+
+const MAX_STDERR_LINE = 512;
+
+interface IShutdownEvent { join(id: string, promise: Promise<void>): void }
+interface ILifecycle { readonly onWillShutdown: (listener: (event: IShutdownEvent) => unknown) => unknown }
+interface ILog { trace(message: string): void; warn(message: string): void; error(message: string): void }
+
+export function startAxisMainSeam(lifecycle: ILifecycle, log: ILog, instantiation: IInstantiationService): DaemonSupervisor | undefined {
+	const services = resolveMainServices(instantiation);
+	// One start gate for both processes (supervisor.ts): development builds only, until the packaging ADR. The pty process never
+	// runs when the daemon does not. `isBuilt` (false only under VSCODE_DEV, which scripts/code.sh sets) is Code OSS's own
+	// development check; Electron's `app.isPackaged` cannot be used: it is true whenever the executable is not named `electron`,
+	// which a Code OSS development build never is, so it kept the daemon from starting in every build.
+	if (!shouldStartDaemon(services.environment.isBuilt)) {
+		log.trace('axis daemon: not started in a built (packaged) build');
+		return undefined;
+	}
+	const platform = process.platform === 'darwin' ? 'darwin' : process.platform === 'win32' ? 'win32' : 'linux';
+	const config: SupervisedConfig = {
+		// D-3, per platform and NOT Electron's userData (axisDataRoots). The daemon checks the root is not inside a registered repository.
+		...axisDataRoots(platform, process.env, homedir()),
+		platform,
+		logLevel: 'info',
+		devDiagnostics: !services.environment.isBuilt,
+	};
+	const timers: SupervisorTimers = { set: (fn, ms) => setTimeout(fn, ms), clear: handle => clearTimeout(handle as ReturnType<typeof setTimeout>) };
+	// The pty process first (§6.4): it is forked once main's shell environment is resolved; the daemon starts after it.
+	const pty = startAxisPty(config, resolvedShellEnv(services), log, timers);
+
+	let supervisor: DaemonSupervisor | undefined = undefined;
+	const broker = new ConnectBroker<MessagePortMain>({
+		supervisor: { connect: (identity, port) => supervisor?.connect(identity, port) ?? false, state: () => supervisor?.state() ?? 'idle', failure: () => supervisor?.failure() },
+		createChannel: messageChannel,
+		closePort: port => port.close(),
+		randomBytes: n => randomBytes(n),
+		workbenchUrls: workbenchUrls(),
+		windowTrusted: id => windowTrusted(services, id, platform),
+		now: () => performance.now(),
+		onEvent: (event, reason) => event === 'connect_refused' ? log.warn(`axis daemon: connect_refused reason=${reason}`) : log.trace(`axis daemon: ${event}`),
+	});
+	services.windows.onDidDestroyWindow(window => broker.windowClosed(window.id));
+
+	const answers = createMainAnswers({
+		// `<base>/anchor/audit-anchor.v1`, next to (never inside) the daemon's data directory, encrypted with safeStorage.
+		anchors: createAnchorStore(safeStorageCipher(platform), createAnchorFile(anchorFilePath(config.dataDir))),
+		dialog: nativeDialog(services),
+		windows: broker,
+		trust: trustSource(services),
+		settings: settingsSource(services),
+		platform,
+		now: () => performance.now(),
+		onEvent: e => log.warn(`axis daemon: ${e.event}${'reason' in e ? ` reason=${e.reason}` : ''}`),
+		onProjectAnswer: message => void projects.answer(message),
+	});
+
+	supervisor = new DaemonSupervisor({
+		config,
+		randomBytes: n => randomBytes(n),
+		hmacSha256: (key, text) => new Uint8Array(createHmac('sha256', key).update(text, 'utf8').digest()),
+		now: () => performance.now(),
+		timers,
+		onRequest: (message, reply) => answers.onRequest(message, reply),
+		spawn: () => {
+			const child = utilityProcess.fork(FileAccess.asFileUri('vs/axis/daemon/node/axisDaemonMain.js').fsPath, [], {
+				serviceName: 'axis-daemon',
+				env: daemonEnvironment(process.env),
+				execArgv: [],
+				stdio: 'pipe',
+			});
+			child.stdout?.on('data', () => { /* drained and dropped: an unread pipe would block the daemon */ });
+			child.stderr?.on('data', (chunk: Buffer) => log.trace(`axis daemon: ${chunk.toString('utf8').trimEnd().slice(0, MAX_STDERR_LINE)}`));
+			const handle: DaemonChild = {
+				// A `connect` carries exactly one MessagePortMain (the broker's daemon end); every other message carries none.
+				postMessage: (message, transfer) => transfer === undefined ? child.postMessage(message) : child.postMessage(message, transfer as MessagePortMain[]),
+				kill: () => child.kill(),
+				onMessage: handler => {
+					const listener = (message: unknown) => handler(message);
+					child.on('message', listener);
+					return () => void child.off('message', listener);
+				},
+				onExit: handler => {
+					const listener = (code: number) => handler(typeof code === 'number' ? code : null);
+					child.on('exit', listener);
+					return () => void child.off('exit', listener);
+				},
+			};
+			// The control channel (§6.3): a new one to both processes now, and none to this child after its exit.
+			child.once('exit', () => pty.handover.daemon(handle, false));
+			pty.handover.daemon(handle, true);
+			return handle;
+		},
+		onEvent: (event, fields) => {
+			const text = `axis daemon: ${event}${fields.code === undefined ? '' : ` code=${fields.code}`}${fields.reason === undefined ? '' : ` reason=${fields.reason}`}`;
+			if (event === 'failed' || event === 'fatal_reported') {
+				log.error(text);
+			} else if (event === 'restart_scheduled' || event === 'degraded' || event === 'unanswered_request') {
+				log.warn(text);
+			} else {
+				log.trace(text);
+			}
+		},
+	});
+	const started = supervisor;
+
+	// Project actions (project-registration-and-trust.md §4): the renderer names only the action; the folder is its window's, the
+	// decision is main's own dialog on the shared queue, and only then does main send the daemon `projects.register` or `.trust`.
+	const projects: ProjectActions = createProjectActions({
+		send: message => started.sendProject(message),
+		choose: choice => answers.choose(choice),
+		show: projectDialog(services),
+		windowFolder: id => windowFolder(services, id),
+		workspaceTrusted: workspaceTrusted(services, platform),
+		now: () => performance.now(),
+	});
+	services.windows.onDidDestroyWindow(window => projects.windowClosed(window.id));
+
+	// The renderer handshake (ADR 0003 D1.2): upstream `acquirePort` sends the nonce; the answer carries the port, or upstream's
+	// error shape with a closed code. An invalid nonce is not echoed, and a destroyed sender gets nothing.
+	validatedIpcMain.on('vscode:axisConnect', (event, nonce: unknown) => {
+		const outcome = broker.connect(connectSender(services, event), nonce);
+		if (outcome.ok) {
+			event.sender.postMessage('vscode:axisConnectResult', nonce, [outcome.port]);
+		} else if (outcome.reason !== 'bad_nonce' && outcome.reason !== 'destroyed' && !event.sender.isDestroyed()) {
+			event.sender.postMessage('vscode:axisConnectResult', { nonce, error: outcome.reason });
+		}
+	});
+
+	// The same sender checks as `vscode:axisConnect`; the payload is `{ nonce, action }` only (checked in `createProjectActions`).
+	const urls = workbenchUrls();
+	validatedIpcMain.on('vscode:axisProjectAction', (event, payload: unknown) => {
+		const codeWindowId = checkSender(connectSender(services, event), urls);
+		if (typeof codeWindowId === 'string') {
+			log.warn(`axis project: refused reason=${codeWindowId}`);
+			return;
+		}
+		void projects.act(codeWindowId, payload).then(result => {
+			if (result !== undefined && !event.sender.isDestroyed()) {
+				event.sender.postMessage('vscode:axisProjectActionResult', result);
+			}
+		});
+	});
+
+	// The shutdown message is the only graceful path on Windows, where a utility process is ended by TerminateProcess.
+	// A final anchor write still in flight is finished before the answers are disposed.
+	// The daemon first, then the pty process (bounded, so a daemon that hangs cannot keep the pty process alive).
+	lifecycle.onWillShutdown(event => event.join('axisDaemon', pty.shutdown(() => started.shutdown()).then(() => answers.idle()).finally(() => (projects.dispose(), answers.dispose()))));
+	// Read the anchor store first (a keychain prompt must not use up the daemon's anchor wait) and start the pty process, then spawn.
+	void Promise.all([answers.prepare(), pty.started]).finally(() => started.start());
+	return started;
+}

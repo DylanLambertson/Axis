@@ -22,20 +22,30 @@ const absolutePath = z
   .transform((p) => (p.length > 1 ? p.replace(/[\\/]+$/, "") || p.slice(0, 1) : p))
   .refine((p) => normalize(p) === p && dirname(p) !== p, { message: "normalised and not a root" });
 
+/** `<dev>:<ino>` of a project's `.git` (schema v11), decimal. */
+const GIT_DIR_ID = /^[0-9]{1,30}:[0-9]{1,30}$/;
+
 export const registerProjectSchema = z
   .object({
     id: z.string().min(1).max(128).refine(noControl).refine(isWellFormedString),
     path: absolutePath,
     displayName: z.string().min(1).max(256).refine(noControl).refine(isWellFormedString),
     trusted: z.boolean(),
+    commonDir: absolutePath.optional(),
+    gitDirId: z.string().regex(GIT_DIR_ID).optional(),
     actor: z.string().regex(ACTOR),
   })
-  .strict();
+  .strict()
+  .refine((p) => (p.commonDir === undefined) === (p.gitDirId === undefined), { message: "a binding has both parts" })
+  // A trusted project always has its binding (schema v11 enforces it too): T2 has something to compare.
+  .refine((p) => !p.trusted || p.commonDir !== undefined, { message: "a trusted project needs its binding" });
 export type RegisterProjectInput = Omit<z.infer<typeof registerProjectSchema>, "actor"> & { readonly actor: AuditActor };
 
 const workspaceId = z.string().min(1).max(128).refine(noControl).refine(isWellFormedString);
 const actorOnly = z.string().regex(ACTOR);
 export const worktreePathSchema = absolutePath;
+export const baseBranchSchema = z.string().min(12).max(300).regex(/^refs\/heads\/[!-~]+$/).refine((r) => !r.includes(".."));
+export const baseTipSchema = z.string().regex(/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/);
 export const hashSchema = z.string().regex(HASH);
 export const workspaceIdSchema = workspaceId;
 export const actorSchema = actorOnly;
@@ -64,13 +74,70 @@ export function registerProject(ctx: RecordsContext, input: RegisterProjectInput
   const ts = ctx.ts();
   try {
     ctx.db
-      .prepare("INSERT INTO projects (id, path, display_name, trusted, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)")
-      .run(p.id, p.path, p.displayName, p.trusted ? 1 : 0, ts, ts);
+      .prepare("INSERT INTO projects (id, path, display_name, trusted, common_dir, git_dir_id, trust_changed_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+      .run(p.id, p.path, p.displayName, p.trusted ? 1 : 0, p.commonDir ?? null, p.gitDirId ?? null, ts, ts, ts);
   } catch (error) {
-    if (isUnique(error)) throw new AxisError("E_CONFLICT", "A project with that id or path is already registered");
+    if (isUnique(error)) throw new AxisError("E_CONFLICT", "A project with that id, path or repository is already registered");
     throw error;
   }
-  audit(ctx, input.actor, "journal.project.register", `project:${p.id}`, "project");
+  // The decision is in the action name: this audit stores only `{ field }` (no payload allow-list entry needed).
+  audit(ctx, input.actor, p.trusted ? "journal.project.register.trusted" : "journal.project.register.read_only", `project:${p.id}`, "project");
+  return mustProject(ctx.db, p.id);
+}
+
+/** Why the run-trust record changes (docs/design/project-registration-and-trust.md §3): the audit action names it. */
+export type ProjectTrustVia = "dialog" | "gesture" | "binding_lost";
+const TRUST_ACTIONS: Readonly<Record<ProjectTrustVia, string>> = {
+  dialog: "journal.project.trust.grant_dialog",
+  gesture: "journal.project.trust.revoke_gesture",
+  binding_lost: "journal.project.trust.binding_lost",
+};
+const setTrustSchema = z
+  .object({
+    id: z.string().min(1).max(128).refine(noControl).refine(isWellFormedString),
+    trusted: z.boolean(),
+    via: z.enum(["dialog", "gesture", "binding_lost"]),
+    commonDir: absolutePath.optional(),
+    gitDirId: z.string().regex(GIT_DIR_ID).optional(),
+  })
+  .strict()
+  .refine((p) => (p.commonDir === undefined) === (p.gitDirId === undefined), { message: "a binding has both parts" })
+  // Only main's dialog grants; a gesture and the daemon's own binding check only revoke.
+  .refine((p) => p.trusted === (p.via === "dialog"), { message: "only a dialog grants" })
+  .refine((p) => p.trusted || p.commonDir === undefined, { message: "a revoke carries no binding" });
+export type SetProjectTrustInput = z.input<typeof setTrustSchema>;
+
+/**
+ * The run-trust record. A grant (`via: "dialog"`) must carry the binding main's dialog was shown for: it must equal the row's,
+ * or set it on a row that has none (a pre-v11 row; set once, schema v11). Actor `daemon`: main's control message carries no
+ * attestation (RR-17). A call that changes nothing writes nothing.
+ */
+export function setProjectTrust(ctx: RecordsContext, input: SetProjectTrustInput): Project {
+  const parsed = setTrustSchema.safeParse(input);
+  if (!parsed.success) throw invalid(parsed.error, "project trust");
+  const p = parsed.data;
+  const row = mustProject(ctx.db, p.id);
+  let bind = false;
+  if (p.trusted) {
+    if (p.commonDir === undefined || p.gitDirId === undefined) throw new AxisError("E_INVALID_ARGUMENT", "A grant needs the repository binding");
+    if (row.commonDir === null && row.gitDirId === null) bind = true;
+    else if (row.commonDir !== p.commonDir || row.gitDirId !== p.gitDirId) throw new AxisError("E_INVALID_ARGUMENT", "The repository binding differs");
+  }
+  if (row.trusted === p.trusted && !bind) return row;
+  const ts = ctx.ts();
+  try {
+    if (bind) {
+      ctx.db
+        .prepare("UPDATE projects SET trusted = ?, common_dir = ?, git_dir_id = ?, trust_changed_at = ?, updated_at = ? WHERE id = ?")
+        .run(p.trusted ? 1 : 0, p.commonDir ?? null, p.gitDirId ?? null, ts, ts, p.id);
+    } else {
+      ctx.db.prepare("UPDATE projects SET trusted = ?, trust_changed_at = ?, updated_at = ? WHERE id = ?").run(p.trusted ? 1 : 0, ts, ts, p.id);
+    }
+  } catch (error) {
+    if (isUnique(error)) throw new AxisError("E_CONFLICT", "Another project holds that repository");
+    throw error;
+  }
+  audit(ctx, "daemon", TRUST_ACTIONS[p.via], `project:${p.id}`, "trusted");
   return mustProject(ctx.db, p.id);
 }
 
@@ -128,6 +195,25 @@ export function setWorktreePath(ctx: RecordsContext, id: string, path: string, a
     throw error;
   }
   audit(ctx, a, "journal.workspace.record", `workspace:${row.id}`, "worktreePath");
+  return out;
+}
+
+/**
+ * The base branch the daemon resolved at create and the commit it pointed at then (FU-WT-BASE2): both at once, once, only
+ * while CREATING, a printable `refs/heads/` name and a full commit sha. Recording the same pair again is a no-op.
+ */
+export function recordBaseBranch(ctx: RecordsContext, id: string, ref: string, tip: string, actor: AuditActor): Workspace {
+  const a = parseActor(actor);
+  const parsed = baseBranchSchema.safeParse(ref);
+  if (!parsed.success) throw invalid(parsed.error, "base branch");
+  const tipParsed = baseTipSchema.safeParse(tip);
+  if (!tipParsed.success) throw invalid(tipParsed.error, "base tip");
+  const row = load(ctx.db, id);
+  if (row.base_branch === parsed.data && row.base_tip === tipParsed.data) return toWorkspace(row);
+  if (row.state !== "CREATING") throw new AxisError("E_CONFLICT", "A base branch can only be recorded while the workspace is being created", { state: row.state });
+  if (row.base_branch !== null || row.base_tip !== null) throw new AxisError("E_CONFLICT", "The base branch is already recorded and does not change");
+  const out = update(ctx, "base_branch = ?, base_tip = ?", [parsed.data, tipParsed.data], row.id);
+  audit(ctx, a, "journal.workspace.record", `workspace:${row.id}`, "baseBranch");
   return out;
 }
 

@@ -39,6 +39,8 @@ export interface ManagerCreated {
   readonly branch: string;
   readonly path: string;
   readonly baseSha: string;
+  /** The full `refs/heads/...` name the base resolved to, or null when it was not a local branch. */
+  readonly baseBranch: string | null;
 }
 
 export interface ManagerDiscardScan {
@@ -69,21 +71,30 @@ export interface ManagerRestored {
   readonly backupRef: string;
 }
 
+/** The workspace the host resolved (its canonical root and its id): the manager refuses any path that no longer leads to exactly it. */
+export interface ExpectedWorktree {
+  readonly path: string;
+  readonly id: string;
+}
+
 export interface ManagerShape {
   /** The commit a ref names in the project's repository (read only). Rejects `E_NOT_FOUND` when it names none. */
   resolveCommit(repoPath: string, ref: string): Promise<string>;
   /** Full names of the refs under `prefix` (for example `refs/axis/archive/`) in the project's repository (read only). */
   listRefs(repoPath: string, prefix: string): Promise<ReadonlySet<string>>;
-  /** True when `headSha` is reachable from the base branch `baseRef` names (a branch, or `HEAD` of the project checkout), by git itself. */
-  isMerged(repoPath: string, headSha: string, baseRef: string): Promise<boolean>;
+  /**
+   * True when `headSha` is reachable from `baseBranch` (a full `refs/heads/...` name the journal recorded), by git itself, and
+   * the branch still descends from `baseTip`, the commit the journal recorded it at (FU-WT-BASE2). Never reads `HEAD`.
+   */
+  isMerged(repoPath: string, headSha: string, baseBranch: string, baseTip: string): Promise<boolean>;
   list(repoPath: string): Promise<readonly ListedWorktree[]>;
   create(input: { repoPath: string; slug: string; baseRef: string; id: string }): Promise<ManagerCreated>;
-  status(worktreePath: string): Promise<ManagerStatus>;
-  previewDiscard(worktreePath: string): Promise<ManagerDiscardScan>;
-  assertNoDrift(worktreePath: string): Promise<void>;
-  finalise(input: { path: string; outcome: "merged" | "archived" | "abandoned"; discardConfirmation?: unknown }): Promise<ManagerFinalised>;
-  remove(input: { path: string; deleteBranch: boolean; discardConfirmation?: unknown }): Promise<ManagerRemoved>;
-  restoreFromRunBase(input: { path: string; runId: string; expectedWorktree: string }): Promise<ManagerRestored>;
+  status(worktreePath: string, expected: ExpectedWorktree): Promise<ManagerStatus>;
+  previewDiscard(worktreePath: string, expected: ExpectedWorktree): Promise<ManagerDiscardScan>;
+  assertNoDrift(worktreePath: string, expected: ExpectedWorktree): Promise<void>;
+  finalise(input: { path: string; expectedWorktree: ExpectedWorktree; outcome: "merged" | "archived" | "abandoned"; discardConfirmation?: unknown; trustedBaseBranch: string | null; trustedBaseTip: string | null }): Promise<ManagerFinalised>;
+  remove(input: { path: string; expectedWorktree: ExpectedWorktree; deleteBranch: boolean; discardConfirmation?: unknown }): Promise<ManagerRemoved>;
+  restoreFromRunBase(input: { path: string; runId: string; expectedWorktree: ExpectedWorktree }): Promise<ManagerRestored>;
 }
 
 /** What the locator needs to know about a repository location (`resolveRepo` of the package). */

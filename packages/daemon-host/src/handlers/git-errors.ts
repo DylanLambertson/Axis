@@ -1,4 +1,5 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
+import { AxisError } from "@axis/audit";
 import { DaemonError } from "@axis/daemon";
 import { GIT_COMMIT_REASONS, GIT_PUSH_REASONS } from "@axis/protocol";
 import { GitRefusal } from "../ports/git.js";
@@ -10,6 +11,7 @@ import { ReviewRefusal } from "../ports/review.js";
  * URLs and finding details. Only a code of the set and one `reason` of the contract's closed sets reach the wire.
  */
 const REASON_TEXT: Readonly<Record<string, string>> = {
+  untrusted: "The project is not trusted for commits and pushes.",
   head_moved: "HEAD or the branch moved since the review. Review the changes again.",
   stale: "The files changed since the review. Review the changes again.",
   index_changed: "The staged changes changed since the review. Review the changes again.",
@@ -72,5 +74,7 @@ export function toGitError(e: unknown, signal?: AbortSignal): DaemonError {
         return gitFailure("E_UNAVAILABLE");
     }
   }
+  // The project trust gate's internal refusal (only the daemon may answer E_POLICY_DENIED on the wire).
+  if (e instanceof AxisError && e.code === "E_POLICY_DENIED" && e.detail["reason"] === "untrusted") return gitFailure("E_CONFLICT", "untrusted");
   return signal?.aborted === true ? gitFailure("E_CANCELLED") : gitFailure("E_INTERNAL");
 }

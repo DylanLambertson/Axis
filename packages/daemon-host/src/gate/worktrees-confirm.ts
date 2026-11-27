@@ -4,7 +4,7 @@ import { markDiscardConfirmed } from "@axis/worktrees/daemon-confirm";
 import { createApprovals, type Approvals, type ApprovalsDeps } from "./approvals.js";
 
 /**
- * The confirmation inputs of the worktree calls that discard data (design section 5.2, `docs/packages.md` "Calling
+ * The confirmation inputs of the worktree calls that discard data (design section 5.2, `docs/packages/daemon-host.md` "Calling
  * `@axis/worktrees` from the daemon"). This is the one file that may import `@axis/worktrees/daemon-confirm`: a
  * handler can never make the token that lets `finalise` or `remove` delete a dirty workspace.
  *
@@ -65,7 +65,8 @@ export interface WorktreesApprovals extends Approvals {
  * of anything exported, so no caller (a handler, a service, the composition root) can obtain a function that mints a
  * discard token without a spent approval; the only way to a token is a `gate.execute` of a challenge that was issued at
  * tier 4 or above and approved with its native dialog. What
- * comes back is the gate, the narrow port the `axis.approvals/1` handlers use, `stats`, `dispose` and `onPreview`.
+ * comes back is the gate, the narrow port the `axis.approvals/1` handlers use, the composer tool-call approvals (`runs`,
+ * which never mint a capability), `stats`, `dispose` and `onPreview`.
  * `preflight` (the anchor stall check, ticket H4) is passed through; it must be synchronous.
  */
 export function createWorktreesApprovals(deps: Omit<ApprovalsDeps, "capability" | "describe">): WorktreesApprovals {
@@ -74,7 +75,9 @@ export function createWorktreesApprovals(deps: Omit<ApprovalsDeps, "capability" 
   return Object.freeze({
     gate: approvals.gate,
     port: approvals.port,
+    runs: approvals.runs,
     stats: approvals.stats,
+    endPlugin: approvals.endPlugin,
     dispose: approvals.dispose,
     onPreview: notes.record,
   });

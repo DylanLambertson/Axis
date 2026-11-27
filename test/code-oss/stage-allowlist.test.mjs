@@ -277,7 +277,7 @@ const otherPackage = (r, file, text) => {
   put(r, `packages/other/src/${file}`, text);
 };
 
-for (const m of ["module", "vm", "repl", "inspector", "wasi", "worker_threads", "child_process"]) {
+for (const m of ["module", "vm", "repl", "inspector", "wasi", "worker_threads", "cluster"]) {
   test(`stage refuses node:${m} outside the packages that need it, and leaves no staged output`, () => {
     withFixture(({ repo, tree }) => {
       otherPackage(repo, "b.ts", `import { MessageChannel } from "node:${m}";\nexport const c = MessageChannel;\n`);
@@ -287,13 +287,36 @@ for (const m of ["module", "vm", "repl", "inspector", "wasi", "worker_threads", 
   });
 }
 
-test("stage allows node:child_process in the packages that spawn processes", () => {
+// node:child_process and node:dns (ticket FU-EGRESS, scripts/code-oss/egress-rules.mjs): named files only, and dns nowhere.
+const gitOps = (repo, file, text) => {
+  put(repo, "packages/git-ops/package.json", JSON.stringify({ name: "@axis/git-ops", exports: { ".": { default: "./dist/src/index.js" } } }));
+  put(repo, "packages/git-ops/src/index.ts", file === "index.ts" ? text : "export {};\n");
+  if (file !== "index.ts") put(repo, `packages/git-ops/src/${file}`, text);
+};
+
+test("stage allows node:child_process in a named file only, and leaves no staged output otherwise", () => {
   withFixture(({ repo, tree }) => {
-    put(repo, "packages/git-ops/package.json", JSON.stringify({ name: "@axis/git-ops", exports: { ".": { default: "./dist/src/index.js" } } }));
-    put(repo, "packages/git-ops/src/index.ts", 'import { spawn } from "node:child_process";\nexport const s = spawn;\n');
+    gitOps(repo, "nodeRunner.ts", 'import { spawn } from "node:child_process";\nexport const s = (p: string) => spawn(p, [], { shell: false });\n');
     stage({ repo, tree });
   });
+  for (const file of ["index.ts", "runner.ts", "x/nodeRunner.ts"]) {
+    withFixture(({ repo, tree }) => {
+      gitOps(repo, file, 'import type { ChildProcess } from "node:child_process";\nexport type C = ChildProcess;\n');
+      assert.throws(() => stage({ repo, tree }), new RegExp(`^StageError: packages/git-ops/src/${file.replace(".", "\\.")}: node:child_process starts programs`), file);
+      assert.equal(existsSync(join(tree, STAGE_ROOT)), false);
+    });
+  }
 });
+
+for (const spec of ["node:dns", "node:dns/promises"]) {
+  test(`stage refuses ${spec} in every package, and leaves no staged output`, () => {
+    withFixture(({ repo, tree }) => {
+      gitOps(repo, "nodeRunner.ts", `import { lookup } from "${spec}";\nexport const l = lookup;\n`);
+      assert.throws(() => stage({ repo, tree }), new RegExp(`^StageError: packages/git-ops/src/nodeRunner\\.ts: ${spec} resolves names`));
+      assert.equal(existsSync(join(tree, STAGE_ROOT)), false);
+    });
+  });
+}
 
 test("stage allows node:worker_threads in the daemon package only", () => {
   withFixture(({ repo, tree }) => {

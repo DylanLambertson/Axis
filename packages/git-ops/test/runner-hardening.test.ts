@@ -4,6 +4,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { chmodSync, existsSync, symlinkSync, writeFileSync } from "node:fs";
 import { delimiter, join } from "node:path";
+import { nodeFs } from "@axis/pty-policy";
 import { GitOpsError, createNodeRunner } from "../src/index.js";
 import { BAD_EXCLUDES, readExcludeDirs } from "../src/excludeDirs.js";
 import { fixture } from "./realFixture.js";
@@ -72,11 +73,23 @@ test("excludeDirs: duplicates (by spelling and by real path) are dropped, and mo
   assert.deepEqual(readExcludeDirs(() => [f.wt.workTree, f.wt.workTree, link], process.platform), [f.wt.workTree]);
   const many = Array.from({ length: 1024 }, () => f.wt.workTree);
   assert.equal(readExcludeDirs(() => many, process.platform).length, 1);
-  assert.throws(() => readExcludeDirs(() => [...many, f.wt.workTree], process.platform), unavailable);
-  const huge = new Array<string>(2 ** 20).fill(f.wt.workTree);
-  const t0 = Date.now();
-  assert.throws(() => readExcludeDirs(() => huge, process.platform), unavailable);
-  assert.ok(Date.now() - t0 < 2000, "an oversize list is refused without resolving every entry");
+  // Structural, not timed: count the real-path lookups. A list over the cap is refused before any entry is resolved; resolving a
+  // million of them first (the defect) costs seconds to minutes, which no time bound separates from a slow machine reliably.
+  const original = nodeFs.realPath;
+  let lookups = 0;
+  nodeFs.realPath = (p: string) => (lookups++, original?.(p));
+  try {
+    assert.throws(() => readExcludeDirs(() => [...many, f.wt.workTree], process.platform), unavailable);
+    assert.equal(lookups, 0, "an oversize list is refused before any entry is resolved");
+    const huge = new Array<string>(2 ** 20).fill(f.wt.workTree);
+    assert.throws(() => readExcludeDirs(() => huge, process.platform), unavailable);
+    assert.equal(lookups, 0, "a list of a million entries is refused before any entry is resolved");
+    assert.equal(readExcludeDirs(() => many, process.platform).length, 1);
+    assert.ok(lookups > 0 && lookups <= 1024, `a list at the cap is resolved entry by entry (${lookups} lookups)`);
+  } finally {
+    if (original === undefined) delete nodeFs.realPath;
+    else nodeFs.realPath = original;
+  }
 });
 
 test("--exec-path in any form is refused in the option area; nothing planted in the worktree runs", { skip: !posix }, async () => {

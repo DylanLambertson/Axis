@@ -1,0 +1,140 @@
+name: Overlay tests
+
+# PV-X3 follow-up: the Code OSS overlay's node unit tests (vs/axis/**/test/common) on every change that can affect them. A
+# separate workflow and job, NOT a required check: it informs, it cannot block a merge. It needs an applied and installed tree
+# (no compile, no Electron), so it fetches the pinned upstream, applies, and runs `npm ci` there, with node_modules cached under a
+# key made of the tree's own lockfiles and the pinned Node: a key that does not match exactly is a miss (no fallback keys), so a
+# stale cache is never used.
+
+on:
+  pull_request:
+    paths:
+      - code-oss/overlay/**
+      - code-oss/patches/**
+      - code-oss/replace/**
+      - code-oss/hooks/**
+      - code-oss/removals.txt
+      - code-oss/upstream.json
+      - packages/**
+      - scripts/code-oss/**
+      - package-lock.json
+      - .github/workflows/overlay-tests.yml
+  push:
+    branches: [main]
+    paths:
+      - code-oss/overlay/**
+      - code-oss/patches/**
+      - code-oss/replace/**
+      - code-oss/hooks/**
+      - code-oss/removals.txt
+      - code-oss/upstream.json
+      - packages/**
+      - scripts/code-oss/**
+      - package-lock.json
+      - .github/workflows/overlay-tests.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: overlay-tests-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  overlay-tests:
+    name: Overlay unit tests (informational)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install upstream build packages (native modules in npm ci)
+        timeout-minutes: 10
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config libx11-dev libx11-xcb-dev libxkbfile-dev \
+            libnotify-bin libkrb5-dev python3
+
+      - name: Place the tree and toolchain outside the checkout
+        run: |
+          {
+            echo "AXIS_CODE_OSS_VENDOR_DIR=$RUNNER_TEMP/axis/vendor"
+            echo "AXIS_CODE_OSS_TOOLS_DIR=$RUNNER_TEMP/axis/tools"
+          } >>"$GITHUB_ENV"
+
+      - name: Fetch the pinned upstream commit
+        timeout-minutes: 10
+        run: scripts/code-oss/fetch.sh
+
+      - name: Pinned Node toolchain (checksum-verified, before the apply)
+        # apply.sh's post-apply hook (10-regen-locks) needs the pinned Node. build.sh --toolchain-only requires an applied tree,
+        # so the toolchain is resolved here with lib.sh's own checksum-pinned download; apply.sh then finds it in TOOLS_DIR.
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          # shellcheck source=/dev/null
+          . scripts/code-oss/lib.sh
+          load_manifest
+          resolve_node download
+          echo "AXIS_PINNED_NODE_BIN=$NODE_BIN_DIR" >>"$GITHUB_ENV"
+
+      - name: Install the repository root dependencies (the apply's stage hook needs them)
+        # apply.sh's post-apply hook 20-stage-axis-packages bundles the staged packages and needs the repository's own zod and
+        # typescript at the root; --ignore-scripts keeps the install free of lifecycle scripts (no secrets or write token here).
+        timeout-minutes: 10
+        run: |
+          set -euo pipefail
+          PATH="$AXIS_PINNED_NODE_BIN:$PATH" npm ci --ignore-scripts
+
+      - name: Apply patches, removals, replacements, overlay and hooks
+        timeout-minutes: 10
+        run: scripts/code-oss/apply.sh
+
+      - name: Cache key from the tree's lockfiles and the pinned Node
+        id: key
+        run: |
+          set -euo pipefail
+          tree="$AXIS_CODE_OSS_VENDOR_DIR/code-oss"
+          node_v="$(jq -er '.node' code-oss/upstream.json)"
+          locks="$(cd "$tree" && find . -name package-lock.json -not -path '*/node_modules/*' | LC_ALL=C sort | xargs sha256sum | sha256sum | cut -c1-64)"
+          echo "key=overlay-node-modules-v1-${node_v}-${locks}" >>"$GITHUB_OUTPUT"
+
+      - name: Restore node_modules (exact key only)
+        id: cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/axis/vendor/code-oss/**/node_modules
+          key: ${{ steps.key.outputs.key }}
+
+      - name: Check the restored tree quickly (fail fast, never hang)
+        if: steps.cache.outputs.cache-hit == 'true'
+        timeout-minutes: 2
+        run: |
+          set -euo pipefail
+          tree="$AXIS_CODE_OSS_VENDOR_DIR/code-oss"
+          test -f "$tree/node_modules/mocha/bin/mocha.js"
+          test -f "$tree/node_modules/minimist/package.json"
+
+      - name: npm ci in the tree (cache miss)
+        if: steps.cache.outputs.cache-hit != 'true'
+        timeout-minutes: 25
+        run: |
+          set -euo pipefail
+          cd "$AXIS_CODE_OSS_VENDOR_DIR/code-oss"
+          PATH="$AXIS_PINNED_NODE_BIN:$PATH" npm ci
+
+      - name: Save node_modules (main only, on a miss)
+        if: steps.cache.outputs.cache-hit != 'true' && github.event_name == 'push'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/axis/vendor/code-oss/**/node_modules
+          key: ${{ steps.key.outputs.key }}
+
+      - name: Overlay unit tests (vs/axis/**/test/common, upstream runner)
+        timeout-minutes: 10
+        run: scripts/code-oss/overlay-tests.sh

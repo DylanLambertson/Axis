@@ -6,11 +6,15 @@
 // (stage-ast.mjs), not by pattern matching text; the same parse finds the names that reach code without a
 // visible specifier. The guarantee that matters is the bundle-time module-graph check (scripts/code-oss/check-daemon-graph.mjs), which reads what esbuild really resolved.
 export { importSpecifiers, unsafeForms, rewriteSpecifiers, scanModules } from "./stage-ast.mjs";
+import { listenerBuiltinRefusal } from "./web-rules.mjs";
+import { egressBuiltinRefusal } from "./egress-rules.mjs";
+export { ENDPOINT_LISTENER_FILE, ENDPOINT_LISTENER_SHA256, LISTENER_BUILTINS, LISTENER_FILE, LISTENER_FILES, WEB_HOST_DIR } from "./web-rules.mjs";
 
 /**
  * Node built-ins that load or run code by other means than a module specifier. No package needs them, except the
  * listed ones: `node:worker_threads` (MessageChannel only, enforced on the parse) for the daemon's in-process
- * transport, and `node:child_process` for the packages that spawn processes. Judged on `src/` files.
+ * transport. `node:cluster` forks a process that runs a chosen module. `node:child_process` is confined to named files
+ * (not packages) by egress-rules.mjs. Judged on `src/` files.
  */
 export const LOADER_BUILTINS = new Map([
   ["node:module", new Set()],
@@ -20,8 +24,7 @@ export const LOADER_BUILTINS = new Map([
   ["node:inspector", new Set()],
   ["node:wasi", new Set()],
   ["node:worker_threads", new Set(["daemon"])],
-  // Runs programs: only the packages that spawn processes today. A new one needs an ADR 0005 amendment.
-  ["node:child_process", new Set(["audit", "broker", "git-ops", "git-snapshot", "worktrees"])],
+  ["node:cluster", new Set()],
 ]);
 
 /** Subpaths of `@axis/*` that only some packages may import (ADR 0005 D2; mirrors test/packages/imports.test.mjs). */
@@ -54,17 +57,46 @@ export const RESTRICTED_MODULES = [
   { pkg: "journal", file: "principal.ts", importers: new Set() },
   { pkg: "runs", file: "attestation.ts", importers: new Set() },
   { pkg: "audit", file: "lock.ts", importers: new Set() },
+  // The daemon host's providers binding hands the global fetch to the Anthropic adapter (the one egress point, stage-ast.mjs
+  // EGRESS_NAMES): only the composition root, the host and the public index load it (mirrors PROVIDERS_IMPORTERS in
+  // test/packages/imports.test.mjs).
+  { pkg: "daemon-host", file: "bindings/providers.ts", importers: new Set(), files: new Set(["daemon-host/compose.ts", "daemon-host/host.ts", "daemon-host/index.ts"]), exact: true },
+  // The Anthropic adapter and the connection vault (the key's only holder in the daemon, PRV-2): only the host's providers
+  // binding may load the adapter, and the providers and integrations bindings the vault (daemon-host.md 2.1, ticket C6;
+  // ADR 0009 decision 5, ticket PV-N1c; mirrors HOST_FILE_RULES in test/packages/imports.test.mjs).
+  { pkg: "anthropic", file: "index.ts", importers: new Set(), files: new Set(["daemon-host/bindings/providers.ts"]) },
+  { pkg: "vault", file: "index.ts", importers: new Set(), files: new Set(["daemon-host/bindings/providers.ts", "daemon-host/bindings/integrations.ts"]) },
+  // The daemon's tests-only subpath marks identities as attested (PV-K1c review 1): nothing staged may load it
+  // (mirrors test/packages/daemon-testing-rule.mjs).
+  { pkg: "daemon", file: "testing.ts", importers: new Set(), files: new Set() },
   // The host's run trust minter: even inside its own package only the composition points (the public index, and the composition
   // root `compose.ts`, which hands handler code the registrar only) may load it, so no handler, service or binding can mint an
   // attestation without main's per-start trust.check (TRU-2).
   { pkg: "daemon-host", file: "gate/run-trust.ts", importers: new Set(), files: new Set(["daemon-host/index.ts", "daemon-host/compose.ts"]), exact: true },
-  // The composition root loads the minters: only the public index may load it, so no handler can import a minter through it.
-  { pkg: "daemon-host", file: "compose.ts", importers: new Set(), files: new Set(["daemon-host/index.ts"]), exact: true },
+  // The composition root loads the minters: only the public index and the process entry (`entry.ts`, which calls `composeDaemonHost` and nothing else of it) may load it, so no handler can import a minter through it.
+  { pkg: "daemon-host", file: "compose.ts", importers: new Set(), files: new Set(["daemon-host/index.ts", "daemon-host/entry.ts"]), exact: true },
+  // The project trust gate (project-registration-and-trust.md §5.4): only the composition builds a gate, only the two gate modules
+  // reach the ticket's brand and state, and only the composition root loads the composition helper (mirrors imports.test.mjs).
+  { pkg: "daemon-host", file: "gate/project-trust-gate.ts", importers: new Set(), files: new Set(["daemon-host/compose-serving.ts"]), exact: true },
+  { pkg: "daemon-host", file: "gate/project-ticket.ts", importers: new Set(), files: new Set(["daemon-host/gate/project-trust.ts", "daemon-host/gate/project-trust-gate.ts"]), exact: true },
+  { pkg: "daemon-host", file: "compose-serving.ts", importers: new Set(), files: new Set(["daemon-host/compose.ts"]), exact: true },
+  // The discard token minter has the same two loaders as the run trust minter.
+  { pkg: "daemon-host", file: "gate/worktrees-confirm.ts", importers: new Set(), files: new Set(["daemon-host/index.ts", "daemon-host/compose.ts"]), exact: true },
+  // The public index re-exports the composition (and so, through it, both minters): no staged file may load it (a barrel hop), only
+  // code outside the staged tree (the overlay entry, `rel === null`) may. `outside` is what lets that importer through.
+  { pkg: "daemon-host", file: "index.ts", importers: new Set(), files: new Set(), exact: true, outside: true },
+  // The process entry reaches the composition root, so it is a composition point too: no staged file may load it, only the overlay entry may.
+  { pkg: "daemon-host", file: "entry.ts", importers: new Set(), files: new Set(), exact: true, outside: true },
 ];
+
+/** The staged modules that hold a host minter, and the only staged files that may load them or anything that reaches them. */
+export const HOST_MINTER_FILES = new Set(["daemon-host/gate/run-trust.ts", "daemon-host/gate/worktrees-confirm.ts"]);
+export const HOST_COMPOSITION_FILES = new Set(["daemon-host/index.ts", "daemon-host/compose.ts", "daemon-host/entry.ts"]);
 
 /** True when the staged file `rel` (package `importerPkg`) may import restricted module `r`. `exact` ignores the owner package. */
 export function mayImportRestricted(r, importerPkg, rel) {
   if (r.files?.has(rel) === true) return true;
+  if (rel === null && r.outside === true) return true;
   if (r.exact === true) return false;
   return importerPkg === r.pkg || (importerPkg !== null && r.importers.has(importerPkg));
 }
@@ -76,8 +108,10 @@ export function mayImportRestricted(r, importerPkg, rel) {
  *   axis:     `@axis/<name>` or a declared subpath, `{ name, subpath }`
  *   node:     a `node:*` built-in
  * `exportsOf(name)` returns the subpath keys the package declares (for example "./daemon-principal"), or null for an unknown package.
+ * `targetOf(name, key)` (optional) returns the staged file stem a declared key maps to ("./alias" -> "daemon-principal"); with it a restricted
+ * subpath binds the file it maps to, so a second export key onto the same file carries the same restriction (RR-6).
  */
-export function classifySpecifier(spec, pkg, exportsOf, fileRel = null) {
+export function classifySpecifier(spec, pkg, exportsOf, fileRel = null, targetOf = () => undefined) {
   if (spec.startsWith("./") || spec.startsWith("../")) return { kind: "relative" };
   if (spec === "zod") return { kind: "zod" };
   if (spec.startsWith("zod/")) throw `only the "zod" entry is staged, not ${spec}`;
@@ -86,6 +120,10 @@ export function classifySpecifier(spec, pkg, exportsOf, fileRel = null) {
     if (pkg === "protocol") throw `node:* is not allowed in the protocol package (contracts shared with the web target): ${spec}`;
     const only = LOADER_BUILTINS.get(spec.replace(/\/.*$/, ""));
     if (only !== undefined && !only.has(pkg)) throw `${spec} loads or runs code without a module specifier and is not allowed${only.size > 0 ? ` outside ${[...only].join(", ")}` : ""}`;
+    const listener = listenerBuiltinRefusal(spec, fileRel === null ? null : `${pkg}/${fileRel}`);
+    if (listener !== null) throw listener;
+    const egress = egressBuiltinRefusal(spec, fileRel === null ? null : `${pkg}/${fileRel}`);
+    if (egress !== null) throw egress;
     return { kind: "node" };
   }
   if (spec.startsWith("@axis/")) {
@@ -96,9 +134,15 @@ export function classifySpecifier(spec, pkg, exportsOf, fileRel = null) {
     if (keys === null) throw `unknown workspace package ${spec}`;
     if (sub !== undefined) {
       if (!keys.includes(`.${sub}`)) throw `${spec} is not a subpath the package exports (or is not stageable)`;
-      const allowed = RESTRICTED_SUBPATHS.get(spec);
-      const exact = RESTRICTED_FILE_EXCEPTIONS.get(spec)?.get(pkg)?.has(fileRel) === true;
-      if (allowed !== undefined && !allowed.has(pkg) && !exact) throw `${spec} may only be imported by: ${[...allowed].join(", ")}`;
+      const stem = targetOf(name, `.${sub}`);
+      for (const [restricted, allowed] of RESTRICTED_SUBPATHS) {
+        const [, rName, rSub] = /^@axis\/([a-z][a-z0-9-]*)\/(.+)$/.exec(restricted);
+        // The restricted file comes from the module table, not from the restricted key's own mapping, so removing or remapping that key cannot free an alias.
+        const rFile = RESTRICTED_MODULES.find((m) => m.pkg === rName && m.file === `${rSub}.ts`)?.file.replace(/\.ts$/, "") ?? targetOf(rName, `./${rSub}`);
+        const sameFile = restricted === spec || (rName === name && stem !== undefined && rFile === stem);
+        const exact = RESTRICTED_FILE_EXCEPTIONS.get(restricted)?.get(pkg)?.has(fileRel) === true;
+        if (sameFile && !allowed.has(pkg) && !exact) throw `${spec} may only be imported by: ${[...allowed].join(", ")}${restricted === spec ? "" : ` (it maps to the file ${restricted} exports)`}`;
+      }
     }
     return { kind: "axis", name, subpath: sub === undefined ? null : `.${sub}` };
   }

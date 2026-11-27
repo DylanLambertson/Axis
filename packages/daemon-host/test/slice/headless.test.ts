@@ -12,18 +12,18 @@ import { createGitFixture, gitSkipReason, canary, type GitFixture } from "../../
 import { TestClient, newKey, resultOf, transcript, until } from "../../testing/test-client.js";
 import type { TestSupervisor } from "../../testing/test-supervisor.js";
 import {
-  DENIED_SEEDS, FAKE_CLI, auditRows, awaitRun, confirmNative, damagedCopy, disposeHosts, type AuditRow, createWorkspace, databaseBytes, openStopped, registerProject, startHost, trustWindow, type Workspace,
+  DENIED_SEEDS, FAKE_CLI, auditRows, awaitRun, confirmNative, finaliseApproved, damagedCopy, disposeHosts, type AuditRow, createWorkspace, databaseBytes, openStopped, registerProject, startHost, trustWindow, type Workspace,
 } from "../../testing/slice-helpers.js";
 
 /**
  * The headless slice (plan section 1, ticket H12): the real composition root (`composeDaemonHost`) in a CHILD PROCESS, no Electron,
  * no UI, no Code OSS. Real: the process, its lock, signals and exit code, `@axis/worktrees` over a fixture repository, the run
- * supervisor, `@axis/review`, `@axis/git-ops`, the secret scanner, the audit chain and the anchor protocol.
+ * supervisor, the run snapshotter (`@axis/git-snapshot`, H13), `@axis/review`, `@axis/git-ops`, the secret scanner, the audit
+ * chain and the anchor protocol.
  *
  * FAKES (each replaced by a named later ticket):
  *  - the pty port (`LocalPty`: a plain child process; B9 brings the pty process and the process-group contract of question 18);
  *  - the `pty` git runner (a local node runner serving the pty context; B9);
- *  - the run snapshotter (no-op; GIT-SNAP-1, question 10);
  *  - the supervisor (`TestSupervisor`: answers anchors, trust, settings and native confirmations the way main would).
  * Hooks are not built (H9-hooks): step 5 asserts the interim, that a planted pre-commit hook does NOT run.
  */
@@ -41,6 +41,7 @@ describe("headless slice", { skip, timeout: SUITE_TIMEOUT_MS }, () => {
   let projectId: string;
   let w1: Workspace;
   let w2: Workspace;
+  let w3: Workspace;
   let runId = "";
   let commit = "";
   let treeHash = "";
@@ -79,13 +80,39 @@ describe("headless slice", { skip, timeout: SUITE_TIMEOUT_MS }, () => {
     sup = started.sup;
     const ready = await started.ready;
     assert.equal(ready["degraded"], undefined);
-    assert.deepEqual([...(ready["contracts"] as string[])].sort(), ["axis.approvals", "axis.audit", "axis.cli-runs", "axis.git", "axis.projects", "axis.providers", "axis.review", "axis.worktrees"]);
+    assert.deepEqual([...(ready["contracts"] as string[])].sort(), ["axis.agent-groups", "axis.agents", "axis.approvals", "axis.attention", "axis.audit", "axis.cli-runs", "axis.events", "axis.forge", "axis.git", "axis.integrations", "axis.messages", "axis.pages", "axis.plugins", "axis.projects", "axis.providers", "axis.review", "axis.runs", "axis.tasks", "axis.usage", "axis.worktrees"]);
     trustWindow(sup);
     projectId = await registerProject(sup, fx.repo);
     user = await TestClient.open(sup);
     assert.deepEqual(user.welcome.contracts.map((c) => c.id).sort(), (ready["contracts"] as string[]).slice().sort());
     const projects = await user.ok<{ projects: Array<{ id: string; trusted: boolean }> }>("axis.projects", "list", {});
     assert.deepEqual(projects.projects.map((p) => p.id), [projectId]);
+    // PV-M3: the composed host serves axis.messages/1 over the journal; no agent exists yet (PV-G3), so nothing can be addressed.
+    const threads = await user.ok<{ threads: unknown[] }>("axis.messages", "threads", {});
+    assert.deepEqual(threads.threads, []);
+    const settings = await user.ok<{ settings: { projectId: string; agents: unknown[] }; cliEndpoint: boolean }>("axis.messages", "settings", { projectId });
+    assert.deepEqual([settings.settings.projectId, settings.settings.agents], [projectId, []]);
+    assert.equal(settings.cliEndpoint, false, "the production host's CLI endpoint switch is off until the user turns it on");
+    const nobody = await user.call("axis.messages", "send", { recipients: [{ agent: "a1" }], body: { format: "text", text: "hi" } }, true);
+    assert.deepEqual([nobody.error?.code, nobody.error?.details], ["E_CONFLICT", { reason: "recipient_refused" }]);
+    // PV-D2 slice 2: the composed host serves axis.forge/1 to the user; this fixture's origin is a local path, not GitHub.
+    const forge = await user.ok<{ state: string }>("axis.forge", "pullRequests", { projectId, trigger: "view" });
+    assert.equal(forge.state, "remote_invalid");
+    // PV-D4: the composed host serves axis.attention/1 over the journal and the live run services; nothing needs attention yet.
+    const zero = { n: 0, capped: false };
+    const attention = await user.ok("axis.attention", "summary", { projectId });
+    assert.deepEqual(attention, { projectId, approvalsWaiting: { total: zero, byAgent: [], more: false }, failedRuns: zero, quietCliRuns: zero, driftFlags: zero, unreadMessages: zero });
+    const unknown = await user.call("axis.attention", "summary", { projectId: "no-such-project" }, true);
+    assert.deepEqual([unknown.error?.code, unknown.error?.details], ["E_NOT_FOUND", { reason: "not_found" }]);
+    // PV-D3: the composed host serves axis.usage/1 over the journal and the composer's workspace limits; nothing spent yet.
+    const none = { runs: 0, inputTokens: 0, outputTokens: 0, tokens: 0, requests: 0, costMicroUsd: 0, unpricedRequests: 0 };
+    const usage = await user.ok("axis.usage", "summary", { projectId });
+    assert.deepEqual(usage, { projectId, project: none, agents: [], unattributed: none });
+    const unknownUsage = await user.call("axis.usage", "summary", { projectId: "no-such-project" }, true);
+    assert.deepEqual([unknownUsage.error?.code, unknownUsage.error?.details], ["E_NOT_FOUND", { reason: "not_found" }]);
+    // C5: the composed list answers from the agent binding's registry (it was [] before), so the mock and its model are listed.
+    const listed = await user.ok<{ providers: Array<{ providerId: string; status: string; models: Array<{ modelId: string }> }> }>("axis.providers", "list", {});
+    assert.deepEqual(listed.providers.map((p) => [p.providerId, p.status, p.models.map((m) => m.modelId)]), [["mock", "ready", ["mock-model"]]]);
 
     const second = await startHost(fx, { config: { dataDir: sup.dataDir, worktreeRoot: join(scratch, "other-worktrees") } });
     assert.equal((await second.sup.exited).code, 75, "a second host on a locked data directory exits E_CONFLICT (75)");
@@ -124,6 +151,10 @@ describe("headless slice", { skip, timeout: SUITE_TIMEOUT_MS }, () => {
     assert.ok(dump.envNames.every((n) => classifyDeniedName(n) === undefined), "no denied name in the CLI environment");
     assert.ok(!dump.envNames.includes("AXIS_SLICE_SCAN_MODE"), "the host's own AXIS_ variable stays inside the host");
     assert.equal(readFileSync(join(w1.path, "src", "hello.txt"), "utf8"), "hello from the fake CLI\n");
+    // The real GIT-SNAP-1 snapshot (H13) ran before and after: a run that wrote only a work file left git's configuration as it was.
+    let verdict: unknown = "pending";
+    await until(async () => (verdict = (await user.ok<{ run: Record<string, unknown> }>("axis.cli-runs", "get", { runId })).run["snapshotAfter"]) !== "pending", "snapshot verdict");
+    assert.equal(verdict, "ok");
   });
 
   type Diff = { head: string; branch: string; treeHash: string; files: Array<{ displayPath: string }> };
@@ -213,8 +244,14 @@ describe("headless slice", { skip, timeout: SUITE_TIMEOUT_MS }, () => {
     assert.deepEqual({ confirms: sup.nativeConfirms.length, pending: (await user.ok<{ challenges: unknown[] }>("axis.approvals", "pending", {})).challenges.length }, before, "no challenge, no dialog");
     assert.equal(fx.remoteRefs().length, 1, "the secret workspace was not pushed");
     secrets.push(secret);
-    // Archived, so `worktrees.remove` (tier 4) has a legal target for the stall step below.
-    assert.equal((await user.ok<{ state: string }>(PROJECT, "finalise", { id: w2.id, outcome: "archived" }, true)).state, "FINALISED");
+    // REF-1: the archive would pin the committed secret under refs/axis/*, so the approved finalise is refused, by reason only.
+    const pinned = await finaliseApproved(sup, user, w2.id);
+    assert.deepEqual([pinned.error?.code, pinned.error?.details], ["E_CONFLICT", { reason: "snapshot_secret" }]);
+    assert.ok(!JSON.stringify(pinned.error).includes(secret), "the refusal holds no secret text");
+    // A clean workspace, archived, so `worktrees.remove` (tier 4) has a legal target for the stall step below.
+    w3 = await createWorkspace(user, projectId, "Archived");
+    assert.equal(((await finaliseApproved(sup, user, w3.id)).result as { state: string }).state, "FINALISED");
+    const confirmsAfterFinalise = sup.nativeConfirms.length; // the finalise showed its own tier 4 dialog
 
     // A plan that changed after it was shown: w1 gets a second commit, the old plan is refused before a challenge.
     writeFileSync(join(w1.path, "second.txt"), "second\n");
@@ -223,7 +260,7 @@ describe("headless slice", { skip, timeout: SUITE_TIMEOUT_MS }, () => {
     const stale = await user.call("axis.git", "push", { workspaceId: w1.id, remote: "origin", confirmedPlan: { tip: commit, digest: planDigest } }, true);
     assert.equal(stale.error?.code, "E_CONFLICT");
     assert.equal(stale.error?.details?.["reason"], "plan_changed");
-    assert.equal(sup.nativeConfirms.length, before.confirms, "no dialog for a stale plan");
+    assert.equal(sup.nativeConfirms.length, confirmsAfterFinalise, "no dialog for a stale plan");
     assert.deepEqual(fx.remoteRefs(), [`refs/heads/${w1.branch} ${commit}`]);
   });
 
@@ -232,6 +269,15 @@ describe("headless slice", { skip, timeout: SUITE_TIMEOUT_MS }, () => {
     else s.kill("SIGTERM");
     return s.exited;
   };
+
+  let composerRunId = "";
+  test("7b. composer: a run waits for the user's approval of a protected write, and nothing is written meanwhile", async () => {
+    const started = await user.ok<{ run: { runId: string } }>("axis.runs", "start", { workspaceId: w1.id, mode: "edit", prompt: "Add a Makefile", providerId: "mock", modelId: "mock-model" }, true);
+    composerRunId = started.run.runId;
+    await until(async () => (await user.ok<{ run: { awaitingApproval: boolean } }>("axis.runs", "get", { runId: composerRunId })).run.awaitingApproval, "the approval to be asked");
+    assert.equal((await user.ok<{ challenges: unknown[] }>("axis.approvals", "pending", {})).challenges.length, 1);
+    assert.equal(existsSync(join(w1.path, "Makefile")), false);
+  });
 
   test("8. audit chain: graceful shutdown ends by draining, the chain verifies against the final anchor, every call is recorded", async () => {
     user.close();
@@ -262,6 +308,12 @@ describe("headless slice", { skip, timeout: SUITE_TIMEOUT_MS }, () => {
     for (const p of ["issued", "resolve", "native", "authorised"]) at = find(at, phase(p));
     at = find(at, rpc("axis.git/1.push", "rpc.execute"));
     at = find(at, phase("completed"));
+    // The composer run waiting at shutdown: its challenge was withdrawn and recorded BEFORE the final anchor (the line above
+    // asserts the anchor covers the last row), and its journal row was left RUNNING for recovery (review r1 S1).
+    const issued = find(at, (r) => r.actor === `agent:composer.${composerRunId}` && (JSON.parse(r.payload) as { phase?: string }).phase === "issued");
+    at = find(issued, (r) => r.target === rows[issued]?.target && (JSON.parse(r.payload) as { phase?: string }).phase === "withdraw");
+    const composerStates = (stopped.prepare("SELECT to_state FROM state_transitions WHERE entity = 'run' AND entity_id = ? ORDER BY id").all(composerRunId) as Array<{ to_state: string }>).map((r) => r.to_state);
+    assert.deepEqual(composerStates, ["QUEUED", "RUNNING"], "nothing was written to the journal after the shutdown began");
     const runStates = (stopped.prepare("SELECT to_state FROM state_transitions WHERE entity = 'run' AND entity_id = ? ORDER BY id").all(runId) as Array<{ to_state: string }>).map((r) => r.to_state);
     assert.deepEqual(runStates.filter((x) => x !== "QUEUED"), ["RUNNING", "REVIEWING", "COMPLETED"]);
     const ws = stopped.prepare("SELECT state, created_by FROM agent_workspaces WHERE id = ?").get(w1.id) as { state: string; created_by: string };
@@ -341,6 +393,9 @@ describe("headless slice", { skip, timeout: SUITE_TIMEOUT_MS }, () => {
     const again = await c.client.call("axis.cli-runs", "start", { workspaceId: w1.id, agentId: "slow" }, slowKey);
     const replayedRun = again.ok ? (again.result as { run: { runId: string } }).run.runId : undefined;
     assert.ok(replayedRun === started.run.runId || again.error?.details?.["reason"] === "outcome-unknown", "the old key neither starts a second run nor answers anything else");
+    const composer = (await c.client.ok<{ run: { state: string; reason: string | null; live: boolean } }>("axis.runs", "get", { runId: composerRunId })).run;
+    assert.deepEqual([composer.state, composer.reason, composer.live], ["BLOCKED", "INTERRUPTED_BY_RESTART", false], "the composer run interrupted by the shutdown");
+    assert.equal(existsSync(join(w1.path, "Makefile")), false, "the unapproved write never happened");
     const runs = await c.client.ok<{ runs: unknown[] }>("axis.cli-runs", "list", { workspaceId: w1.id });
     assert.equal(runs.runs.length, 2, "no run was started by the retry");
     const status = await c.client.ok<{ worktrees: Array<{ present: boolean; head: string | null }> }>(PROJECT, "status", { ids: [w1.id] });
@@ -366,7 +421,7 @@ describe("headless slice", { skip, timeout: SUITE_TIMEOUT_MS }, () => {
     for (const a of [noApproval, bogus]) assert.deepEqual([a.error?.code, a.error?.details?.["reason"]], ["E_UNAVAILABLE", "anchor_stalled"]);
     // `worktrees.remove` (tier 4) has no content-hook check of its own: only the gate's preflight stops it before a challenge.
     for (const approval of [undefined, { challengeId: "A".repeat(43) }]) {
-      const removal = await client.call(PROJECT, "remove", { id: w2.id, ...(approval === undefined ? {} : { approval }) }, true);
+      const removal = await client.call(PROJECT, "remove", { id: w3.id, ...(approval === undefined ? {} : { approval }) }, true);
       assert.deepEqual([removal.error?.code, removal.error?.details?.["reason"]], ["E_UNAVAILABLE", "anchor_stalled"]);
     }
     assert.equal(s.nativeConfirms.length, 0, "no dialog while stalled");

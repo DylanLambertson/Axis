@@ -8,7 +8,7 @@ import { contracts } from "@axis/protocol";
 import { AxisError, openDatabase } from "@axis/audit";
 import { createDaemonHost, DegradedStartError, exitCodeForStartupError, EXIT, type DaemonHost, type HostServices } from "../src/index.js";
 import { hostFixture, type HostFixture } from "../testing/host-fixture.js";
-import { processSnapshot, wait, must } from "./helpers.js";
+import { drain, processSnapshot, settledTo, must } from "./helpers.js";
 
 const idsOf = (): string[] => [...new Set(Object.keys(contracts).map((k) => k.slice(0, k.indexOf("/"))))].sort();
 const ready = (f: HostFixture): Array<Record<string, unknown>> => f.sent.filter((m) => m["type"] === "ready");
@@ -22,7 +22,7 @@ async function started(
   const host = createDaemonHost(fix.config, fix.ports, options);
   try {
     const services = await host.start();
-    await wait(5);
+    await drain();
     await body(host, services);
   } finally {
     await host.stop();
@@ -47,8 +47,7 @@ test("a first start sends ready with every contract, not degraded, and holds the
     assert.deepEqual(fix.supervisor.puts, [], "an empty chain has nothing to anchor");
   });
   assert.ok(!existsSync(fix.dataDir) || !existsSync(join(fix.dataDir, "axis.lock")));
-  await wait(5);
-  assert.deepEqual(processSnapshot(), before, "no timer or process listener left");
+  await settledTo(before, "no timer or process listener left");
 });
 
 test("stop closes the database handle, releases the lock and is idempotent; start cannot run twice", async () => {
@@ -83,7 +82,7 @@ test("a second host on the same data directory fails with E_CONFLICT (exit 75) a
     assert.equal((error as { code?: string }).code, "E_CONFLICT");
     assert.equal(exitCodeForStartupError(error), EXIT.LOCK_HELD);
     assert.equal(b.state, "stopped");
-    await wait(5);
+    await drain(); // flush sends already queued; no mutant can make a send appear here, the check is a guard rather than a proof
     assert.equal(second.sent.filter((m) => m["type"] === "ready").length, 0, "the loser never sends ready");
     assert.ok(existsSync(join(fix.dataDir, "axis.lock")), "the loser did not release the winner's lock");
     await b.stop();
@@ -107,7 +106,7 @@ test("a failure after the lock (git not found) is exit 70 and leaves no lock, ha
     assert.equal((error as { code?: string }).code, "E_UNAVAILABLE");
     assert.equal(exitCodeForStartupError(error), EXIT.INTERNAL);
     assert.ok(!existsSync(join(bad.dataDir, "axis.lock")), "git was not found after the lock was taken: it was released");
-    await wait(5);
+    await drain(); // flush sends already queued (a guard rather than a proof: start has already rejected)
     assert.equal(bad.sent.filter((m) => m["type"] === "ready").length, 0);
   } finally {
     bad.cleanup();
@@ -142,7 +141,7 @@ test("the policy and the coverage check use the SAME surface: a host serving a s
   await started(fix, (_host, s) => {
     assert.deepEqual([...(ready(fix)[0]?.["contracts"] as string[])].sort(), ["axis.audit", "axis.projects"]);
     assert.deepEqual(Object.keys(s.surface.rules).sort(), Object.keys(s.surface.rules).filter((k) => /^axis\.(audit|projects)\//.test(k)).sort());
-    const base = { identity: { actor: "user", windowId: "w1", connectionId: "c".repeat(22), trusted: true, clientKind: "test" }, version: 1, tier: 0 };
+    const base = { identity: { actor: "user", windowId: "w1", connectionId: "c".repeat(22), trusted: true, clientKind: "desktop" }, version: 1, tier: 0 };
     const allow = s.policy.evaluate({ ...base, contract: "axis.projects", method: "list" } as never);
     assert.equal(allow.effect, "allow");
     const deny = s.policy.evaluate({ ...base, contract: "axis.worktrees", method: "list" } as never);
@@ -258,7 +257,7 @@ test("stop() during start(): no ready, no anchor.put, start rejects E_CANCELLED,
     release();
     assert.equal(await outcome, "E_CANCELLED");
     await stopped;
-    await wait(5);
+    await drain(); // flush sends already queued (a guard rather than a proof)
     assert.equal(fix.sent.filter((m) => m["type"] === "ready").length, 0);
     assert.deepEqual(fix.supervisor.puts, []);
     assert.ok(!existsSync(join(fix.dataDir, "axis.lock")));

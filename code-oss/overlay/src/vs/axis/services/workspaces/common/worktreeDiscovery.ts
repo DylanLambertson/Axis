@@ -29,6 +29,8 @@ const SHA = /^[0-9a-f]{40}([0-9a-f]{24})?$/;
 const UNSAFE_TEXT = /[\p{Cc}\p{Cf}\u2028\u2029]/gu;
 /** Private-use and unassigned code points: no meaning a reader can check. */
 const OPAQUE_TEXT = /[\p{Co}\p{Cn}]/gu;
+/** Letters and symbols that draw nothing (Hangul fillers, the blank Braille pattern, Khmer inherent vowels): a name made of them would look empty. */
+const INVISIBLE_TEXT = /[\u115F\u1160\u17B4\u17B5\u2800\u3164\uFFA0]/gu;
 /** A third and later combining mark in a row (stacked marks that spill over neighbouring text). */
 const MARK_RUN = /(\p{M}{2})\p{M}+/gu;
 
@@ -88,7 +90,16 @@ export function branchOf(head: GitHead | undefined): string | null {
 		return null;
 	}
 	const name = head.ref.slice('refs/heads/'.length, 'refs/heads/'.length + MAX_BRANCH_LENGTH * 2);
-	return clampText(name.replace(UNSAFE_TEXT, '\uFFFD').replace(OPAQUE_TEXT, '\uFFFD').replace(MARK_RUN, '$1'), MAX_BRANCH_LENGTH);
+	return cleanDisplayText(name, MAX_BRANCH_LENGTH);
+}
+
+/**
+ * Text from outside the renderer (repository metadata, a daemon reply) made safe to show: control, format and bidi
+ * characters, unassigned or private-use code points and letters that draw nothing become U+FFFD (visible, never reordering the row), runs of
+ * combining marks are cut to two, and the result is cut to `max` code points.
+ */
+export function cleanDisplayText(value: string, max: number): string {
+	return clampText(value.replace(UNSAFE_TEXT, '\uFFFD').replace(OPAQUE_TEXT, '\uFFFD').replace(INVISIBLE_TEXT, '\uFFFD').replace(MARK_RUN, '$1'), max);
 }
 
 /** Cuts text to at most `max` code points, ending with an ellipsis when it was longer. */

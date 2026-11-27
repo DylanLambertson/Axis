@@ -34,10 +34,10 @@ export class RunSupervisor extends SupervisorQueries {
     this.started = true;
     if (typeof request !== "object" || request === null) throw new AxisError("E_INVALID_ARGUMENT", "Invalid run start request");
     // One read of each field: a getter or Proxy cannot answer differently later.
-    const { workspaceId, agent: rawAgent, actor, trust, idempotencyKey } = request as StartRequest;
+    const { workspaceId, agent: rawAgent, actor, trust, idempotencyKey, worker } = request as StartRequest;
     const shape = z
-      .object({ workspaceId: idText, actor: actorSchema, key: z.string().regex(UUID_V4).optional() })
-      .safeParse({ workspaceId, actor, key: idempotencyKey });
+      .object({ workspaceId: idText, actor: actorSchema, key: z.string().regex(UUID_V4).optional(), worker: z.string().optional() }) // the journal checks the worker id
+      .safeParse({ workspaceId, actor, key: idempotencyKey, worker });
     if (!shape.success) throw new AxisError("E_INVALID_ARGUMENT", "Invalid run start request");
     const who = shape.data.actor as AuditActor;
     const ws = shape.data.workspaceId;
@@ -70,7 +70,7 @@ export class RunSupervisor extends SupervisorQueries {
     // ---- reserved ----
 
     try {
-      const out = await this.launch(live, trust, shape.data.key);
+      const out = await this.launch(live, trust, shape.data.key, shape.data.worker);
       if (!live.processPossible) this.release(live);
       return out;
     } catch (e) {
@@ -80,12 +80,12 @@ export class RunSupervisor extends SupervisorQueries {
     }
   }
 
-  private async launch(live: LiveRun, trust: TrustAttestation, key: string | undefined): Promise<{ run: RunSummary; replayed: boolean }> {
+  private async launch(live: LiveRun, trust: TrustAttestation, key: string | undefined, worker: string | undefined): Promise<{ run: RunSummary; replayed: boolean }> {
     const o = this.o;
     const prelaunch = this.resolve(live);
     if (!prelaunch.ok) throw this.refused(live, prelaunch);
 
-    const created = o.journal.createRun({ workspaceId: live.workspaceId, kind: "cli", createdBy: live.actor, ...(key ? { idempotencyKey: key } : {}) });
+    const created = o.journal.createRun({ workspaceId: live.workspaceId, kind: "cli", createdBy: live.actor, ...(key ? { idempotencyKey: key } : {}), ...(worker === undefined ? {} : { agentId: worker }) });
     const id = created.value.id;
     if (created.replayed || this.byId.has(id)) {
       // Never a second process for one id: a replay returns what exists, a duplicate id is a journal fault.
@@ -108,7 +108,8 @@ export class RunSupervisor extends SupervisorQueries {
     const snap = await timed(o.clock, this.limits.snapshotTimeoutMs, () => o.snapshotter.before({ runId: id, workspaceId: live.workspaceId, worktree: live.worktree }));
     if (!snap.ok) {
       this.transition(live, "CANCELLED", RUN_REASONS.snapshotFailed);
-      throw new AxisError("E_UNAVAILABLE", "The pre-run snapshot did not complete, so the run was not started");
+      // A closed, specific reason (never the snapshotter's own text): a refusal on a loaded machine must say whether it was the time budget.
+      throw new AxisError("E_UNAVAILABLE", "The pre-run snapshot did not complete, so the run was not started", { reason: snap.why === "timeout" ? "SNAPSHOT_TIMEOUT" : "SNAPSHOT_FAILED" });
     }
     if (this.closed || live.stopRequested) {
       this.transition(live, "CANCELLED", RUN_REASONS.userKilled);

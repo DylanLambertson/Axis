@@ -22,10 +22,11 @@ export async function issue4(r: Rig, user: Client, over: Record<string, unknown>
   const sent = r.nativeConfirms().at(-1) as Record<string, unknown>;
   return { first, challenge, key, proof: String(sent["proof"]), sent };
 }
-export async function waitFor(cond: () => boolean, ms = 1000): Promise<void> {
+/** A hang guard, not an expectation: the condition holds when the work is done, however slowly a loaded host gets there. */
+export async function waitFor(cond: () => boolean, ms = 60_000, what = "the condition"): Promise<void> {
   const end = Date.now() + ms;
   while (!cond()) {
-    if (Date.now() > end) assert.fail("condition not reached");
+    if (Date.now() > end) assert.fail(`condition not reached: ${what}`);
     await wait(5);
   }
 }

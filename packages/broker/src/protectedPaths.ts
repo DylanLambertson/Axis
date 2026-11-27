@@ -1,5 +1,6 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 // WT-3: paths whose content runs later (CI, tasks, hooks) and Git directories (WT-2, hook persistence).
+import { CLI_PROJECT_CONFIG } from "@axis/pty-policy";
 
 export interface ProtectedMatch {
   /** A Git directory path (`.git` at any depth): also gated for reads, since `.git/config` can hold credentials. */
@@ -21,6 +22,8 @@ export const DEFAULT_PROTECTED: readonly (readonly string[])[] = [
   [".devcontainer"],
   [".devcontainer.json"],
   [".gitmodules"],
+  // A CLI's project configuration (hooks, permission and sandbox settings): the one shared list, each row with its source.
+  ...CLI_PROJECT_CONFIG.map((row) => row.segments),
 ];
 
 /** File-name suffixes protected at any depth: a `.code-workspace` file carries `tasks` and `settings` like `.vscode/`. */

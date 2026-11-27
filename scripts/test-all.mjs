@@ -2,54 +2,88 @@
 // Runs the build, every workspace's tests and the root test suites, continuing past
 // failures. Exits non-zero if anything failed. `--json <file>` writes the per-suite
 // results for scripts/gate.mjs.
-import { spawnSync } from "node:child_process";
 import { readdirSync, readFileSync, writeFileSync, existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { parseTestCounts } from "./gate/lib.mjs";
+import { killGroup, live, readLimits, runSuite } from "./gate/run-suite.mjs";
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const jsonAt = process.argv[2] === "--json" ? process.argv[3] : undefined;
 const npm = process.platform === "win32" ? "npm.cmd" : "npm";
-const testTmp = mkdtempSync(join(tmpdir(), "axis-test-run-"));
-const testEnv = { ...process.env, TMPDIR: testTmp, TMP: testTmp, TEMP: testTmp };
+const override = process.env.AXIS_TEST_ALL_SUITES_JSON;
+const testTmp = override === undefined ? mkdtempSync(join(tmpdir(), "axis-test-run-")) : undefined;
+const testEnv = testTmp === undefined ? process.env : { ...process.env, TMPDIR: testTmp, TMP: testTmp, TEMP: testTmp };
 
-function run(name, command, args) {
-  const r = spawnSync(command, args, {
-    cwd: root,
-    env: testEnv,
-    encoding: "utf8",
-    maxBuffer: 512 * 1024 * 1024,
-    shell: false
+// One suite at a time, each streamed live, time-limited and output-capped (scripts/gate/run-suite.mjs).
+// A suite that dies, hangs, floods or is killed leaves its last lines and its name in the log. On
+// SIGTERM, SIGINT or SIGHUP the runner names the running suite, kills its group (SIGTERM, then
+// SIGKILL after a grace) and exits.
+// Env: AXIS_TEST_SUITE_TIMEOUT_MS (default 20 min per suite), AXIS_TEST_OUTPUT_CAP_BYTES (default 512 MiB).
+try {
+  readLimits();
+} catch (e) {
+  process.stderr.write(`test runner: ${e.message}\n`);
+  process.exit(2);
+}
+
+// `terminating` is set synchronously by a signal, before anything awaits: a killed suite's close
+// must never let the loop start the next suite (a cancelled CI job would begin a build).
+let terminating = false;
+for (const sig of ["SIGTERM", "SIGINT", "SIGHUP"]) {
+  process.on(sig, async () => {
+    terminating = true;
+    process.stderr.write(`\n== test runner received ${sig} while running ${live.name}\n`);
+    await killGroup(live.child?.pid);
+    process.exit(128 + (sig === "SIGTERM" ? 15 : sig === "SIGINT" ? 2 : 1));
   });
-  const output = `${r.stdout ?? ""}${r.stderr ?? ""}`;
-  process.stdout.write(output);
-  const counts = parseTestCounts(output);
-  const ok = r.status === 0 && r.error === undefined;
-  console.log(`\n== ${name}: ${ok ? "ok" : "FAILED"} (${counts.pass} pass, ${counts.fail} fail)\n`);
-  return { name, ok, ...counts };
 }
 
-const suites = [run("build", npm, ["run", "build"])];
-const packagesDir = join(root, "packages");
-for (const dir of readdirSync(packagesDir).sort()) {
-  const file = join(packagesDir, dir, "package.json");
-  if (!existsSync(file)) continue;
-  const pkg = JSON.parse(readFileSync(file, "utf8"));
-  if (pkg.scripts?.test === undefined) continue;
-  suites.push(run(pkg.name, npm, ["test", "--workspace", pkg.name]));
-}
-suites.push(run("test/packages", process.execPath, ["--test", "test/packages/*.test.mjs"]));
-suites.push(run("test/gate", process.execPath, ["--test", "test/gate/*.test.mjs"]));
+const never = () => new Promise(() => {});
+const run = async (name, command, args) => {
+  if (terminating) return never();
+  // The gate reads this line to name the suite a killed run was in (a run cut off by a time limit prints no summary).
+  console.log(`\n== running ${name}`);
+  const result = await runSuite(name, command, args, { cwd: root, env: testEnv });
+  return terminating ? never() : result;
+};
 
-const leaked = readdirSync(testTmp, { withFileTypes: true })
-  .filter((entry) => entry.isDirectory() && entry.name.startsWith("axis-"))
-  .map((entry) => entry.name).sort();
-const clean = leaked.length === 0;
-suites.push({ name: "temp cleanup", ok: clean, pass: Number(clean), fail: Number(!clean) });
-if (!clean) console.error(`Temporary directories left by this test run: ${leaked.join(", ")}`);
-rmSync(testTmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+// AXIS_TEST_ALL_SUITES_JSON ([[name, command, args], ...]) replaces the list. It exists only for the
+// runner's own tests: it needs AXIS_TEST_ALL_SEAM=runner-self-test and is refused when CI is set, so
+// it can never turn a CI run green by running nothing.
+if (override !== undefined && (process.env.CI !== undefined || process.env.AXIS_TEST_ALL_SEAM !== "runner-self-test")) {
+  process.stderr.write("test runner: AXIS_TEST_ALL_SUITES_JSON is a test-only seam; refused (CI is set or AXIS_TEST_ALL_SEAM is missing)\n");
+  process.exit(2);
+}
+const suites = [];
+if (override !== undefined) {
+  for (const [name, command, args] of JSON.parse(override)) suites.push(await run(name, command, args));
+} else {
+  suites.push(await run("build", npm, ["run", "build"]));
+  const packagesDir = join(root, "packages");
+  for (const dir of readdirSync(packagesDir).sort()) {
+    const file = join(packagesDir, dir, "package.json");
+    if (!existsSync(file)) continue;
+    const pkg = JSON.parse(readFileSync(file, "utf8"));
+    if (pkg.scripts?.test === undefined) continue;
+    suites.push(await run(pkg.name, npm, ["test", "--workspace", pkg.name]));
+  }
+  suites.push(await run("test/packages", process.execPath, ["--test", "test/packages/*.test.mjs"]));
+  // Every test/code-oss suite (about 17 s), so the renderer boundary pins run in the solo gate too, not only in CI's
+  // Code OSS scripts job: import rules, the daemon call allow-list, project actions, the overlay test script, staging.
+  suites.push(await run("test/code-oss", process.execPath, ["--test", "test/code-oss/*.test.mjs"]));
+  suites.push(await run("test/gate", process.execPath, ["--test", "test/gate/*.test.mjs"]));
+}
+
+if (testTmp !== undefined) {
+  const leaked = readdirSync(testTmp, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory() && entry.name.startsWith("axis-"))
+    .map((entry) => entry.name).sort();
+  const clean = leaked.length === 0;
+  suites.push({ name: "temp cleanup", ok: clean, pass: Number(clean), fail: Number(!clean) });
+  if (!clean) console.error(`Temporary directories left by this test run: ${leaked.join(", ")}`);
+  rmSync(testTmp, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+}
 
 console.log("Test summary");
 for (const s of suites) console.log(`  ${s.ok ? "ok    " : "FAILED"} ${s.name}: ${s.pass} pass, ${s.fail} fail`);

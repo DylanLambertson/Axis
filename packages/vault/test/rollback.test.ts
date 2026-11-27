@@ -7,6 +7,15 @@ import { OTHER, SECRET, code, setup, type SetupOptions } from "./support/setup.j
 
 // ------------------------------------------------------------ S4: TOCTOU
 
+/** Wait by condition; the bound only turns a stuck test into a named failure. */
+async function until(pred: () => boolean, what: string, guardMs = 10_000): Promise<void> {
+  const deadline = Date.now() + guardMs;
+  while (!pred()) {
+    if (Date.now() > deadline) throw new Error(`condition not reached: ${what}`);
+    await new Promise((r) => setTimeout(r, 5));
+  }
+}
+
 test("S4: a backend that honours the put contract refuses a write that would land elsewhere, and nothing is stored", async () => {
   const { vault, backend } = setup("gnome_libsecret", "os_protected");
   backend.landWritesOn({ id: "basic_text", protection: "none" });
@@ -140,12 +149,13 @@ test("SF-3: a remove that returns false because the copy was never there is a cl
 });
 
 test("SF-3: a remove that hangs ends in quarantine, and the copy is already shown as weak while it hangs", async () => {
-  const { vault } = misbehaving(() => new Promise<boolean>(() => undefined));
+  let removing = false;
+  const { vault } = misbehaving(() => ((removing = true), new Promise<boolean>(() => undefined)));
   const stored = vault.store("c1", SECRET).then(
     () => "stored",
     (e: unknown) => (e as VaultError).code,
   );
-  await new Promise((r) => setTimeout(r, 20)); // inside the first removal attempt
+  await until(() => removing, "the first removal attempt started");
   assert.equal((await vault.info("c1"))?.protection, "none", "shown as weak at once");
   assert.equal(await code(vault.reveal("c1", "provider_request")), "backend_changed", "and not handed out while the removal hangs");
   assert.equal(await stored, "backend_changed", "the store ends instead of hanging forever");
@@ -169,7 +179,7 @@ test("SF-3: a reveal already in flight does not hand out a copy that is quaranti
     () => "revealed",
     (e: unknown) => (e as VaultError).code,
   );
-  await new Promise((r) => setTimeout(r, 10));
+  await until(() => release !== undefined, "the read is in flight");
   assert.ok(release !== undefined, "the read is in flight");
   // Meanwhile a store lands weakly and cannot be rolled back.
   backend.landWritesOn({ id: "basic_text", protection: "none" }, "write_anyway");

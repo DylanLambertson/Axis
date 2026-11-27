@@ -55,8 +55,12 @@ export const MAX_FINDING_PATH = 256;
 export const MAX_PLAN_REASONS = 8;
 export const MAX_PLAN_REASON_TEXT = 1024;
 export const MAX_COMPARE_URL = 2048;
-/** Most binary paths a blocked plan lists: what `allowedBinaryPaths` can hold, so every listed path can be allowed. */
-export const MAX_BLOCKED_BINARY_PATHS = MAX_ALLOWED_BINARY_PATHS;
+/**
+ * Most binary files a blocked plan lists, and most ids a request may allow: the same number, so every listed file can be
+ * allowed in one request. An id is 36 characters, so 500 of them are about 20 KB; the rows a reply lists fit well under the message cap.
+ */
+export const MAX_BLOCKED_BINARY_FILES = 500;
+export const MAX_ALLOWED_BINARY_IDS = MAX_BLOCKED_BINARY_FILES;
 
 /**
  * `details.reason` values of a refusal, by error code: the ones `@axis/git-ops` and `@axis/review`'s `prepareCommit` raise
@@ -70,8 +74,9 @@ export const GIT_COMMIT_REFUSALS = {
    * `operation_in_progress`: a merge, cherry-pick, revert, rebase or bisect is under way or the index has unmerged paths.
    * `ref_update_failed`: the branch could not be moved by compare-and-swap (a lock); it was left as it was. `snapshot_failed`: the worktree could not be read for the freshness check.
    * `git_drift`: the repository's git configuration changed since it was recorded (`commit` re-takes the drift check before it commits).
+   * `untrusted`: the host's project trust gate refused (docs/design/project-registration-and-trust.md §5.4).
    */
-  E_CONFLICT: ["head_moved", "stale", "index_changed", "operation_in_progress", "ref_update_failed", "snapshot_failed", "git_drift"],
+  E_CONFLICT: ["head_moved", "stale", "index_changed", "operation_in_progress", "ref_update_failed", "snapshot_failed", "git_drift", "untrusted"],
   /** `too_large` and `not_found`: the freshness re-check reads the worktree and HEAD through `@axis/review`. */
   E_INVALID_ARGUMENT: ["too_large", "not_found"],
   /** HEAD is detached, or the branch has no commit: Axis commits on `axis/<slug>` only. */
@@ -95,8 +100,9 @@ export const GIT_PUSH_REFUSALS = {
    * `plan_changed`: the tip or the scan result differs from the plan the user confirmed: show the new plan. The four blocks:
    * the plan is refused before any challenge (the package raises them as `E_POLICY_DENIED` and the host answers `E_CONFLICT`).
    * `git_drift`: the repository's git configuration changed since it was recorded; the user must acknowledge the change first.
+   * `untrusted`: the host's project trust gate refused, after the confirmation (docs/design/project-registration-and-trust.md §5.4).
    */
-  E_CONFLICT: ["plan_changed", ...GIT_PUSH_BLOCKS, "git_drift"],
+  E_CONFLICT: ["plan_changed", ...GIT_PUSH_BLOCKS, "git_drift", "untrusted"],
 } as const;
 export const GIT_PUSH_REASONS = GIT_PUSH_REFUSALS.E_CONFLICT;
 export const gitCommitReasonSchema = z.enum(GIT_COMMIT_REASONS);
@@ -152,9 +158,29 @@ export const confirmedPlanSchema = z.strictObject({ tip: objectIdSchema, digest:
 
 const allowedBinaryPaths = z.array(relativePathSchema).max(MAX_ALLOWED_BINARY_PATHS);
 
+/**
+ * The identity of a binary file of the outgoing history, derived by the host from the path's raw bytes (SHA-256 cut to 128 bits,
+ * `bin_` and 32 lower-case hex digits). Opaque: a client copies it from `blocked.binaryFiles` into `allowedBinaryIds` and never
+ * builds one. It is stable between `pushPlan` and `push`, and two names that look alike have different ids.
+ */
+export const binaryFileIdSchema = z.string().regex(/^bin_[0-9a-f]{32}$/);
+/** No repeated id: a list is a set, and a duplicate is a client error rather than a quiet merge. */
+const allowedBinaryIds = z
+  .array(binaryFileIdSchema)
+  .max(MAX_ALLOWED_BINARY_IDS)
+  .refine((ids) => new Set(ids).size === ids.length, "an id is listed once");
+
+/** One binary file a blocked plan lists: its identity, its display name and whether the name is lossy (never allowed). */
+const binaryFileRowSchema = z.strictObject({ id: binaryFileIdSchema, path: shownPathSchema, lossy: z.boolean() });
+
 // pushPlan (read, tier 1): `planPush` for the workspace's own branch. It runs the scan; it pushes nothing.
 export const gitPushPlanRequestSchema = guarded(
-  z.strictObject({ workspaceId: workspaceIdSchema, remote: remoteNameSchema, allowedBinaryPaths: allowedBinaryPaths.optional() }),
+  z.strictObject({
+    workspaceId: workspaceIdSchema,
+    remote: remoteNameSchema,
+    allowedBinaryPaths: allowedBinaryPaths.optional(),
+    allowedBinaryIds: allowedBinaryIds.optional(),
+  }),
 );
 export const gitPushPlanResponseSchema = guarded(
   z
@@ -173,18 +199,20 @@ export const gitPushPlanResponseSchema = guarded(
       digest: planDigestSchema,
       /**
        * Present only when the scan blocks the push (`GIT_PUSH_BLOCKS`): the plan cannot be confirmed and `push` refuses it with the
-       * same reason. `findings` says which rules matched and where. `binaryPaths` are the binary paths still to be listed in
-       * `allowedBinaryPaths`, in the DISPLAY form: it equals the path only when the path is not shortened (over 256 units) and holds no
-       * backslash, ellipsis, control or format character, so any other path cannot be copied from here. A name the host decoded
-       * lossily (U+FFFD: invalid bytes, or a real U+FFFD) can never be allowed. `binaryPathsTruncated` says there were more than listed.
+       * same reason. `findings` says which rules matched and where. `binaryFiles` are the binary files still to be allowed. Each row's
+       * `id` is the file's identity (`binaryFileIdSchema`): list it in `allowedBinaryIds` to allow exactly that file, whatever its
+       * name looks like. `path` is the DISPLAY form, for the user to read, not an identity (shortened over 256 units, escaped, and
+       * lossy where `lossy` is true). A `lossy` row (the name holds U+FFFD: invalid bytes, or a real U+FFFD) can never be allowed, by id or by
+       * path, and stays blocked. `binaryFilesTruncated` says there were more files than listed.
        */
       blocked: z
         .strictObject({
           reason: gitPushBlockSchema,
-          binaryPaths: z.array(shownPathSchema).max(MAX_BLOCKED_BINARY_PATHS),
-          binaryPathsTruncated: z.boolean(),
+          binaryFiles: z.array(binaryFileRowSchema).max(MAX_BLOCKED_BINARY_FILES),
+          binaryFilesTruncated: z.boolean(),
         })
-        .refine((b) => !b.binaryPathsTruncated || b.binaryPaths.length === MAX_BLOCKED_BINARY_PATHS, "a truncated list is a full one")
+        .refine((b) => !b.binaryFilesTruncated || b.binaryFiles.length === MAX_BLOCKED_BINARY_FILES, "a truncated list is a full one")
+        .refine((b) => new Set(b.binaryFiles.map((f) => f.id)).size === b.binaryFiles.length, "a file is listed once")
         .optional(),
     })
     .refine((p) => p.blocked === undefined || (!p.requiresConfirmation && p.reasons.length === 0), "a blocked plan cannot be confirmed")
@@ -216,6 +244,7 @@ export const gitPushRequestSchema = guarded(
     /** Required, not only when the plan asks for confirmation: a push is always of the plan the user was shown. */
     confirmedPlan: confirmedPlanSchema,
     allowedBinaryPaths: allowedBinaryPaths.optional(),
+    allowedBinaryIds: allowedBinaryIds.optional(),
     /** Present on the retry after the user approved the challenge. */
     approval: challengeReferenceSchema.optional(),
   }),

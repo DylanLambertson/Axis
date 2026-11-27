@@ -36,6 +36,8 @@ export interface CreatedWorkspace {
   readonly path: string;
   readonly baseRef: string;
   readonly baseSha: string;
+  /** The full `refs/heads/...` name the base resolved to at create, whose exact ref then held `baseSha` (its tip, FU-WT-BASE2); else null. */
+  readonly baseBranch: string | null;
   readonly runBaseRef: string;
   readonly skippedLarge: readonly string[];
   readonly localCheckout: string | null;
@@ -115,4 +117,14 @@ export function parsePorcelainStatus(stdout: string): DirtyFile[] {
     }
   }
   return out;
+}
+
+/**
+ * The workspace a caller has already resolved and checked, by canonical root path AND workspace id. Every path-based
+ * manager entry point takes one and refuses when the path no longer leads to exactly that workspace (a symlink or a
+ * directory swapped in since): a path alone cannot tell, because a swapped directory keeps the old path.
+ */
+export interface ExpectedWorktree {
+  readonly path: string;
+  readonly id: string;
 }

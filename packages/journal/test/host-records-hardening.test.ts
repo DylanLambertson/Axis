@@ -100,8 +100,8 @@ test("S4: each audited writer appends exactly one event, in the same transaction
     s.db.exec("DROP TRIGGER no_audit");
     assert.deepEqual(read(), before);
   };
-  check("register", () => s.journal.registerProject({ id: "p1", path: abs("p1"), displayName: "P", trusted: true, actor: "user" }), "journal.project.register", "project:p1");
-  failing(() => s.journal.registerProject({ id: "p2", path: abs("p2"), displayName: "P", trusted: true, actor: "user" }), () => s.journal.getProject("p2"), undefined);
+  check("register", () => s.journal.registerProject({ id: "p1", path: abs("p1"), displayName: "P", trusted: false, actor: "user" }), "journal.project.register.read_only", "project:p1");
+  failing(() => s.journal.registerProject({ id: "p2", path: abs("p2"), displayName: "P", trusted: false, actor: "user" }), () => s.journal.getProject("p2"), undefined);
   check("lock", () => s.journal.lockWorkspace(id, "daemon"), "journal.workspace.lock", `workspace:${id}`);
   failing(() => s.journal.unlockWorkspace(id, "daemon"), () => s.journal.getWorkspace(id)?.lockState, "locked");
   check("unlock", () => s.journal.unlockWorkspace(id, "daemon"), "journal.workspace.unlock", `workspace:${id}`);
@@ -166,7 +166,7 @@ test("N6: an outcome is refused on a run transition; N7: a CHECK failure is not 
   assert.throws(() => s.journal.transitionRun(run, "RUNNING", { outcome: "merged" }), code("E_INVALID_ARGUMENT"));
   assert.equal(s.journal.getRun(run)?.state, "QUEUED");
   s.db.exec("CREATE TEMP TRIGGER bad BEFORE INSERT ON projects BEGIN SELECT RAISE(ABORT, 'UNIQUE constraint failed: fake'); END");
-  assert.throws(() => s.journal.registerProject({ id: "z", path: abs("z"), displayName: "Z", trusted: true, actor: "user" }), (e: unknown) => !(e instanceof AxisError && e.code === "E_CONFLICT"));
+  assert.throws(() => s.journal.registerProject({ id: "z", path: abs("z"), displayName: "Z", trusted: false, actor: "user" }), (e: unknown) => !(e instanceof AxisError && e.code === "E_CONFLICT"));
 });
 
 test("N1: a fallback to FINALISED refuses a new outcome and keeps the old one; a 50-character sha is refused; the 4096 bound and the review pair are checked alone", () => {

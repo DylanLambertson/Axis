@@ -6,7 +6,7 @@ import { z } from "zod";
 import type { MethodSpec } from "@axis/protocol";
 import { ApprovalError, Daemon, DaemonError, MemoryIdempotencyStore, type ContractRegistry } from "../src/index.js";
 import { approveAndRun, fakeGate } from "./gate.js";
-import { CONTRACT, KEY1, KEY2, req, rig, testMethods, verifier, type Rig } from "./harness.js";
+import { CONTRACT, KEY1, KEY2, req, rig, testMethods, untilTrue, verifier, type Rig } from "./harness.js";
 
 async function ready(t: TestContext, options: Parameters<typeof rig>[0] = {}): Promise<Rig> {
   const r = rig(options);
@@ -167,13 +167,19 @@ test("D2-N6: an issue() that is out of capacity is E_BACKPRESSURE and an unappro
 
 test("D2-N4: an issue() that finishes after the request was cancelled has its challenge withdrawn", async (t) => {
   const { gate, calls } = fakeGate();
-  const r = await ready(t, { gate: { ...gate, issue: async (i, c) => (await wait(40), gate.issue(i, c)) } });
+  // issue() is held until the test has cancelled the request, so "finishes after the cancel" is an order the test sets, not a delay.
+  let issuing = false;
+  let finishIssue: () => void = () => undefined;
+  const held = new Promise<void>((res) => (finishIssue = res));
+  t.after(() => finishIssue());
+  const r = await ready(t, { gate: { ...gate, issue: async (i, c) => ((issuing = true), await held, gate.issue(i, c)) } });
   r.daemon.register(CONTRACT, 1, { danger: () => assert.fail("must not run") });
   r.send(request("a1", { id: "ws-1" }));
-  await wait(10);
+  await untilTrue(() => issuing);
   r.send({ v: 1, cancel: "a1" });
   assert.equal((await r.inbox.response("a1")).error?.code, "E_CANCELLED");
-  await wait(80);
+  finishIssue();
+  await untilTrue(() => calls.withdraw.length > 0);
   assert.deepEqual(calls.withdraw.map((w) => w.challengeId), ["1".padStart(43, "A")]);
 });
 
@@ -181,7 +187,7 @@ test("D2-N2: the first time a window reaches its orphan quota it is reported loc
   const r = await ready(t, { limits: { maxInFlight: 4 }, maxOrphanedPerWindow: 2 });
   r.daemon.register(CONTRACT, 1, { slow: () => new Promise(() => undefined) });
   for (let i = 0; i < 3; i++) r.send(req(`q${i}`, "slow", {}, { timeoutMs: 1 }));
-  await wait(60);
+  for (let i = 0; i < 3; i++) await r.inbox.response(`q${i}`); // all three timed out and were counted before the report is read
   const reports = r.internal.filter((e) => /orphan quota/.test(String((e.error as Error).message)));
   assert.equal(reports.length, 1);
 });

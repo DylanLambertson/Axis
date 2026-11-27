@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { test, type TestContext } from "node:test";
 import { newKey, type Client } from "./approvals-rig.js";
 import { START, runsRig, until, type RunsRig } from "./runs-rig.js";
-import { createWs as createWsRaw, gitSkipReason } from "./worktrees-rig.js";
+import { finaliseApproved, createWs as createWsRaw, gitSkipReason } from "./worktrees-rig.js";
 
 const skip = gitSkipReason();
 const create = async (user: Client, name?: string): Promise<string> => (await createWsRaw(user, (_m, x) => (assert.equal(x.ok, true, JSON.stringify(x.error)), x), name)).id;
@@ -34,7 +34,7 @@ test("a finished run whose process group is still alive keeps the workspace acti
   const { handle } = await finishedRunWithGroup(r, user, id);
   assert.equal(handle.groupUp, true);
   assert.equal(r.runs.service.hasActiveRun(id), true, "the supervisor's own view is empty, the group is not");
-  const fin = await user.call("axis.worktrees", "finalise", { id, outcome: "archived" }, newKey());
+  const fin = await finaliseApproved(r, user, id, "archived");
   assert.equal(fin.error?.code, "E_CONFLICT");
   assert.equal(fin.error?.details?.["reason"], "active_run");
   assert.equal(r.journal.getWorkspace(id)?.state, "READY", "nothing was changed");
@@ -45,7 +45,7 @@ test("a finished run whose process group is still alive keeps the workspace acti
 
   handle.groupUp = false; // the last process of the group is gone
   assert.equal(r.runs.service.hasActiveRun(id), false);
-  const done = await user.call("axis.worktrees", "finalise", { id, outcome: "archived" }, newKey());
+  const done = await finaliseApproved(r, user, id, "archived");
   assert.equal(done.ok, true, JSON.stringify(done.error));
 });
 
@@ -56,7 +56,7 @@ test("a handle that cannot say whether its group is gone counts as alive", { ski
   handle.groupUp = false;
   handle.groupThrows = true;
   assert.equal(r.runs.service.hasActiveRun(id), true);
-  const fin = await user.call("axis.worktrees", "finalise", { id, outcome: "archived" }, newKey());
+  const fin = await finaliseApproved(r, user, id, "archived");
   assert.equal(fin.error?.details?.["reason"], "active_run");
   handle.groupThrows = false;
   // A probe that answers with anything but `false` (nothing, a string, a number) is not "gone".
@@ -79,7 +79,7 @@ test("a start refuses while the supervisor's own run is still spawning: a hung s
   const b = createRunsBinding({ ...r.deps, pty: hung, limits: { startTimeoutMs: 50 } });
   t.after(() => b.dispose());
   const agent = (r.answers.agents as unknown[])[0];
-  const go = () => b.service.start({ workspaceId: id, agent, actor: "user", trust: r.handlerDeps.minter.attest({ workspaceId: id, projectId: r.projectId }) });
+  const go = async () => b.service.start({ workspaceId: id, agent, actor: "user", trust: await r.attest(id) });
   await assert.rejects(go(), (e: { code?: string }) => e.code === "E_TIMEOUT");
   assert.equal(b.service.hasActiveRun(id), true, "the supervisor holds the slot: the port may still produce a process");
   await assert.rejects(go(), (e: { code?: string; details?: { reason?: string } }) => e.code === "E_CONFLICT" && e.details?.reason === "active_run");
@@ -107,13 +107,12 @@ test("groups under watch are bounded: a spawn beyond the cap is refused and noth
   const user = await r.connect();
   const a = await create(user, "One");
   const b = await create(user, "Two");
-  const mint = r.handlerDeps.minter;
   const agent = (r.answers.agents as unknown[])[0];
-  const first = await capped.service.start({ workspaceId: a, agent, actor: "user", trust: mint.attest({ workspaceId: a, projectId: r.projectId }) });
+  const first = await capped.service.start({ workspaceId: a, agent, actor: "user", trust: await r.attest(a) });
   assert.equal(first.replayed, false);
   assert.equal(r.pty.spawns.length, 1);
   await assert.rejects(
-    capped.service.start({ workspaceId: b, agent, actor: "user", trust: mint.attest({ workspaceId: b, projectId: r.projectId }) }),
+    capped.service.start({ workspaceId: b, agent, actor: "user", trust: await r.attest(b) }),
     (e: { code?: string }) => e.code === "E_UNAVAILABLE",
   );
   assert.equal(r.pty.spawns.length, 1, "the second run was never spawned");

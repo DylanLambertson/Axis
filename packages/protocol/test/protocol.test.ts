@@ -359,11 +359,13 @@ test("worktrees: remove carries an optional challenge reference", () => {
 
 test("worktrees: method table matches the design (tiers, side effects, idempotency)", () => {
   assert.deepEqual(Object.keys(worktreesMethods).sort(), [
-    "create", "finalise", "list", "remove", "restoreFromRunBase", "status",
+    "create", "discard", "finalise", "list", "remove", "restoreFromRunBase", "setUserEditing", "status",
   ]);
-  assert.equal(worktreesMethods.remove.tier, 4);
-  assert.equal(worktreesMethods.remove.sideEffect, "destructive");
-  for (const m of ["create", "finalise", "remove", "restoreFromRunBase"] as const) {
+  for (const m of ["finalise", "remove"] as const) {
+    assert.equal(worktreesMethods[m].tier, 4, m);
+    assert.equal(worktreesMethods[m].sideEffect, "destructive", m);
+  }
+  for (const m of ["create", "finalise", "remove", "restoreFromRunBase", "discard"] as const) {
     assert.equal(worktreesMethods[m].idempotency, "required", m);
   }
   for (const m of ["list", "status"] as const) {

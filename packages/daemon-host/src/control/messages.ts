@@ -11,6 +11,7 @@ import {
   protocolVersionSchema,
   reasonCodeSchema,
 } from "@axis/protocol";
+import { secretsRequestSchemas, secretsResultSchema } from "./secrets-messages.js";
 
 /**
  * The control plane (design section 6.3): every message between the supervisor and the host is one of these strict
@@ -96,21 +97,49 @@ export const settingsResultSchema = z.strictObject({
   value: boundedJsonSchema,
 });
 
+const absolutePathSchema = z
+  .string()
+  .min(1)
+  .max(MAX_PATH_CHARS)
+  .refine((p) => !p.includes("\0") && isAbsolute(p), "absolute path required");
+
+/**
+ * The project messages (docs/design/project-registration-and-trust.md §5.1). Main sends them only after its own native dialog;
+ * the host re-derives every binding itself. `commonDir` is the repository's `.git` as main's inspection showed it.
+ */
+export const projectsInspectSchema = z.strictObject({ type: z.literal("projects.inspect"), requestId: requestIdSchema, path: absolutePathSchema });
 export const projectsRegisterSchema = z.strictObject({
   type: z.literal("projects.register"),
   requestId: requestIdSchema,
-  path: z
-    .string()
-    .min(1)
-    .max(MAX_PATH_CHARS)
-    .refine((p) => !p.includes("\0") && isAbsolute(p), "absolute path required"),
+  path: absolutePathSchema,
+  commonDir: absolutePathSchema,
   trusted: z.boolean(),
 });
+export const projectsTrustSchema = z
+  .strictObject({
+    type: z.literal("projects.trust"),
+    requestId: requestIdSchema,
+    projectId: scopeIdSchema,
+    path: absolutePathSchema,
+    commonDir: absolutePathSchema.optional(),
+    trusted: z.boolean(),
+  })
+  .refine((m) => m.trusted === (m.commonDir !== undefined), "a grant carries the binding, a revoke none");
 
 export const shutdownSchema = z.strictObject({ type: z.literal("shutdown") });
 
+/**
+ * Main to host: a code window was destroyed or its renderer died (PV-K2 K2-g4a). It ends the window's lifetime epoch even if a
+ * connection's close was never reported. A code window id only (`w<n>`, as main attests it), never a plugin view's `p<n>`.
+ */
+export const windowGoneSchema = z.strictObject({
+  type: z.literal("window.gone"),
+  windowId: z.string().regex(/^w[0-9]{1,10}$/),
+});
+
 /** Supervisor to host. */
 export const inboundMessageSchema = z.discriminatedUnion("type", [
+  secretsResultSchema,
   initMessageSchema,
   connectMessageSchema,
   anchorResultSchema,
@@ -119,8 +148,11 @@ export const inboundMessageSchema = z.discriminatedUnion("type", [
   trustResultSchema,
   trustSetSchema,
   settingsResultSchema,
+  projectsInspectSchema,
   projectsRegisterSchema,
+  projectsTrustSchema,
   shutdownSchema,
+  windowGoneSchema,
 ]);
 export type InboundMessage = z.infer<typeof inboundMessageSchema>;
 
@@ -143,12 +175,17 @@ const nativeConfirmSchema = z.strictObject({
   summary: displayTextSchema(192),
 });
 
+/**
+ * Per gated call (docs/design/project-registration-and-trust.md §5.4, T3): main answers the Workspace Trust half for the journal's
+ * project path; the host requires its own record (T1, T2) as well. `workspaceId` is absent for `worktrees.create`.
+ */
 const trustCheckSchema = z.strictObject({
   type: z.literal("trust.check"),
   requestId: requestIdSchema,
   windowId: scopeIdSchema,
-  workspaceId: scopeIdSchema,
+  workspaceId: scopeIdSchema.optional(),
   projectId: scopeIdSchema,
+  projectPath: absolutePathSchema,
 });
 
 const settingsGetSchema = z.strictObject({
@@ -168,6 +205,27 @@ const projectsResultSchema = z.union([
   }),
 ]);
 
+const projectsInspectedSchema = z.union([
+  z.strictObject({
+    type: z.literal("projects.inspected"),
+    requestId: requestIdSchema,
+    ok: z.literal(true),
+    commonDir: absolutePathSchema,
+    registered: z.strictObject({ projectId: scopeIdSchema, trusted: z.boolean() }).optional(),
+    /** False when the remotes could not be read safely: the dialog says "remote unknown". */
+    remoteKnown: z.boolean(),
+    remote: z.strictObject({ name: displayTextSchema(64), url: displayTextSchema(192) }).nullable(),
+    remotes: z.number().int().min(0).max(64),
+  }),
+  z.strictObject({
+    type: z.literal("projects.inspected"),
+    requestId: requestIdSchema,
+    ok: z.literal(false),
+    code: errorCodeSchema,
+    reason: reasonCodeSchema.optional(),
+  }),
+]);
+
 const fatalSchema = z.strictObject({ type: z.literal("fatal"), code: errorCodeSchema, reason: reasonCodeSchema.optional() });
 
 const logSchema = z.strictObject({
@@ -180,12 +238,14 @@ const logSchema = z.strictObject({
 /** Host to supervisor. Every outbound message is parsed with this before it is sent. */
 export const outboundMessageSchema = z.union([
   readySchema,
+  ...secretsRequestSchemas,
   anchorGetSchema,
   anchorPutSchema,
   nativeConfirmSchema,
   trustCheckSchema,
   settingsGetSchema,
   projectsResultSchema,
+  projectsInspectedSchema,
   fatalSchema,
   logSchema,
 ]);

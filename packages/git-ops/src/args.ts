@@ -4,7 +4,7 @@ import { readdirSync } from "node:fs";
 import { isAbsolute as posixAbs, normalize as posixNorm } from "node:path/posix";
 import { isAbsolute as winAbs, normalize as winNorm } from "node:path/win32";
 import { refNameSchema } from "@axis/protocol";
-import { daemonGitEnv } from "./env.js";
+import { LAZY_FETCH_PINS, daemonGitEnv } from "./env.js";
 import { GitOpsError, denied, invalid } from "./errors.js";
 import type { GitContext, GitOpsDeps, GitRunRequest, GitRunResult, GitRunner, WorktreeRef } from "./types.js";
 
@@ -63,13 +63,20 @@ export interface PrefixOptions {
 export function prefix(w: WorktreeRef, deps: GitOpsDeps, o: PrefixOptions): string[] {
   // refs/replace is writable by the code running in the worktree but pack-objects ignores it, so reads that decide what is pushed must ignore it too.
   const a = ["--no-pager", "--no-replace-objects", `--git-dir=${w.gitDir}`, `--work-tree=${w.workTree}`, "-c", "core.fsmonitor=false", "-c", "protocol.ext.allow=never"];
-  // The daemon never touches the network or a remote: no transport, so a lazy fetch cannot run uploadpack, ssh or credential code.
+  // The daemon never touches the network or a remote. `protocol.allow=never` alone does NOT stop a lazy fetch in a partial
+  // clone: a repository `protocol.<name>.allow=always` overrides it (only `ext` is pinned by name above), and the repository
+  // then chooses what runs (uploadpack, core.sshCommand, a `vcs` helper or alias). The daemon environment closes that:
+  // GIT_NO_LAZY_FETCH=1 (git 2.44+) and GIT_ALLOW_PROTOCOL=/ (every git since 2.12, `daemonGitEnv`), with
+  // help.autocorrect=0 below for the `/` helper name.
   if (o.context === "daemon") a.push("-c", "protocol.allow=never");
   const hooksOn = o.context === "pty" && o.hooks;
   if (!hooksOn) a.push("-c", `core.hooksPath=${hooksOffPath(deps)}`);
   if (o.context === "daemon") {
     // diff.submodule=diff would make git spawn a child `git diff` in a nested repository that ignores --no-ext-diff.
     a.push("-c", "commit.gpgsign=false", "-c", "core.askPass=", "-c", "diff.submodule=short");
+    // GIT_ALLOW_PROTOCOL=/ admits a helper named `/` (remote.<r>.vcs=/); `git remote-/` does not exist, and with
+    // help.autocorrect set git would run the closest alias (alias.remote-a) instead. `0` suggests only, on every version.
+    a.push("-c", "help.autocorrect=0");
     for (const f of o.filters) {
       for (const k of ["clean", "smudge", "process"]) a.push("-c", `filter.${f}.${k}=`);
       a.push("-c", `filter.${f}.required=false`);
@@ -78,16 +85,19 @@ export function prefix(w: WorktreeRef, deps: GitOpsDeps, o: PrefixOptions): stri
   return a;
 }
 
-/** The global options before the subcommand: bare flags, `-c key=value` pairs, and where they end. */
-function leadingOptions(argv: readonly string[]): { flags: Set<string>; configs: Set<string> } {
+/** The global options before the subcommand: bare flags, `-c key=value` pairs in order, and where they end. */
+function leadingOptions(argv: readonly string[]): { flags: Set<string>; configs: string[] } {
   const flags = new Set<string>();
-  const configs = new Set<string>();
+  const configs: string[] = [];
   for (let i = 0; i < argv.length && (argv[i] as string).startsWith("-"); i++) {
-    if (argv[i] === "-c") configs.add(argv[++i] ?? "");
+    if (argv[i] === "-c") configs.push(argv[++i] ?? "");
     else flags.add(argv[i] as string);
   }
   return { flags, configs };
 }
+
+/** A `-c` entry's key as git compares it (`-c key` alone sets it true). Lower-cased whole: stricter than git, never looser. */
+const configKey = (c: string): string => (c.includes("=") ? c.slice(0, c.indexOf("=")) : c).toLowerCase();
 
 /**
  * Wraps a runner so a daemon-context call that lacks the hardened prefix is refused. Every protection that `prefix()`
@@ -100,13 +110,28 @@ export function guardedRunner(inner: GitRunner, deps: GitOpsDeps): GitRunner {
       if (req.context === "daemon") {
         const { flags, configs } = leadingOptions(req.argv);
         const off = hooksOffPath(deps);
+        const pins = [`core.hooksPath=${off}`, "core.fsmonitor=false", "protocol.allow=never", "protocol.ext.allow=never", "commit.gpgsign=false", "core.askPass=", "diff.submodule=short", "help.autocorrect=0"];
         const missing = [
           ...["--no-pager", "--no-replace-objects"].filter((f) => !flags.has(f)),
           ...["--git-dir=", "--work-tree="].filter((p) => ![...flags].some((f) => f.startsWith(p) && f.length > p.length)),
-          ...[`core.hooksPath=${off}`, "core.fsmonitor=false", "protocol.allow=never", "protocol.ext.allow=never", "commit.gpgsign=false", "core.askPass=", "diff.submodule=short"].filter((c) => !configs.has(c)),
+          ...pins.filter((c) => !configs.includes(c)),
         ];
         if (off === "" || missing.length > 0) {
           throw denied(`a daemon-side git call must carry the hardened options (missing: ${missing.join(", ") || "core.hooksPath"})`);
+        }
+        // git takes the last value of a key, so a later `-c help.autocorrect=1` (any case) would undo a pin; and
+        // --config-env sets a key from a variable this cannot see. Neither is used by any daemon-side call.
+        const pinned = new Set(pins.map(configKey));
+        const undo = configs.filter((c) => pinned.has(configKey(c)) && !pins.includes(c));
+        if (undo.length > 0 || [...flags].some((f) => f === "--config-env" || f.startsWith("--config-env="))) {
+          throw denied(`a daemon-side git call may not change a hardened option (${undo.map(configKey).join(", ") || "--config-env"})`);
+        }
+        // The lazy-fetch pins (daemonGitEnv): exactly one variable of each name, any case, holding the pinned value.
+        for (const [name, value] of Object.entries(LAZY_FETCH_PINS)) {
+          const held = Object.entries(req.env).filter(([k]) => k.toUpperCase() === name);
+          if (held.length !== 1 || held[0]?.[0] !== name || held[0][1] !== value) {
+            throw denied(`a daemon-side git call must run with ${name}=${value}`);
+          }
         }
       }
       return inner.run(req);
@@ -126,10 +151,18 @@ export async function filterNames(w: WorktreeRef, deps: GitOpsDeps, env: Record<
   if (r.code !== 0) throw invalid("could not read the git configuration");
   const names = new Set<string>();
   for (const key of r.stdout.split("\0").filter(Boolean)) {
-    const m = /^filter\.(.+)\.(clean|smudge|process|required)$/i.exec(key);
-    if (!m) continue;
+    // The name may be empty: `[filter ""]` is the driver `* filter=` selects, and `-c filter..clean=` empties it. `s`, so a
+    // name holding a line terminator (U+2028, U+0085, CR) is read like any other and then refused below. git prints the
+    // section and the variable lower-cased, so the match needs no `i`.
+    const m = /^filter\.(.*)\.(clean|smudge|process|required)$/s.exec(key);
+    if (m === null) {
+      // Only a two-level key such as `filter.process` names no driver (git ignores it). Any other key is refused, never
+      // skipped: a key this cannot read could be a driver it did not empty.
+      if (/^filter\.[a-z0-9-]*$/.test(key)) continue;
+      throw denied("a git filter key cannot be read safely");
+    }
     const n = m[1] as string;
-    if (!/^[A-Za-z0-9._-]+$/.test(n)) throw denied("a git filter has a name that cannot be neutralised safely");
+    if (!/^[A-Za-z0-9._-]*$/.test(n)) throw denied("a git filter has a name that cannot be neutralised safely");
     names.add(n);
   }
   return [...names];
@@ -171,19 +204,26 @@ const EXTRA_ENV = new Set(["GIT_INDEX_FILE"]);
  * `extraEnv` may hold only `GIT_INDEX_FILE` (an absolute path without NUL); every other name is refused, so a caller
  * cannot use it to redirect the repository, the objects or the config.
  */
-export async function daemonGitFor(w: WorktreeRef, deps: GitOpsDeps, extraEnv: Readonly<Record<string, string>> = {}): Promise<DaemonGit> {
+export async function daemonGitFor(
+  w: WorktreeRef,
+  deps: GitOpsDeps,
+  extraEnv: Readonly<Record<string, string>> = {},
+  /** Axis-built additions only (never caller input): more `-c key=value` pins and fixed variables such as GIT_ATTR_NOSYSTEM. */
+  fixed: { readonly config?: readonly string[]; readonly env?: Readonly<Record<string, string>> } = {},
+): Promise<DaemonGit> {
   const platform = platformOf(deps);
   for (const [k, v] of Object.entries(extraEnv)) {
     const abs = typeof v === "string" && (platform === "win32" ? winAbs(v) : posixAbs(v));
     if (!EXTRA_ENV.has(k) || !abs || (v as string).includes("\0")) throw invalid(`the daemon git environment cannot be extended with ${k}`);
   }
-  const env = { ...daemonEnv(deps), ...extraEnv };
+  // The pins last, so no fixed variable can replace one (guardedRunner refuses the call if one did).
+  const env = { ...daemonEnv(deps), ...extraEnv, ...fixed.env, ...LAZY_FETCH_PINS };
   await requireGitVersion(deps, w, env);
   const filters = await filterNames(w, deps, env);
   const runner = guardedRunner(deps.runner, deps);
   return (sub, stdin, opts) =>
     runner.run({
-      argv: [...prefix(w, deps, { context: "daemon", hooks: false, filters }), ...sub],
+      argv: [...prefix(w, deps, { context: "daemon", hooks: false, filters }), ...(fixed.config ?? []).flatMap((c) => ["-c", c]), ...sub],
       cwd: w.workTree,
       env,
       context: "daemon",

@@ -88,7 +88,7 @@ export async function reconcileWorktrees(deps: ReconcileDeps, signal: AbortSigna
             continue;
           }
           try {
-            const st = await deps.manager.status(entry.path);
+            const st = await deps.manager.status(entry.path, { path: entry.path, id: w.id });
             // REMOVING is the journal's crash-visibility state: its meta is still the state it started from.
             const stateOk = w.state === "REMOVING" || st.state === w.state;
             if (st.baseSha !== w.baseSha || st.id !== w.id) note(w.id, "ref_mismatch");
