@@ -68,10 +68,96 @@ Slices, released in this order (each inert until the next):
   its triggers dropped and recreated from the v17 migration). That offline step is not shipped in the product and is not a
   supported command.
 
-## 3. PV-K1e-b: the handler (waits for a2)
+## 3. PV-K1e-b: the handler (design, not built; starts when a2-1b merges)
 
-`forcedScope` in the same PR, the project trust gate through the host window, the grant's generation bound into the challenge, the
-OI-2/OI-10 bounds, and `axis.review/1.diff`'s `acknowledged` still refused for plugins. CLI starts never.
+PV-K1e-b opens `axis.runs/1.start` to a plugin connection, and nothing else of `axis.runs/1`. It is daemon work only: it does not
+need the renderer, but it must not merge before the card exists (a2-2 or its own-shell replacement, section 2).
+
+**First commit: the a2-1b review follow-ups (mandatory before anything produces plugin challenges).**
+
+1. **S1, fail closed at the spend.** In the gate's `execute`, a spend from a plugin connection (`identity.clientKind === "plugin"`)
+   whose challenge has no tracked binding is refused with `E_CONFLICT` before `manager.consume`. Today the binding check passes
+   silently when no entry exists. That is unreachable only because the entry outlives the manager's token, and no test pins it.
+   Test: approve near the end of the challenge's life, then spend. That kills the reviewer's mutant O2, which sets the entry's
+   lifetime to the challenge TTL alone.
+2. **N4, free the slot sooner.** A spend the manager ends without running (a request or content mismatch, an expired token)
+   forgets the plugin entry at once, so a failed spend does not hold the plugin's one open slot for about 90 s.
+3. **N6, the window quota.**
+   - Option one: a withdrawn plugin challenge leaves no manager tombstone against the host window's quota of 16. With four
+     plugin challenges per window and several granted plugins, withdrawals can briefly crowd out the user's own approvals there.
+   - Option two: if the manager cannot exempt it cleanly, record the crowding as a residual.
+4. **N1.** A test of the `input.actor !== input.identity.actor` refusal, or a comment that it is defence in depth behind the
+   bind check.
+5. **N3.** The `endUnbound` comment says that any call on the id may trigger it (a bystander included) but the withdraw always
+   uses the requester's identity, and that this ends only a challenge whose binding already failed.
+6. **Docs.**
+   - The status line of this file says which slices are built.
+   - The ADR 0003 amendment adds that any code in the host window's renderer can resolve a tier-3 challenge, so the protection
+     is the taint, the card and an approval per side effect, not proof of the user's intent.
+
+**Order of the checks.** The pipeline runs the policy first, then the approval step (with a content hook), then the handler. For
+a plugin each step does this:
+
+1. **Policy** (built in PV-K1b): the plugin's own branch. `runs.start` must be granted in the pinned project and the plugin must be
+   enabled; the tier is raised to 3. A disabled or ungranted plugin is refused here, before any challenge or card.
+2. **Content hook** (new, `axis.runs/1.start`, plugin callers only; a user start keeps its tier-2 path with no hook). It runs
+   `forcedScope` first: the workspace must belong to the project the connection is pinned to (`identity.workspaceId`), else
+   `out_of_scope`, with nothing issued. Its target is `workspace:<id>`. Its content digest covers the plugin id, the grant
+   `generation` read now from `journal.plugins.state`, the host window, the workspace, mode, provider, model and the prompt's
+   SHA-256. A disable, a revoke, or anything else that moves the generation therefore fails the spend (the manager's digest check,
+   OI-3) even if every other check were missed.
+3. **Gate** (a2-1b): `PluginChallengeDeps` is wired here for the first time, in `compose.ts`.
+   - `bind` builds the detail from the journal (the project's and workspace's display names) and the request: the prompt escaped,
+     and refused at issue if it would not fit.
+   - `valid()` re-reads `journal.plugins.state`: still enabled, `runs.start` still granted, the same generation.
+   - `issues` is `journal.pluginIssues` and `now` is the daemon clock.
+   - The host window needs no check of its own. Main destroys a plugin view with its host window (`plugin-views.ts`
+     `destroyHost`), so the plugin connection closes and `withdrawConnection` ends its challenges. K1e-b adds a test that a host
+     close withdraws them.
+4. **Handler**, inside the project mutex:
+   - `forcedScope` is run again on the parsed request, so the gate's answer is never trusted alone.
+   - `valid()` is re-read under the mutex, the TOCTOU check, before the run is created.
+   - The trust gate is called with `trustCallOf(identity)`. For a plugin that is T3 on the host window and T4 on both windows
+     (PV-K1c), refused unless the identity is attested.
+   - The initiator is built from the attested identity only: `{ kind: "plugin", pluginId, generation }`, with the generation read
+     under the mutex. Any request field that names an initiator is refused by the schema (a test).
+   - The service then creates the run, tainted inside its creation (K1e-a).
+
+**Bounds** (OI-2, OI-10): one open challenge per plugin, four per host window, six per plugin and project an hour. The hourly
+count is in SQL, so a disable and enable or a restart does not reset it. All three are a2-1b's and are applied by the wired gate.
+K1e-b adds no further bound.
+
+**Still closed to plugins:**
+- every other `axis.runs/1` method;
+- `axis.agents/1.start`, which shares `startComposerRun` (the deny list keeps it closed: "every agent and group write");
+- CLI starts, never;
+- `axis.review/1.diff`'s `acknowledged`, which a plugin can never set (K4 opens review reads, and must refuse or strip it).
+
+**Shell independence (ADR 0011).** Nothing above names Code OSS. K1e-b depends on three things from the shell:
+- main mints the plugin identity with a `hostWindowId`;
+- main destroys a plugin's views with their host window;
+- a card in the host window reads `axis.approvals/1.detail` and resolves the challenge.
+
+The own-shell plan must keep the first two as they are (today `daemon-host/src/main/plugin-views.ts`) and say where the third
+lives.
+
+**Tests:**
+- out-of-scope workspace (by id and through a workspace of another project), refused before any challenge;
+- disabled, ungranted and unknown plugin, refused by the policy;
+- spoofed initiator field, refused;
+- full flow (issue, the user resolves in the host window, the plugin consumes, the run is created as `plugin:<id>` and tainted);
+- generation change after issue, after resolve, and under the mutex, each refused with nothing created;
+- host window close, which withdraws the challenge;
+- a seventh start in an hour, refused across a disable and enable;
+- a CLI start and an agents start by a plugin, refused.
+
+**Mutants:**
+- forcedScope dropped from the hook, and from the handler;
+- generation left out of the content digest;
+- `valid()` not re-read under the mutex;
+- the initiator taken from the request;
+- the gate dependencies passed to a non-plugin call;
+- the content hook applied to user starts (their tier-2 flow must be unchanged, as a fixed vector).
 
 ## 4. Open for the owner
 
