@@ -7,25 +7,12 @@ import { connect, createServer, type Server } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { opensslMissing } from "./openssl.js";
 
 // PV-N1d's first test (ADR 0009 decision 4, "[I]: that the agent connects only to the addresses the `lookup` returned, with
 // `autoSelectFamily`, at Node 24.22.1"). The egress client (slice B) relies on this Node behaviour: a dedicated agent whose
 // `lookup` answers with checked addresses connects to those and to nothing else, never asks the system resolver, and keeps
 // SNI and the certificate check on the original host name. If this ever fails, the egress design must change first.
-
-/**
- * Without openssl the test cannot make its certificate. On a dev machine it is skipped with a loud reason; under the gate
- * (which sets AXIS_REQUIRE_PINNING_TEST=1) and in CI it FAILS, so ADR 0009's first test never passes by not running.
- */
-export function opensslMissing(env: NodeJS.ProcessEnv = process.env, probe: () => void = () => execFileSync("openssl", ["version"], { stdio: "ignore" })): string | false {
-  try {
-    probe();
-    return false;
-  } catch {
-    if (env.AXIS_REQUIRE_PINNING_TEST === "1" || env.CI !== undefined) throw new Error("openssl is missing: ADR 0009's pinning test is required here (gate or CI) and cannot run without it");
-    return "SKIPPED ADR 0009's pinning test: openssl is needed to make the test certificate (the gate and CI require it)";
-  }
-}
 
 const HOST = "pinned.invalid"; // `.invalid` never resolves: a connection here proves the agent used our lookup
 const listen = (server: Server | https.Server, host: string, port = 0): Promise<number> =>
