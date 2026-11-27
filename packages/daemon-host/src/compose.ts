@@ -21,6 +21,7 @@ import { createConnectLimiter } from "./control/connect-limiter.js";
 import { createConnectRouter } from "./control/connect-router.js";
 import type { DisposeResult, ListenerTarget } from "./disposables.js";
 import { createEventSources } from "./events/sources.js";
+import { hostMintRecheck } from "./messages/enable-check.js";
 import { installProjectControl } from "./projects/control.js";
 import { registerServing } from "./compose-serving.js";
 import { createChallengeAuditSink } from "./gate/audit-sink.js";
@@ -221,7 +222,8 @@ export function composeDaemonHost(options: ComposeOptions): ComposedHost {
         const runs = createRunsBinding({
           journal: parts.journal,
           audit: parts.audit,
-          pty: cliEndpointPty(pty, () => cliEndpoints), // PV-M6: a CLI run's endpoint at spawn, only with the messaging flags on
+          // PV-M6: a CLI run's endpoint at spawn, only with the messaging flags on; PV-M7: the enable rule is checked again first.
+          pty: cliEndpointPty(pty, () => cliEndpoints, hostMintRecheck({ journal: parts.journal, settingsGet: (k, o) => control.settingsGet(k, o), platform: config.platform, agentOfRun: (id) => parts.journal.agents.agentOfRun(id), acknowledged: (id) => parts.journal.messages.cliAcknowledged(id), audit: parts.audit })),
           clock: createRunsClock(ports.clock),
           locator: worktrees.locator,
           snapshotter,
