@@ -187,8 +187,8 @@ test("messages: refusals are a closed set by code; details are exactly { reason 
   assert.equal(Object.hasOwn(MESSAGES_REFUSALS, "E_POLICY_DENIED"), false);
   assert.deepEqual(Object.keys(MESSAGES_REFUSALS).sort(), ["E_BACKPRESSURE", "E_CONFLICT", "E_INVALID_ARGUMENT", "E_NOT_FOUND"]);
   assert.deepEqual([...MESSAGES_REASONS].sort(), [
-    "bypass_entry", "cross_project", "excerpt_path_refused", "hop_limit", "not_found", "paused", "queue_full", "rate_limited",
-    "recipient_refused", "secret_found", "too_large", "too_many_recipients",
+    "bypass_entry", "config_unparsed", "cross_project", "empty_argv", "excerpt_path_refused", "hop_limit", "not_found", "paused", "queue_full", "rate_limited",
+    "recipient_refused", "secret_found", "too_large", "too_many_recipients", "too_many_repo_files", "wrapper_unparsed",
   ]);
   assert.equal(new Set(MESSAGES_REASONS).size, MESSAGES_REASONS.length, "a reason under two codes");
   for (const [code, reasons] of Object.entries(MESSAGES_REFUSALS)) {

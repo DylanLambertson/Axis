@@ -125,7 +125,7 @@ test("review 2 SF7: a Codex security key takes only a sourced safe value after u
     [["codex", "-c", '"approval_policy"=never'], "config_unparsed"],
     [["codex", "-c", "approval_policy='never\""], "config_unparsed"], // mismatched quotes: not a value it parses
     [["codex", "-c", "approval_policy=untrusted"], "codex.config.approval_policy"],
-    [["codex", "-c", "profiles.fast.approval_policy=never"], "codex.config.approval_policy"],
+    [["codex", "-c", "profiles.fast.approval_policy=never"], "config_unparsed"], // a dotted key is outside the allowlist (SF10)
     [["codex", "-c", "sandbox_mode=danger-full-access"], "codex.config.sandbox_mode"],
     [["codex", "--config=sandbox_mode='x'"], "codex.config.sandbox_mode"],
   ] as [string[], string][]) assert.equal(refusedBy(argv), rule, argv.join(" "));
@@ -157,4 +157,47 @@ test("review 2 SF6: more warnings than an answer carries refuse (too_many_repo_f
   assert.equal(MAX_WARNINGS, 8);
   const eight = decideCliMessaging({ argv: ["wrapper"], bypassesPrompts: false, exists: all }, rows.slice(0, 8));
   assert.equal(eight.allowed ? eight.warnings.length : -1, 8, "exactly the bound is carried");
+});
+
+test("review 3 SF10: Codex -c is an allowlist: model and model_reasoning_effort with a plain scalar, the two security keys with their safe values; anything else is unparsed", () => {
+  for (const argv of [["codex", "-c", "model=o3"], ["codex", "-c", 'model="gpt-5"'], ["codex", "-c", "model_reasoning_effort=high"], ["codex", "--config=model_reasoning_effort='low'"], ["codex", "-c", "approval_policy=on-request"], ["codex", "-c", "sandbox_mode=workspace-write"]]) {
+    assert.deepEqual(decide(argv), { allowed: true, warnings: [] }, argv.join(" "));
+  }
+  for (const kv of ["approvals_reviewer=auto_review", "approvals_reviewer=guardian_subagent", "default_permissions=x", "permissions={x={filesystem={\":root\"=\"write\"}}}", "sandbox_permissions=[\"disk-full-read-access\"]", "shell_environment_policy.inherit=all", "model.x=y", "model=a b", "model={x=1}", "model=[1]", "model", "features.x=true"]) {
+    assert.equal(refusedBy(["codex", "-c", kv]), "config_unparsed", kv);
+  }
+  assert.equal(refusedBy(["codex", "-c", "approval_policy=never"]), "codex.config.approval_policy", "a security key keeps its own rule id");
+});
+
+test("review 3 N12: a known name whose real path is a wrapper or an interpreter is judged as a wrapper", () => {
+  const viaEnv = decideCliMessaging({ argv: ["/r/codex", "claude", "--permission-mode", "auto"], executableReal: "/usr/bin/env", bypassesPrompts: false, exists: none });
+  assert.deepEqual(viaEnv, { allowed: false, rule: "claude.permission-mode.auto" }, "every CLI's rows over all arguments");
+  const viaBash = decideCliMessaging({ argv: ["/r/claude", "-c", "x"], executableReal: "/usr/bin/bash", bypassesPrompts: false, exists: none });
+  assert.deepEqual(viaBash, { allowed: false, rule: "wrapper_unparsed" }, "the real path is an interpreter with inline code");
+  const viaPython = decideCliMessaging({ argv: ["/r/mycli", "-c", "x"], executableReal: "/usr/bin/python3.12", bypassesPrompts: false, exists: none });
+  assert.deepEqual(viaPython, { allowed: false, rule: "wrapper_unparsed" }, "review 3 N18: the real path is scanned for interpreters too");
+  const versioned = decideCliMessaging({ argv: ["/r/claude", "-c"], executableReal: "/home/u/.local/share/claude/versions/2.1.330", bypassesPrompts: false, exists: none });
+  assert.deepEqual(versioned, { allowed: true, warnings: [] }, "an unknown real-path name (a versioned binary) still trusts the name");
+});
+
+test("review 3 N17: flags that change what configuration, tools or plugins load refuse; a configuration home set in the arguments refuses", () => {
+  for (const [argv, rule] of [
+    [["claude", "--mcp-config", "m.json"], "claude.mcp-config"],
+    [["claude", "--setting-sources=user"], "claude.setting-sources"],
+    [["claude", ["--age", "nts"].join(""), "{}"], "claude.subagents"],
+    [["claude", "--plugin-dir", "p"], "claude.plugin-dir"],
+    [["env", "CODEX_HOME=/tmp/x", "codex"], "config_home"],
+    [["env", "CLAUDE_CONFIG_DIR=/tmp/x", "claude"], "config_home"],
+  ] as [string[], string][]) assert.equal(refusedBy(argv), rule, argv.join(" "));
+});
+
+test("review 3 N18: the Codex configuration rule also applies behind a wrapper (long form, which is not inline code)", () => {
+  assert.equal(refusedBy(["env", "codex", "--config", "approval_policy=never"]), "codex.config.approval_policy");
+  assert.equal(refusedBy(["env", "codex", "--config=approvals_reviewer=auto_review"]), "config_unparsed");
+  assert.deepEqual(decide(["env", "codex", "--config", "model=o3"]), { allowed: true, warnings: [] });
+});
+
+test("review 3 N12: a known name whose real path is an interpreter gets every CLI's rows, even without inline code", () => {
+  const viaNode = decideCliMessaging({ argv: ["/r/claude", "-a", "never"], executableReal: "/usr/bin/node", bypassesPrompts: false, exists: none });
+  assert.deepEqual(viaNode, { allowed: false, rule: "codex.ask-for-approval.never" }, "not only Claude's rows: the real program is an interpreter");
 });

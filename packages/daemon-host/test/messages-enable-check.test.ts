@@ -71,8 +71,8 @@ test("mint re-check: the argv that runs decides (an entry edited after enabling 
   const rows: unknown[] = [];
   const recheck = hostMintRecheck({ ...fakeDeps(), acknowledged: () => [], agentOfRun: (id) => (id === "worker-run" ? "w1" : undefined), audit: { append: (e) => void rows.push(e.payload) } });
   assert.equal(await recheck({ runId: "plain-run", argv: ["claude", "--dangerously-skip-permissions"] }), true, "no worker: the mint decides (and refuses)");
-  assert.equal(await recheck({ runId: "worker-run", argv: ["/usr/bin/claude", "--model", "x"] }), true);
-  assert.equal(await recheck({ runId: "worker-run", argv: ["/usr/bin/claude", "--permission-mode", "auto"] }), false, "the spawned argv, not the entry read at enable");
+  assert.equal(await recheck({ runId: "worker-run", argv: ["claude", "--model", "x"] }), true);
+  assert.equal(await recheck({ runId: "worker-run", argv: ["claude", "--permission-mode", "auto"] }), false, "the spawned argv, not the entry read at enable");
   assert.deepEqual(rows, [{ runId: "worker-run", agentId: "w1", event: "mint_refused", rule: "claude.permission-mode.auto" }]);
   const later: unknown[] = [];
   const gone = hostMintRecheck({ ...fakeDeps({ settingsThrows: true }), acknowledged: () => [], agentOfRun: () => "w1", audit: { append: (e) => void later.push(e.payload) } });
@@ -108,7 +108,7 @@ test("handler: enabling asks the check first and passes its decision; other sett
 test("review 1 SF5: an entry the user marks as bypassing prompts after enabling gets no endpoint at the next mint", async () => {
   const rows: unknown[] = [];
   const marked = hostMintRecheck({ ...fakeDeps({ value: [{ id: "e1", label: "E", command: ["claude"], args: [], bypassesPrompts: true }] }), acknowledged: () => [], agentOfRun: () => "w1", audit: { append: (e) => void rows.push(e.payload) } });
-  assert.equal(await marked({ runId: "r", argv: ["/usr/bin/claude"] }), false);
+  assert.equal(await marked({ runId: "r", argv: ["claude"] }), false);
   assert.deepEqual(rows, [{ runId: "r", agentId: "w1", event: "mint_refused", rule: "user_marked" }]);
 });
 
@@ -148,4 +148,24 @@ test("review 1 SF3: at mint, a project-configuration file present now that was n
     { runId: "r", agentId: "w1", event: "mint_refused", rule: "repo_config_unacknowledged", warnings: 1 },
     { runId: "r", agentId: "w1", event: "mint_refused", rule: "repo_config_unacknowledged", warnings: 2 },
   ]);
+});
+
+test("review 3 N13: an absolute executable whose real path cannot be resolved refuses, at enable and at mint (never the name instead)", async () => {
+  const gone = "/nonexistent-axis-test/bin/claude";
+  assert.deepEqual(await hostEnableCheck(fakeDeps({ value: [{ id: "e1", label: "E", command: [gone], args: [] }] }))("w1", signal), { allowed: false, rule: "real_path_unresolved" });
+  const rows: unknown[] = [];
+  const recheck = hostMintRecheck({ ...fakeDeps(), acknowledged: () => [], agentOfRun: () => "w1", audit: { append: (e) => void rows.push(e.payload) } });
+  assert.equal(await recheck({ runId: "r", argv: [gone] }), false);
+  assert.deepEqual(rows, [{ runId: "r", agentId: "w1", event: "mint_refused", rule: "real_path_unresolved" }]);
+});
+
+test("review 3 N15: a launch the rule cannot judge is refused by its own reason; a recognised bypass stays bypass_entry", async (t) => {
+  const r = await deliveryRig(t, { noDelivery: true });
+  const on = { setting: "cliMessaging", agentId: "c1", value: true } as const;
+  for (const rule of ["wrapper_unparsed", "config_unparsed", "too_many_repo_files", "empty_argv"]) {
+    assert.throws(() => r.m.settings.updateSettings(USER, on, { allowed: false, rule }), (e: { reason?: string }) => e.reason === rule, rule);
+  }
+  for (const rule of ["claude.dangerously-skip-permissions", "user_marked", "no_entry", "real_path_unresolved", "config_home"]) {
+    assert.throws(() => r.m.settings.updateSettings(USER, on, { allowed: false, rule }), (e: { reason?: string }) => e.reason === "bypass_entry", rule);
+  }
 });

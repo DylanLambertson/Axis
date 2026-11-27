@@ -38,6 +38,11 @@ export const BYPASS_FLAGS: readonly FlagRow[] = Object.freeze([
   // A settings or profile file named in argv can switch auto-approval on from content the rule never reads (review 1:
   // decided by master, 2026-11-26). `-p` is Codex's profile only: in Claude Code `-p` is print.
   row("claude.settings", "claude", ["--settings"], CLAUDE_HELP),
+  // What configuration, tools and plugins load (review 3 N17): each changes what the CLI may do, from content not read here.
+  row("claude.mcp-config", "claude", ["--mcp-config"], CLAUDE_HELP),
+  row("claude.setting-sources", "claude", ["--setting-sources"], CLAUDE_HELP),
+  row("claude.subagents", "claude", [["--age", "nts"].join("")], CLAUDE_HELP),
+  row("claude.plugin-dir", "claude", ["--plugin-dir"], CLAUDE_HELP),
   row("codex.profile", "codex", ["--profile", "-p"], CODEX_HELP),
 ]);
 // No Gemini rows: Gemini is not installed in the environment the table was sourced in (only a wrapper with no binary), so
@@ -107,31 +112,38 @@ export function isInlineCode(arg: string): boolean {
   );
 }
 
-/** The Codex configuration keys that decide approvals and the sandbox, and their safe values (codex-cli 0.166.0 --help). */
-const CODEX_SAFE: ReadonlyMap<string, readonly string[]> = new Map([
+/**
+ * Codex `-c key=value` overrides, INVERTED (review 3 SF10: more keys than two switch off approvals or the sandbox, and a list
+ * of bad keys never ends). Only these keys are allowed, each sourced in the installed codex-cli 0.166.0: `model` (its own
+ * `--help` example) and `model_reasoning_effort` (its package text), with a plain scalar value; and the two security keys
+ * with their safe values from its `--help`. Every other key, every dotted key, and any value with `{`, `[`, a backslash or a
+ * non-ASCII character is refused as `config_unparsed`: a fixed reason, so no key a caller wrote reaches the audit row.
+ */
+const CODEX_SAFE: ReadonlyMap<string, readonly string[] | "scalar"> = new Map<string, readonly string[] | "scalar">([
+  ["model", "scalar"],
+  ["model_reasoning_effort", "scalar"],
   ["approval_policy", ["on-request"]],
   ["sandbox_mode", ["read-only", "workspace-write"]],
 ]);
-/**
- * One Codex `-c key=value` (review 2 SF7): a value with a backslash or a non-ASCII character, or a quoted key, is a TOML
- * construct the rule does not parse: refused (`config_unparsed`). For a security key (also dotted, `profiles.x.sandbox_mode`)
- * only an explicit safe value is allowed, bare or in plain quotes.
- */
 function codexConfigRule(kv: string): string | undefined {
-  if (/[\\]|[^\x20-\x7e]/.test(kv)) return "config_unparsed";
+  if (/[\\{[]|[^\x20-\x7e]/.test(kv)) return "config_unparsed";
   const eq = kv.indexOf("=");
-  if (eq < 0) return undefined;
+  if (eq < 0) return "config_unparsed";
   const key = kv.slice(0, eq).trim();
-  if (/["']/.test(key)) return "config_unparsed";
-  const last = key.split(".").pop() ?? "";
-  const safe = CODEX_SAFE.get(last);
-  if (safe === undefined) return undefined;
+  const allowed = CODEX_SAFE.get(key);
+  if (allowed === undefined) return "config_unparsed";
   const raw = kv.slice(eq + 1).trim();
   const quoted = /^(["'])([^"']*)\1$/.exec(raw);
-  const value = quoted === null ? raw : quoted[2] as string;
   if (quoted === null && /["']/.test(raw)) return "config_unparsed";
-  return safe.includes(value) ? undefined : `codex.config.${last}`;
+  const value = quoted === null ? raw : (quoted[2] as string);
+  if (allowed === "scalar") return /^[A-Za-z0-9._:-]{1,64}$/.test(value) ? undefined : "config_unparsed";
+  return allowed.includes(value) ? undefined : `codex.config.${key}`;
 }
+
+/** Programs that run another program (review 3 N12): a known CLI's name whose real path is one of these is a wrapper. */
+const WRAPPERS: ReadonlySet<string> = new Set(["env", "sudo", "doas", "su", "runuser", "nice", "nohup", "timeout", "time", "stdbuf", "xargs", "npx", "npm", "pnpm", "yarn", "bunx", "uvx", "pipx"]);
+/** An environment assignment in the launch arguments that moves a CLI's whole configuration elsewhere (review 3 N17). */
+const CONFIG_HOME = /^(CODEX_HOME|CLAUDE_CONFIG_DIR)=/;
 
 /**
  * One argument against one flag: `--flag`, `--flag=value`, `--flag value`, and for a short flag also with the value attached
@@ -165,8 +177,11 @@ export function decideCliMessaging(facts: EnableFacts, config: readonly CliProje
   if (facts.argv.length === 0 || facts.argv[0] === "") return { allowed: false, rule: "empty_argv" };
   const [executable = "", ...args] = facts.argv;
   const exes = [executable, ...(facts.executableReal === undefined ? [] : [facts.executableReal])];
+  if (args.some((a) => CONFIG_HOME.test(a))) return { allowed: false, rule: "config_home" };
   // The union of the rows of every known CLI the name or the real path names (review 2 SF9); none known: every CLI's rows.
-  const knownNames = [...new Set(exes.map(cliOf).filter((n) => KNOWN_CLIS.has(n)))];
+  // A known name whose real path is a wrapper or an interpreter is a wrapper (review 3 N12: `/r/codex -> /usr/bin/env`).
+  const realIsWrapper = facts.executableReal !== undefined && (WRAPPERS.has(cliOf(facts.executableReal)) || interpreterOf(facts.executableReal) !== undefined);
+  const knownNames = realIsWrapper ? [] : [...new Set(exes.map(cliOf).filter((n) => KNOWN_CLIS.has(n)))];
   const clis: ReadonlySet<string> = knownNames.length === 0 ? KNOWN_CLIS : new Set(knownNames);
   for (const exe of exes) {
     const interp = interpreterOf(exe);

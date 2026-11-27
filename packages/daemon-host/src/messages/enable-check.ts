@@ -29,13 +29,17 @@ const present = (p: string): boolean => {
   }
 };
 
-/** The real path of an absolute executable (a link to a versioned binary), or undefined. */
-export const realOf = (exe: string): string | undefined => {
+/**
+ * The real path of an absolute executable (a link to a versioned binary): `undefined` for a bare name (none is taken, a
+ * residual), `null` when an absolute one cannot be resolved (a broken link, no permission, gone), which refuses (review 3 N13:
+ * never fall back to the name).
+ */
+export const realOf = (exe: string): string | null | undefined => {
   if (!isAbsolute(exe)) return undefined;
   try {
     return realpathSync(exe);
   } catch {
-    return undefined;
+    return null;
   }
 };
 
@@ -64,6 +68,7 @@ export function hostEnableCheck(deps: EnableCheckDeps): (agentId: string, signal
     const launch = await cliWorkerLaunch(deps, agentId, signal);
     if (launch === undefined) return { allowed: false, rule: "no_entry" };
     const real = realOf(launch.argv[0] ?? "");
+    if (real === null) return { allowed: false, rule: "real_path_unresolved" };
     return decideCliMessaging({ argv: launch.argv, ...(real === undefined ? {} : { executableReal: real }), bypassesPrompts: launch.bypassesPrompts, exists: (segments) => exists(join(launch.root, ...segments)) });
   };
 }
@@ -80,7 +85,13 @@ export function hostMintRecheck(deps: EnableCheckDeps & { readonly agentOfRun: (
     const worker = deps.agentOfRun(spec.runId);
     if (worker === undefined) return true;
     const launch = await cliWorkerLaunch(deps, worker, AbortSignal.timeout(2_000));
-    const decision = launch === undefined ? { allowed: false as const, rule: "no_entry" } : decideCliMessaging({ argv: spec.argv, ...((r) => (r === undefined ? {} : { executableReal: r }))(realOf(spec.argv[0] ?? "")), bypassesPrompts: launch.bypassesPrompts, exists: (segments) => exists(join(launch.root, ...segments)) });
+    const real = realOf(spec.argv[0] ?? "");
+    const decision =
+      launch === undefined
+        ? { allowed: false as const, rule: "no_entry" }
+        : real === null
+          ? { allowed: false as const, rule: "real_path_unresolved" }
+          : decideCliMessaging({ argv: spec.argv, ...(real === undefined ? {} : { executableReal: real }), bypassesPrompts: launch.bypassesPrompts, exists: (segments) => exists(join(launch.root, ...segments)) });
     // A project-configuration file present now that the user did not acknowledge at enable (it appeared since): messaging
     // is suspended for this run until the user confirms again (endpoint design section 6; review 1 SF3).
     // By path: each listed path belongs to exactly one CLI (CLI_PROJECT_CONFIG), so path alone identifies the warning the user

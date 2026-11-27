@@ -19,6 +19,9 @@ import { NOT_FOUND, agentRows, defaultAgentSettings, refuse, type AgentSettings,
 /** A committed change the CLI endpoints act on (PV-M6 slice 3). */
 export type MessagingSettingsEvent = { readonly kind: "cliMessagingOff"; readonly agentId: string } | { readonly kind: "paused"; readonly projectId: string };
 
+/** Enable refusals the caller sees by name: the launch could not be judged (the rest are `bypass_entry`). */
+const JUDGED: ReadonlySet<string> = new Set(["wrapper_unparsed", "config_unparsed", "too_many_repo_files", "empty_argv"]);
+
 export interface MessagingSettingsDeps {
   /** Called after the change committed; a throw is audited (`hook_failed`) and never fails the user's write. */
   readonly onChange?: (e: MessagingSettingsEvent) => void;
@@ -128,7 +131,8 @@ export function createMessagingSettings(deps: MessagingSettingsDeps): MessagingS
         if (rule !== undefined) {
           deps.audit.append({ actor: "user", action: MESSAGE_AUDIT.endpoint, target: `agent:${req.agentId}`, outcome: "denied", payload: { agentId: req.agentId, event: "enable_refused", rule } });
           deps.noteWrite?.();
-          refuse("E_CONFLICT", "bypass_entry");
+          // A launch the rule cannot judge says so (review 3 N15); every bypass the rule recognised is `bypass_entry`.
+          refuse("E_CONFLICT", JUDGED.has(rule) ? rule : "bypass_entry");
         }
         warnings = enable !== undefined && enable.allowed ? enable.warnings : [];
         // The second step (review 1 SF4, M-3): with warnings, nothing is written until the request names every file warned
