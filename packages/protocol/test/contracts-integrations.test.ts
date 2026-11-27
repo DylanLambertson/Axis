@@ -1,5 +1,6 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
-// axis.integrations/1 and axis.net/1 (PV-N1a): planned, never served; no URL, header, cookie or credential field can be written
+// axis.integrations/1 (PV-N1a; read slice PV-N1f): list, status and read served, connect, disconnect and write planned;
+// axis.net/1 planned, never served. No URL, header, cookie or credential field can be written
 // in a request or read in a reply; composed paths, origins, arguments and bodies are refused before anything exists to send.
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -33,12 +34,31 @@ const base = { projectId: "proj-1", integrationId: "github", operation: "list_pu
 const net = { projectId: "proj-1", origin: "https://api.example.com", path: "/v1/items", method: "GET" };
 const send = { projectId: "proj-1", origin: "https://api.example.com", path: "/v1/items" };
 
-test("both contracts are planned, never served, with the designed method tables", () => {
-  for (const key of ["axis.integrations/1", "axis.net/1"]) {
-    assert.ok(plannedContracts[key] !== undefined, `${key} is planned`);
-    assert.equal(contracts[key], undefined, `${key} is not served`);
+test("the read slice splits axis.integrations/1 by method: list, status and read served; connect, disconnect and write planned", () => {
+  const served = ["list", "status", "read"];
+  const planned = ["connect", "disconnect", "write"];
+  assert.deepEqual(Object.keys(contracts["axis.integrations/1"] ?? {}), served);
+  assert.deepEqual(Object.keys(plannedContracts["axis.integrations/1"] ?? {}), planned);
+  for (const m of served) {
+    assert.equal(lookupMethod(I, 1, m), integrationsMethods[m as keyof typeof integrationsMethods], `${m} is served`);
+    assert.equal(lookupMethodIn(plannedContracts, I, 1, m), undefined, `${m} is not planned too`);
   }
-  for (const [c, m] of [[I, "read"], [I, "write"], [N, "read"], [N, "send"]] as const) assert.equal(lookupMethod(c, 1, m), undefined, `${c}.${m}`);
+  for (const m of planned) {
+    assert.equal(lookupMethod(I, 1, m), undefined, `${m} is not served`);
+    assert.equal(lookupMethodIn(plannedContracts, I, 1, m), integrationsMethods[m as keyof typeof integrationsMethods], `${m} is planned`);
+  }
+});
+
+test("a method is never in both tables", () => {
+  for (const key of Object.keys(plannedContracts)) {
+    for (const m of Object.keys(plannedContracts[key] ?? {})) assert.equal(Object.hasOwn(contracts[key] ?? {}, m), false, `${key}.${m}`);
+  }
+});
+
+test("axis.net/1 is planned, never served, with the designed method tables", () => {
+  assert.ok(plannedContracts["axis.net/1"] !== undefined, "axis.net/1 is planned");
+  assert.equal(contracts["axis.net/1"], undefined, "axis.net/1 is not served");
+  for (const [c, m] of [[N, "read"], [N, "send"], [I, "write"]] as const) assert.equal(lookupMethod(c, 1, m), undefined, `${c}.${m}`);
   assert.equal(lookupMethodIn(plannedContracts, I, 1, "write"), integrationsMethods.write);
   assert.equal(lookupMethodIn(plannedContracts, I, 1, "request"), undefined, "the one request method is split");
   assert.equal(lookupMethodIn(plannedContracts, N, 1, "request"), undefined, "the one request method is split");
@@ -244,6 +264,8 @@ test("the refusals are closed and never echo an argument, host, body or Location
     assert.ok(INTEGRATIONS_REASONS.includes(reason as never), reason);
   }
   assert.equal(isIntegrationsRefusal("E_UNAVAILABLE", "redirect_refused"), true);
+  // The read is project-gated (PV-N1f): an untrusted project is a conflict, as for the other gated handlers.
+  assert.equal(isIntegrationsRefusal("E_CONFLICT", "untrusted"), true);
   assert.equal(isIntegrationsRefusal("E_INVALID_ARGUMENT", "redirect_refused"), false);
   assert.equal(isIntegrationsRefusal("E_POLICY_DENIED", "busy"), false);
   assert.equal(isIntegrationsRefusal("toString", "busy"), false);

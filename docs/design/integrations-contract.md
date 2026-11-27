@@ -40,7 +40,7 @@ The egress caps of ADR 0009 decision 4 are exported as constants for the egress 
 
 ## 4. Refusals
 
-Every refusal is `details: { reason }` with one fixed message, so no argument, host, body or `Location` reaches an error. `E_NOT_FOUND`: `not_found`. `E_INVALID_ARGUMENT`: `argument_refused`, `origin_refused`, `path_refused`, `request_too_large`, `operation_kind_mismatch`. `E_CONFLICT`: `not_connected`, `needs_reconnect`, `already_connecting`, `scope_refused`, `busy`, `audit_unavailable`. `E_UNAVAILABLE`: `network_unavailable`, `address_refused`, `redirect_refused`, `response_too_large`, `response_depth_exceeded`, `headers_too_large`, `encoding_refused`, `response_invalid`, `upstream_status`, `credential_echoed`, `rate_limited`. `E_TIMEOUT`: `timeout`. Permission and actor refusals stay `E_POLICY_DENIED` from the pipeline.
+Every refusal is `details: { reason }` with one fixed message, so no argument, host, body or `Location` reaches an error. `E_NOT_FOUND`: `not_found`. `E_INVALID_ARGUMENT`: `argument_refused`, `origin_refused`, `path_refused`, `request_too_large`, `operation_kind_mismatch`. `E_CONFLICT`: `not_connected`, `needs_reconnect`, `already_connecting`, `scope_refused`, `busy`, `audit_unavailable`, `untrusted` (the read's project trust gate refused, PV-N1f). `E_UNAVAILABLE`: `network_unavailable`, `address_refused`, `redirect_refused`, `response_too_large`, `response_depth_exceeded`, `headers_too_large`, `encoding_refused`, `response_invalid`, `upstream_status`, `credential_echoed`, `rate_limited`. `E_TIMEOUT`: `timeout`. Permission and actor refusals stay `E_POLICY_DENIED` from the pipeline.
 
 ## 5. Policy rows and open points
 
