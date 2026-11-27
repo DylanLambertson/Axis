@@ -5,102 +5,15 @@
 // the real one.
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import type { MessagePort } from "node:worker_threads";
-import { test, type TestContext } from "node:test";
-import { AuditLog, openDatabase } from "@axis/audit";
-import { Daemon, MemoryIdempotencyStore, memoryPair, protocolRegistry, type HandlerContext, type Identity, type IdentityVerifier } from "@axis/daemon";
-import { Journal } from "@axis/journal";
-import type { ComposerRun } from "@axis/protocol";
-import { createApprovals, createApprovalsHandlers, InMemoryTrustRegistry, RULES, RuleTablePolicy, type NativeControl } from "../src/index.js";
-import { composerFailure } from "../src/composer/errors.js";
+import { test } from "node:test";
+import type { Identity } from "@axis/daemon";
+import { InMemoryTrustRegistry, RULES, RuleTablePolicy } from "../src/index.js";
 import { isTrustCall } from "../src/gate/project-trust.js";
 import { pluginRunStartChallenges } from "../src/gate/plugin-run-start.js";
-import { createComposerRunsHandlers, registerComposerRunsHandlers } from "../src/handlers/composer-runs.js";
-import { registerPluginsHandlers } from "../src/handlers/plugins.js";
 import type { ComposerStartInput } from "../src/ports/composer.js";
-import { ProjectMutex } from "../src/worktrees/project-mutex.js";
-import { Client } from "./approvals-rig.js";
-import { fakeClock } from "./helpers.js";
-import { grantForTests, enableForTests } from "./plugin-grants-for-tests.js";
+import { enableForTests, grantForTests } from "./plugin-grants-for-tests.js";
+import { handlerRig, PLUGIN_ATT, reason, setup, verifier, type Row } from "./plugin-start-rig.js";
 
-type Row = Record<string, unknown>;
-const SHA = "b".repeat(40);
-const PLUGIN_ATT = "plugin:acme.board#Pacme#p7#w1#p1";
-
-const verifier: IdentityVerifier = {
-  verify(att) {
-    if (typeof att !== "string") return undefined;
-    const [actor, conn, windowId, host, project] = att.split("#");
-    if (actor?.startsWith("plugin:") === true) {
-      return { connectionId: (conn as string).padEnd(22, "_"), windowId: windowId as string, actorId: actor, actor: actor as Identity["actor"], workspaceId: project as string, trusted: false, clientKind: "plugin", hostWindowId: host as string };
-    }
-    return { connectionId: (conn as string).padEnd(22, "_"), windowId: windowId as string, actorId: "user-id", actor: "user", trusted: true, clientKind: windowId === "web" ? "web" : "desktop" };
-  },
-};
-
-async function setup(t: TestContext, over: { admit?: () => Promise<void>; onAudit?: (e: Row) => void } = {}) {
-  const clock = fakeClock();
-  const db = openDatabase(":memory:");
-  const journal = Journal.open(db, { audit: new AuditLog(db) });
-  for (const [id, name] of [["p1", "One"], ["p2", "Two"]] as const) journal.registerProject({ id, path: `/repo/${id}`, displayName: name, trusted: false, actor: "user" });
-  const ws = (projectId: string) => {
-    const w = journal.createWorkspace({ projectId, branch: `feature-${projectId}`, baseRef: "main", baseSha: SHA, createdBy: "user" }).value;
-    journal.transitionWorkspace(w.id, "READY");
-    return w.id;
-  };
-  const ws1 = ws("p1");
-  const ws2 = ws("p2");
-  const ws1b = ws("p1");
-  journal.plugins.add("acme.board", "p1");
-  enableForTests(journal.plugins, "acme.board", "p1");
-  grantForTests(journal.plugins, "acme.board", "p1", "runs.start");
-  const control: NativeControl = { nativeConfirm: () => new Promise(() => undefined) };
-  const approvals = createApprovals({ audit: { append() {} }, control, clock, plugins: pluginRunStartChallenges(journal, journal.pluginIssues, () => clock.now()) });
-  const daemon = new Daemon({ identity: verifier, audit: { append: (e) => over.onAudit?.(e as unknown as Row) }, registry: protocolRegistry, idempotency: new MemoryIdempotencyStore(), policy: new RuleTablePolicy(new InMemoryTrustRegistry(), RULES, journal.plugins), approvals: approvals.gate });
-  daemon.register("axis.approvals", 1, createApprovalsHandlers({ approvals: approvals.port }));
-  // The user's plugin decreases (PV-K2 K2-g1), so a revoke can follow a plugin's run start.
-  registerPluginsHandlers({ register: (c, v, h, o) => (o === undefined ? daemon.register(c, v, h) : daemon.register(c, v, h, o)) }, { journal, mutex: new ProjectMutex(), endPlugin: (p, j) => approvals.endPlugin(p, j) });
-  const starts: ComposerStartInput[] = [];
-  const admitted: unknown[] = [];
-  const run = (input: ComposerStartInput): ComposerRun => ({ runId: randomUUID(), workspaceId: input.workspaceId, mode: input.mode, providerId: input.providerId, modelId: input.modelId, state: "QUEUED", reason: null, createdAt: "2026-11-26T00:00:00.000Z", startedAt: null, endedAt: null, live: true, awaitingApproval: false, usage: null });
-  const none = (): never => assert.fail("not used");
-  const cancels: string[] = [];
-  registerComposerRunsHandlers(
-    { register: (c, v, h, o) => (o === undefined ? daemon.register(c, v, h) : daemon.register(c, v, h, o)) },
-    {
-      service: {
-        cancel: (id: string) => (cancels.push(id), none()), get: none, list: none, events: none,
-        start: async (input) => {
-          if (input.grantHolds !== undefined && input.grantHolds() !== true) throw composerFailure("E_CONFLICT", "grant_changed");
-          starts.push(input);
-          return { run: run(input), replayed: false };
-        },
-      },
-      gate: { admit: async (q: { caller: unknown }) => { admitted.push(q.caller); await over.admit?.(); return "ticket"; } } as never,
-      journal,
-      mutex: new ProjectMutex(),
-      pluginStarts: journal,
-    },
-  );
-  const ports: MessagePort[] = [];
-  const connect = async (att: string): Promise<Client> => {
-    const { client, server } = memoryPair();
-    ports.push(client);
-    const c = new Client(client);
-    daemon.accept(server, att);
-    await c.hello();
-    return c;
-  };
-  t.after(() => {
-    approvals.dispose();
-    daemon.stop();
-    for (const p of ports) p.close();
-    db.close();
-  });
-  const body = (workspaceId = ws1, over: Row = {}) => ({ workspaceId, mode: "edit", prompt: "Summarise the open tasks", providerId: "mock", modelId: "mock-model", ...over });
-  return { clock, journal, db, approvals, starts, admitted, connect, body, ws1, ws2, ws1b, cancels };
-}
-const reason = (m: { error?: { details?: Record<string, unknown> } }): unknown => m.error?.details?.["reason"];
 
 test("the full flow: the plugin asks, the user approves in the host window, the plugin's retry starts the run as plugin:<id>", async (t) => {
   const s = await setup(t);
@@ -247,7 +160,7 @@ test("the content hook binds the grant generation: a disable and enable moves th
   assert.equal(lock.target, `workspace:${s.ws1}`);
   const before = await lock.withLock(async (d) => d);
   assert.equal(await lock.withLock(async (d) => d), before, "stable while nothing changes");
-  const deps = pluginRunStartChallenges(s.journal, s.journal.pluginIssues, () => 1);
+  const deps = pluginRunStartChallenges(s.journal, s.journal.pluginIssues, () => 1, s.windows);
   const bound = deps.bind({ identity: asPlugin, actor: asPlugin.actor, contract: "axis.runs", method: "start", args: s.body() } as never, { target: lock.target, contentDigest: before });
   assert.equal(bound?.valid(), true);
   s.journal.plugins.setEnabled("acme.board", "p1", false);
@@ -264,7 +177,7 @@ test("the content hook binds the grant generation: a disable and enable moves th
 test("bind refuses what is not a plugin run start, out of scope or ungranted; an oversize escaped prompt fails the detail's contract", async (t) => {
   const s = await setup(t);
   const asPlugin = verifier.verify(PLUGIN_ATT) as Identity;
-  const deps = pluginRunStartChallenges(s.journal, s.journal.pluginIssues, () => 1);
+  const deps = pluginRunStartChallenges(s.journal, s.journal.pluginIssues, () => 1, s.windows);
   const call = (over: Row = {}, args: unknown = s.body()) => deps.bind({ identity: asPlugin, actor: asPlugin.actor, contract: "axis.runs", method: "start", args, ...over } as never, { target: "x", contentDigest: "e".repeat(64) });
   assert.notEqual(call(), undefined);
   assert.equal(call({ method: "cancel" }), undefined);
@@ -301,22 +214,6 @@ test("layer: the content hook refuses an out-of-scope or ungranted start itself,
   outOfScope(() => hook({ identity: asPlugin }, s.body()), "ungranted");
 });
 
-function handlerRig(s: Awaited<ReturnType<typeof setup>>, mutex = new ProjectMutex()) {
-  const seen: ComposerStartInput[] = [];
-  const handlers = createComposerRunsHandlers({
-    // A service that does NOT check `grantHolds`, so only the handler's own checks are under test.
-    service: { cancel: () => assert.fail("no"), get: () => assert.fail("no"), list: () => assert.fail("no"), events: () => assert.fail("no"), start: async (input) => (seen.push(input), { run: { runId: randomUUID(), workspaceId: input.workspaceId, mode: input.mode, providerId: input.providerId, modelId: input.modelId, state: "QUEUED", reason: null, createdAt: "2026-11-26T00:00:00.000Z", startedAt: null, endedAt: null, live: true, awaitingApproval: false, usage: null }, replayed: false }) },
-    gate: { admit: async () => "ticket" } as never,
-    journal: s.journal,
-    mutex,
-    pluginStarts: s.journal,
-  });
-  // What the gate hands the handler on a spend: the capability the binding minted at issue (here, for the rig's own workspace).
-  const asPlugin = verifier.verify(PLUGIN_ATT) as Identity;
-  const mint = () => pluginRunStartChallenges(s.journal, s.journal.pluginIssues, () => 1).bind({ identity: asPlugin, actor: asPlugin.actor, contract: "axis.runs", method: "start", args: s.body() } as never, { target: "x", contentDigest: "e".repeat(64) })?.approved;
-  const ctx = (identity: Identity, approved: unknown = mint()): HandlerContext => ({ identity, requestId: "r", correlationId: "x", signal: new AbortController().signal, ...(approved === false ? {} : { approved: { target: "x", capability: approved } }) }) as unknown as HandlerContext;
-  return { handlers, seen, ctx, mutex, mint };
-}
 
 test("layer: the handler refuses a plugin's out-of-scope start, an unapproved one, every other method, and any other actor", async (t) => {
   const s = await setup(t);

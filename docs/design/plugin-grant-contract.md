@@ -30,8 +30,10 @@ This list is the gate; the PV-K2 ticket row points here.
    open after the spend and right before the run is recorded. Today a start whose host window closes after the spend still goes
    ahead (review 2 of PV-K1e-b; a user's own start behaves the same). A test closes the host window at each step after the spend
    and asserts that nothing is created. **Precondition of this condition** (2026-11-27, owner delegation): the own shell's main
-   sends the daemon `window.gone` when a window is destroyed or its renderer dies (own-shell plan OS-3). Until then a window's
-   lifetime ends at its last connection's close, and only a renderer death that no connection reports is missed.
+   sends the daemon `window.gone` when a window is destroyed, when its renderer dies, and when its main frame starts a navigation
+   (a reload included; own-shell plan OS-3). Until then a window's lifetime ends at its last connection's close, so a renderer
+   death that no connection reports, or a reload whose new connection arrives before the old one's close, is missed
+   (section 8.4).
 
 ## 2. The calls
 
@@ -185,7 +187,7 @@ tests call `journal.plugins.grant` and `setEnabled`.
 | **K2-g2** | `grant` and `enable` at tier 4: the content hook (the versioned tuple digest, the project mutex at the spend), the native line builder of section 3.1, and `already_granted`. Registered but switched off: the handler refuses with `E_UNAVAILABLE` unless the host option `pluginGrants` is on, and it is off in production. **Built, off.** An enable of a plugin already on is refused at issue (`already_enabled`), as a grant that exists is (`already_granted`); neither shows a dialog. It provides none of the six conditions' evidence (section 8.2): K2-enable stays blocked. | K2-g1 | M-L |
 | **K2-g3** | **Condition 4, by construction.** The journal mints grant tokens and hands its minting function out once (`takeGrantMint`), to the approved action at wiring time; `grant` and `setEnabled(…, true)` refuse any write without a token of that instance (section 8.4). **Built.** The writer and construction rules live in `test/packages/plugin-grant-writer-rule.mjs` and run in the gate's import walk; the second-open residual is RR-96. | K2-g2 | S |
 | **K2-g4a** | **Condition 6, the daemon part.** The lifecycle hook in `@axis/daemon` (`DaemonOptions.lifecycle`: `accepted`, `closed`, once per attested session); the strict `window.gone { windowId }` control message and its shell-independent sender in `daemon-host/src/main`; `WindowLifetimes` (epoch, counts, the ring of ended epochs, `alive`) with the epoch-rule tests. Not wired into the Code OSS seam (section 8.4). **Built.** `DaemonOptions.lifecycle` calls `accepted` before any message the session queued during the handshake is handled, so a close those messages cause always comes after it; a throwing hook is reported (`lifecycle`) and ignored. `plugins/window-lifetimes.ts` keeps a set of connection ids per live epoch, so a duplicate accept or close counts once and a late close of a connection from an ended epoch changes nothing; an epoch that cannot be drawn fresh leaves the window with none (fail closed). The supervisor posts `window.gone` only while the host runs and only a `w<n>` id the inbound schema accepts; `main/window-lifecycle.ts` is the sender the own shell calls. The composition does not create `WindowLifetimes` yet: K2-g4b wires it with the binding that reads it. | PV-K1e-b | M |
-| **K2-g4b** | **Condition 6, the binding and the checks.** `PluginChallenges` pins the host window's epoch at issue; `valid()` requires it alive; `ApprovedPluginStart` carries it; the three start checks (handler entry, the mutex, the service's synchronous step) test it and the plugin connection's signal; the tests at each await after the spend: plugin close, last host close, close then reopen, `window.gone`. | K2-g4a | M |
+| **K2-g4b** | **Condition 6, the binding and the checks.** `PluginChallenges` pins the host window's epoch at issue; `valid()` requires it alive; `ApprovedPluginStart` carries it; the three start checks (handler entry, the mutex, the service's synchronous step) test it and the plugin connection's signal; the tests at each await after the spend: plugin close, last host close, close then reopen, `window.gone`. **Built.** A host window with no live epoch refuses the challenge at issue (nothing issued or counted); every later check calls `alive()` with the pinned epoch, so an ended or unknown epoch is closed, and a throw is too. The pending listing ends a plugin challenge whose binding no longer holds, so a reopened window never lists a card from the lifetime before. The handler refuses `host_window_closed` (`E_CANCELLED` for the plugin connection) at entry, before waiting for the mutex, and again under it; it hands the same check to the service as `hostAlive`, required for a plugin start and checked right after `grantHolds`. The composition creates `WindowLifetimes`, passes it to the daemon as `lifecycle` and to the binding and the handler, and ends a lifetime on `window.gone`. Pausing at the policy row (where a closed plugin connection is stopped by the daemon itself), the mutex wait and the trust gate is tested with each of the four events; the model list and `engine.prepare` come before the service's synchronous check and are covered there. | K2-g4a | M |
 | **K2-enable** | Turns `pluginGrants` on in the production composition. Merges only when conditions 1, 2, 3 and 5 hold, and K2-g3, K2-g4a and K2-g4b are on `main`. Also before it merges: the dialog's short plugin id is widened, or the whole id is shown (section 3.1, review K2-g2 N2). | all above; OS-30; PV-K3 | S (code), plus the evidence |
 
 Install, update, signatures and extraction (ADR 0008 decisions 7 and 8) are the other PV-K2 tickets. They propose grants and
@@ -325,11 +327,25 @@ test flips and the row closes.
     answered as ended, not as unknown.
   - **Unreported death.** Main owns the window lifecycle. A shell-independent sender in `daemon-host/src/main` sends the daemon a
     strict `window.gone { windowId }` control message, which ends that window's epoch even if a connection's close was never
-    reported. Main calls it when a window is destroyed or its renderer dies.
+    reported. Main calls it when a window is destroyed, when its renderer dies, and when its main frame starts a navigation
+    (a reload or any other navigation, not a same-document one).
     - The Code OSS seam does **not** call it: the owner stopped new Code-OSS-only work (2026-11-27). The own shell's main
       (OS-3) wires it, and that wiring is a precondition of condition 6.
-    - Until then the epoch ends at the window's last connection close, and only a renderer death that no connection reports is
-      missed.
+    - Until then the epoch ends at the window's last connection close, and only a renderer death that no connection reports, or a
+      reload whose new connection arrives before the old one's close, is missed.
+  - **A reload** (review K2-g4a: the reload overlap). The window id stays the same, and the new document may connect before the
+    old document's connections report their close, so counting connections alone would carry the epoch across the reload. The
+    daemon does **not** end the epoch when a new connection arrives while another is open:
+    - it cannot tell a reload from a second connection of the same document, and a window legitimately holds several, so the
+      epoch would churn and end approvals for nothing;
+    - instead main, which sees the navigation, ends the lifetime. It sends `window.gone` at the start of the main frame's
+      navigation, before the new document can ask for a connection. That message and the new document's `connect` travel the same
+      ordered control channel, so the host ends the old epoch before it sees the new connection;
+    - the old connections' closes that arrive later change nothing: `WindowLifetimes` keeps each epoch's own connection ids.
+    - This matters because a plugin view is a separate view main owns and can outlive a host reload, so its own connection's close
+      does not cover one. Until OS-3 wires the sender, a reload with that overlap continues the epoch. What still bounds it: the
+      approval needs the user's resolve in that window, the grant generation is checked, the plugin connection's own signal, and
+      the challenge's lifetime.
 - **Pinned at issue.** The plugin's challenge binding records the host window's epoch when the challenge is issued.
   - `valid()` fails when that epoch has ended, so resolve, detail and the spend refuse a challenge whose window closed even once,
     including a close followed by a reconnect.

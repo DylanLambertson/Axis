@@ -22,6 +22,7 @@ const REASON_TEXT: Readonly<Record<string, string>> = {
   taint_unrecorded: "The run could not be marked as started from untrusted input.",
   out_of_scope: "That workspace is not in this plugin's project.",
   grant_changed: "The plugin's permission to start runs changed; ask again.",
+  host_window_closed: "The window that hosts the plugin closed; ask again.",
 };
 
 const CODE_TEXT = {
