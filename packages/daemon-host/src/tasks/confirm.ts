@@ -15,8 +15,8 @@ import { startState } from "./start.js";
  *   the user's (and if not, the latest other author's kind and the hop), the worker's kind and name (which the user chose),
  *   and for `delete` the project's display name. Never the task's title or body: a worker or a plugin may have written them.
  *   For `start` the trust of the text comes first, then the first 12 characters of the task id (the approval binds the whole
- *   id; ids are random, so the prefix matches the card's), the revision and the worker's name cut at 20: the line always
- *   fits the dialog's 80 units, which it would otherwise cut in the middle.
+ *   id; ids are random, so the prefix matches the card's), the revision and the worker's name, cut to what is left of the
+ *   dialog's 80 units and with any unsafe character shown as `?`, so the line is never cut in the middle or dropped.
  */
 export interface TasksConfirmDeps {
   readonly journal: Pick<Journal, "tasks" | "agents" | "getProject" | "getWorkspace">;
@@ -24,11 +24,24 @@ export interface TasksConfirmDeps {
 }
 
 const MISSING = "0".repeat(64);
-/** The dialog cuts its detail at 80 units in the MIDDLE: a line built to fit is never cut, so the trust marker always shows. */
+/**
+ * The dialog cuts its detail at 80 UTF-16 units in the MIDDLE and drops a detail holding a control, format (bidi,
+ * zero-width), surrogate or separator character for the bare target (`gate/summary.ts`). The Start line is built to fit
+ * those units and to hold none of those characters, so it is never cut or dropped and its trust marker always shows.
+ */
+export const DIALOG_DETAIL_UNITS = 80;
+const UNSAFE = /[\p{Cc}\p{Cf}\p{Cs}\u2028\u2029]/gu;
 const short = (id: string): string => (id.length > 13 ? `${id.slice(0, 12)}…` : id);
-const bounded = (t: string, n: number): string => {
-  const points = Array.from(t);
-  return points.length > n ? `${points.slice(0, n - 1).join("")}…` : t;
+/** `t` with unsafe characters made `?`, cut by whole code points to at most `units` UTF-16 units (the cut ends in "…"). */
+const fitted = (t: string, units: number): string => {
+  const clean = t.replace(/\p{Z}+/gu, " ").replace(UNSAFE, "?");
+  if (clean.length <= units) return clean;
+  let out = "";
+  for (const p of clean) {
+    if (out.length + p.length > units - 1) break;
+    out += p;
+  }
+  return `${out}…`;
 };
 const field = (payload: unknown, key: string): unknown => (typeof payload === "object" && payload !== null ? (payload as Record<string, unknown>)[key] : undefined);
 
@@ -50,7 +63,8 @@ export function taskContent(journal: TasksConfirmDeps["journal"], method: "start
     parts.push(a.id, s.digest);
     const latest = journal.tasks.revisions(taskId).map((m) => m.author).find((x) => x.kind !== "user");
     const trust = s.task.untrusted ? `UNTRUSTED (${latest?.kind ?? "other"}, hop ${s.task.hop})` : "the user's text";
-    text = `${trust}: task ${short(taskId)} r${s.seq} to ${bounded(a.name, 20)}`;
+    const head = `${trust}: task ${short(taskId)} r${s.seq} to `; // at most 72 units: the name gets the rest, at least 8
+    text = head + fitted(a.name, Math.max(1, DIALOG_DETAIL_UNITS - head.length));
   } else {
     const project = journal.getProject(s.task.projectId)?.displayName ?? s.task.projectId;
     text = `task ${taskId}, all ${s.seq} revisions, in ${project}`;

@@ -95,21 +95,29 @@ test("a task changed after main's dialog refuses the Start's approval; delete's 
   assert.equal(del.summary, `axis.tasks/1.delete: task ${taskId}, all 3 revisions, in Shop`);
 });
 
-test("the Start line always fits the dialog: a long worker name is cut at 20, and the trust marker is never lost", async (t) => {
-  const { taskContent } = await import("../src/index.js");
-  const { r } = await setup(t);
-  void r;
-  const db = openDatabase(":memory:");
-  t.after(() => db.close());
-  const journal = Journal.open(db, { audit: new AuditLog(db) });
-  journal.registerProject({ id: "p", path: "/repo/p", displayName: "p", trusted: false, actor: "user" });
-  const home = journal.transitionWorkspace(journal.createWorkspace({ projectId: "p", branch: "axis/p", baseRef: "main", baseSha: SHA, createdBy: "user" }).value.id, "READY").id;
-  journal.agents.create({ id: "w9", projectId: "p", name: "N".repeat(64), launch: { kind: "composer", connection: "conn", modelId: "m", mode: "agent" }, homeWorkspaceId: home, groupId: null });
-  const service = createTasksService({ journal, audit: { append: () => undefined }, random: { bytes: (n) => randomBytes(n) } });
-  const id = service.create({ kind: "user" }, { projectId: "p", title: "T", body: "x" }).task.taskId;
-  service.update({ kind: "agent", agentId: "w2", projectId: "p", runId: "r0", receivedHop: 8 }, { taskId: id, baseSeq: 1, title: "T", body: "y" });
-  const line = taskContent(journal, "start", { taskId: id, worker: "w9" }).text as string;
-  assert.ok(line.length <= 80, `${line.length}: ${line}`);
-  assert.ok(line.startsWith("UNTRUSTED (agent, hop 8): "), line);
-  assert.ok(line.endsWith(`${"N".repeat(19)}…`), line);
+test("the Start line fits the dialog's own units and holds no character it would drop: emoji and bidi names, a long revision", async () => {
+  const { taskContent, DIALOG_DETAIL_UNITS } = await import("../src/tasks/confirm.js");
+  const { nativeSummary } = await import("../src/gate/summary.js");
+  const at = "2026-01-01T00:00:00.000Z";
+  const stub = (name: string, seq: number, author: Record<string, unknown>) => ({
+    tasks: {
+      get: () => ({ taskId: "t".padEnd(33, "a"), projectId: "p", source: "integration", status: "open", assignee: null, untrusted: true, hop: 8, lastSeq: seq, links: [], createdAt: at, updatedAt: at }),
+      revision: () => ({ taskId: "t".padEnd(33, "a"), seq, title: "TITLE-CANARY", body: "BODY", author, hop: 8, createdAt: at }),
+      revisions: () => [{ taskId: "t".padEnd(33, "a"), seq, title: "TITLE-CANARY", author, hop: 8, createdAt: at }],
+    },
+    agents: { get: () => ({ id: "w9", projectId: "p", name, archived: false, launch: { kind: "composer" } }) },
+    getProject: () => undefined,
+    getWorkspace: () => undefined,
+  }) as never;
+  const integration = { kind: "integration", integrationId: "jira" };
+  for (const [what, name, seq] of [["an emoji name", "😀".repeat(64), 2], ["a long revision", "Planner of everything", 123_456_789_012], ["both", "😀".repeat(64), 123_456_789_012], ["few emoji, many units", "😀".repeat(10), 123_456_789_012]] as const) {
+    const line = taskContent(stub(name, seq, integration), "start", { taskId: "t".padEnd(33, "a"), worker: "w9" }).text as string;
+    assert.ok(line.length <= DIALOG_DETAIL_UNITS, `${what}: ${line.length} units`);
+    assert.ok(line.startsWith(`UNTRUSTED (integration, hop 8): task ${"t".padEnd(12, "a")}… r${seq} to `), `${what}: ${line}`);
+    assert.equal(nativeSummary("axis.tasks/1.start", "task:x", line), `axis.tasks/1.start: ${line}`, `${what}: shown whole, never cut in the middle`);
+    assert.equal(line.includes("CANARY"), false);
+  }
+  const bidi = taskContent(stub("\u202eevil\u200b", 3, integration), "start", { taskId: "t".padEnd(33, "a"), worker: "w9" }).text as string;
+  assert.ok(bidi.endsWith(" to ?evil?"), bidi);
+  assert.equal(nativeSummary("axis.tasks/1.start", "task:x", bidi), `axis.tasks/1.start: ${bidi}`, "the dialog keeps the line, marker included");
 });

@@ -106,6 +106,10 @@ test("the worker: a live agent of the task's project, else worker_unavailable (a
   const d = s.preview({ taskId: t.taskId, worker: "w1" }).promptDigest;
   for (const worker of ["x1", "ghost"]) assert.equal(await refusal(s.start({ taskId: t.taskId, worker, seq: 1, promptDigest: d }, CTX)), "worker_unavailable", worker);
   journal.agents.archive("w1");
+  journal.agents.archive("c1");
+  assert.throws(() => s.preview({ taskId: t.taskId, worker: "w1" }), /worker_unavailable/, "preview of an archived worker");
+  const dc = d; // the prompt does not depend on the worker
+  assert.equal(await refusal(s.start({ taskId: t.taskId, worker: "c1", seq: 1, promptDigest: dc }, CTX)), "worker_unavailable", "an archived CLI worker gets no text");
   assert.equal(await refusal(s.start({ taskId: t.taskId, worker: "w1", seq: 1, promptDigest: d }, CTX)), "worker_unavailable", "archived");
   assert.throws(() => s.preview({ taskId: t.taskId, worker: "x1" }), /worker_unavailable/);
   assert.equal(calls.length, 0);
