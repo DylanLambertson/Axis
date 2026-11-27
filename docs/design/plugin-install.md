@@ -3,7 +3,8 @@
 - **Status:** design only, not built. Date 2026-11-27; revised the same day after review 1 (package scope, a durable
   publication protocol, reinstall, curated downgrade, load bounds, portable names, audit) and the decisions on its open points,
   and after review 2 (the package lock, consent bound to the revision, identity equality, downgrade-reinstall, the stored
-  listing).
+  listing) and review 3 (a durable fsync before every adoption, pure verification under the lock, bounded lock waits, the daemon's
+  own disable).
 - **Scope:** the plugin package (manifest, files, signature), where a signature's trust comes from, how an archive is verified
   and extracted, and the install, update, uninstall and load-integrity flows. The grant calls are
   `plugin-grant-contract.md`'s; this note only says how install and update reach them.
@@ -269,6 +270,12 @@ curated key are kept, and a curated installation stays bound to its key.
 package lock) over every package and quarantine directory. The order is fixed: a project mutex first, then the package lock;
 nothing takes a project mutex while it holds the package lock. Only one daemon process holds a data directory (the host lock), so
 the lock is in memory.
+- **Bounded waits** (review 3 S2). A commit holding a project mutex waits for the package lock at most 5 s; past that it releases
+  the mutex and answers `busy` (the user retries), and a retry revalidates its baseline (§5.1). Collection and repair work in
+  batches of at most 64 directories per hold, then release the lock. Decreases never wait on either lock: a revoke or a disable is
+  one synchronous write that does not take the project mutex, and an increase or a start approved before it is refused at its
+  final check (`plugin-grant-contract.md` §3; audit A L1, whose fix is in review and lands before K2-i1). So neither a slow file system nor a plugin's start can stop a decrease
+  from applying within its budget.
 
 **Pins.** A live staging record pins its staging directory. A commit pins its target identity from publication until its
 transaction has committed or failed. Collection never removes a pinned directory.
@@ -277,12 +284,16 @@ transaction has committed or failed. Collection never removes a pinned directory
 1. **Verified staging** (inspection, no lock needed: the directory is private and pinned): files written and `fsync`ed, then their
    directories `fsync`ed.
 2. **Publish** (the project mutex, then the package lock; the identity pinned):
-   - if `packages/<identity>/` does not exist, the staging directory is renamed there and the parent is `fsync`ed;
-   - if it exists and a package row references the identity, it is verified against the row's stored listing (§5.6's bounded
-     check). Equal: the staging copy is discarded and the existing one reused. Different: the existing directory is moved to
-     `plugins/quarantine/<random>/` (parent `fsync`ed), then the staging copy is renamed into place (parent `fsync`ed);
-   - if it exists with no row (a publication that never committed), it is unreferenced garbage. It is verified against the
-     staging record's listing and reused if equal; otherwise it is quarantined and replaced as above.
+   - if `packages/<identity>/` does not exist, the staging directory is renamed there;
+   - if it exists, it is checked by the **pure verifier** (`checkPackage(dir, listing)`: the bounded walk and reads of §5.6, no
+     side effects, returning `equal` or a closed mismatch) against the row's stored listing, or, with no row (a publication that
+     never committed), against the staging record's listing. Equal: the staging copy is discarded and the existing one adopted.
+     Different: the existing directory is moved to `plugins/quarantine/<random>/`, then the staging copy is renamed into place.
+     That repairs the files for every installation of the identity, so nothing is disabled here (§5.6);
+   - **then, in every branch, the `packages/` folder is `fsync`ed, and after a quarantine move the `quarantine/` folder too**,
+     in this attempt, before the commit (review 3 B1). An adopted directory that was renamed by an earlier, failed attempt is
+     therefore made durable before any row references it. An fsync error refuses this attempt (`unavailable`) with no row
+     written; the directory stays as unreferenced garbage, and a later attempt fsyncs again before it may adopt it.
 
    Every decision is taken under the package lock, so no other publication, quarantine or deletion can interleave between the
    check and the rename, and a second install of the same identity waits, then finds the directory and verifies it.
@@ -302,6 +313,8 @@ transaction has committed or failed. Collection never removes a pinned directory
 | after staging fsync, before the rename | staging only | the next start removes staging; nothing installed |
 | after the rename, before the parent fsync | the directory may or may not survive; no row | either way unreferenced: collected at start |
 | after the parent fsync, before the commit | a published directory, no row | collected at start |
+| the rename succeeds, the parent fsync fails | a visible, maybe not durable directory, no row | refused, no row; a same-daemon retry (another project's or the same) finds it, verifies it, fsyncs the parent again, and only on success commits; a crash after that commit finds the directory durable and referenced |
+| a quarantine move, then the fsync of either folder fails | the moved directory, no new row | refused; the identity is republished by the next attempt, which fsyncs both folders before committing |
 | the commit fails (disk full, constraint) | a published directory, no new row; the old version still referenced | refused; the directory is collected; the old version still loads |
 | after a quarantine move, before the replacement rename | the identity directory absent, a quarantine entry, no new row | refused or crashed before commit: an existing row's package is missing, so its next load fails closed (§5.6) and a reinstall of the same identity republishes it |
 | after the commit, before the challenges end | committed | the challenges are in memory and do not survive a restart; at runtime the binding's revision check refuses them anyway (§5.3) |
@@ -316,8 +329,8 @@ every committed installation must have its package, and every precommit fault mu
 
 ### 5.5 Uninstall
 
-`axis.plugins/1.uninstall { projectId, pluginId }`: tier 2, user-only, like `revoke` (a decrease needs no native dialog). One
-transaction under the project mutex:
+`axis.plugins/1.uninstall { projectId, pluginId }`: tier 2, user-only, like `revoke` (a decrease needs no native dialog). Like
+every decrease it does not wait for the project mutex (§5.4, bounded waits); it is one synchronous transaction:
 - disable;
 - revoke every grant;
 - clear the requests;
@@ -340,8 +353,15 @@ Then it opens each listed file without following links, checks its size against 
 total), reads at most that size plus one byte, and compares its SHA-256 with the listed one.
 - The walk and the reads are bounded in time by an abort signal.
 - **Any failure** (a mismatch, an extra or missing file, a link, an oversize, a growth during the read, a timeout, an I/O error)
-  takes the same path: the plugin is disabled in every project that installs this package, `plugin.integrity_failed` is
-  appended, and nothing is returned (4a/L14).
+  takes the same path, and nothing is returned (4a/L14):
+  1. under the package lock only (never a project mutex), the identity is marked **suspect** in memory, so every load of it
+     returns nothing at once;
+  2. after releasing the package lock, and holding no project mutex, each installation that references the identity is disabled
+     one at a time by the daemon's own decrease (§6.3), after a fresh check that it still points at this identity at the same
+     revision: an installation updated meanwhile is not disabled by a stale result. Decreases take no project mutex, so this
+     never nests mutexes and cannot deadlock with a commit waiting for the package lock;
+  3. `plugin.integrity_failed` is appended; the suspect mark is cleared only when a publication repairs the identity (§5.4).
+- The pure verifier of §5.4 and this load check share one bounded implementation; only this public wrapper has side effects.
 - PV-K3 serves only the returned buffers. Each view is bound to the installation revision it loaded, and an update or uninstall
   (a revision change) retires the project's views of that plugin, so an old view can never act under requests or grants meant
   for the replacement.
@@ -393,6 +413,16 @@ writer of user rows). No table or store method mints a grant token or reaches th
   (they are the user's challenges, not the plugin's), so the digest is what refuses them.
 - `plugin-grant-contract.md` records both changes in its §2 and §3 when K2-p3 lands; they change the merged grant contract.
 
+### 6.3 The daemon's own decrease (review 3 S3)
+
+The v16 store writes every plugin row change as the user's (`journal.plugin.record` with `actor: user`). An integrity failure is
+not a user action, so K2-p3 adds one narrow store method, `disableForIntegrity(pluginId, projectId)`: a decrease (no token, the
+v16 generation trigger unchanged) that sets the plugin off and appends its `journal.plugin.record` with `actor: daemon` and
+`reason: integrity`. It is the only daemon-attributed writer; increases stay token-only (K2-g3), and the writer rule's list is
+unchanged (a decrease is allowed anywhere). `plugin-grants.md` §1 and the grant contract record the exception when K2-p3 lands.
+The test asserts the complete persisted event sequence of an automatic integrity failure: the daemon's disable row, then
+`plugin.integrity_failed`, and no user-attributed row.
+
 ## 7. Audit rows
 
 New actions are added to the audit payload allowlist in K2-p3, with scalar payloads only (the policy summarises any array or
@@ -425,69 +455,6 @@ No row carries the manifest's `name` or `description`, a path, or archive text.
 The own shell's picker and its wiring of main's flow are OS tickets (OS-3b's pattern); until then the flows are tested through
 the supervisor.
 
-## 9. Acceptance tests and mutants, per slice
+## 9. Acceptance tests and mutants
 
-Every refusal suite includes a valid control input that passes, so a component that refuses everything fails.
-- **K2-p1:**
-  - every manifest rule refused in isolation;
-  - SemVer order (`1.0.0-2` < `1.0.0-10` < `1.0.0`), leading zeros refused, safe-integer bounds;
-  - the RFC 8785 vectors inside the profile, plus duplicate key, lone surrogate, float, depth and size refusals;
-  - a signature moved to another id, version, tier, permission set or bundle fails (4a/L16);
-  - an independently framed vector kills a dropped prefix or NUL;
-  - one bundle hash across two archives differing in order, compression and timestamps, and a different one for a one-byte
-    change;
-  - lists with a lower version, an unknown key, a bad signature, a duplicate `(id, version)`, or past `notAfter` refused (4a/L4);
-  - mutants: the domain prefix, a separator, the tier left out of the message, the version comparison flipped, `notAfter`
-    ignored, duplicate-key detection off.
-- **K2-p2:**
-  - one archive per refusal of §4.2 to §4.4, colons, stream names, reserved names and file and folder prefix conflicts included
-    (4a/L5, 4a/L15), each leaving nothing outside the staging directory;
-  - a lying declared size stopped at the cap;
-  - overlapped, prepended and data-descriptor archives refused;
-  - an executable bit never applied;
-  - the seeded fuzz test;
-  - mutants: each check removed, caps on declared sizes, the exclusive flag dropped, the CRC check off.
-- **K2-p3:**
-  - the `STRICT` tables' insert and trigger rules;
-  - the list version never going down across restarts;
-  - `not_requested` before the dialog and under the lock (a request removed while a grant is open refuses it);
-  - the binding refusing after a revision change (a start approved and waiting under the mutex during an update);
-  - an approved but unspent user grant and an approved but unspent enable, each refused after a package-only update that keeps
-    the permission requested, and after an uninstall and reinstall;
-  - the listing stored with the package, its hash checked on read, and a row whose identity exists with other fields refused;
-  - persisted audit rows with the scalar encodings, never manifest text;
-  - mutants: the recheck at the write removed, the revision left out of `valid()`, the allowlist entry missing.
-- **K2-i1:**
-  - install end to end through the supervisor (installed, disabled, no grants, the files at the identity path);
-  - reinstall after uninstall reusing the retained row, generation kept, and an older package refused without downgrade, while
-    v2, uninstall, then a confirmed downgrade to v1 succeeds;
-  - one bundle with two different manifests (or unsigned against curated) in projects A and B: two packages, A unchanged, B gets
-    exactly what it confirmed;
-  - a commit with a stale, reused, expired, other-generation or wrong-digest `stagingId`, or a stale baseline, refused;
-  - the source archive replaced after inspection never changes what is committed;
-  - every row of §5.4's fault table at its point, two concurrent installs of one identity, and collection racing a publication;
-  - after a restart, a valid package loads, and extra, missing, oversized and swapped files are refused from the stored listing;
-  - an existing identity directory with corrupted content is quarantined, not reused;
-  - `verifyInstalled`:
-    - each failure of §5.6 (an oversize replacement, an added tree, a link or cycle, a file growing during the read, a swapped
-      file) takes the disable path;
-    - only the checked buffers are served;
-  - abort, expiry, window close and generation change clean staging up;
-  - a repository file or workspace setting that names a plugin installs and enables nothing, and shows the notice (4a/L6);
-  - an expired or refused list blocks curated installs, while installed curated plugins load with the warning and unsigned local
-    installs are unchanged (4a/L12);
-  - mutants: the baseline check, single use, the digest check, publication after the commit, the package lock or a pin dropped,
-    collection without the recheck, the quarantine path, each read cap.
-- **K2-i2:**
-  - every update shows the dialog, an empty diff included (4a/L26);
-  - two projects, A and B, on v1 with grants: an update or uninstall in A leaves B's version, requests, grants and package
-    directory alone;
-  - a zero-permission installation installs, updates and uninstalls;
-  - an update of an enabled, granted installation keeps exactly the intersection of the old grants and the new requests;
-  - every unspent challenge ended, an approved-unspent one included;
-  - a curated downgrade to a listed version succeeds, and to an unlisted one is refused;
-  - a curated key change and a curated-to-unsigned update are blocked;
-  - mutants: the empty-diff dialog skipped, removed grants retained, added requests granted, the key comparison removed, the
-    revision rise skipped.
-- **All slices:** the K2-g3 writer rule stays green with the package files in place, and a test shows install and update leave
-  `plugin_grants` unchanged for added requests.
+Per slice, in `plugin-install-tests.md`.
