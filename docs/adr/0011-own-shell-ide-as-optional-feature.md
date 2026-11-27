@@ -97,9 +97,14 @@ It is a first-party module (`axis.social`) with its own nav item, routes and pro
 
 **Correction to the current code.** `prepareCommit` (`packages/review/src/binding.ts`) stages the reviewed tree into the **real** `.git/index` with `read-tree` before the commit, and restores the old index only when the commit is refused [V]. A successful Axis commit therefore replaces whatever the user had `git add`-ed, and it writes the index that a running CLI may also be writing.
 
-**Decision: S1, with Axis staging canonical and the real index untouched.**
-- New ticket DC-0 (Opus): the commit path builds the commit through a **private temporary index** (`GIT_INDEX_FILE` in a daemon scratch directory, as review already does) and never writes the real index. The H9-hooks step, when built, runs in that scratch context too.
-- **Known consequence**, stated rather than hidden: after an Axis commit, the real index still holds its old entries. `git status` in a terminal then shows the committed paths as staged reversions until the user runs `git reset` (or `git restore --staged`). The plan records a follow-up decision to settle before the 1a gate: leave it as is, or refresh only the index entries that still equal the old HEAD entry, under `index.lock`, so that no user `git add` is ever lost.
+**Decision: S1. Axis staging is canonical, and the only write to the real index is the narrow refresh after a commit (below).**
+- New ticket DC-0 (Opus): the commit path builds the commit through a **private temporary index** (`GIT_INDEX_FILE` in a daemon scratch directory, as review already does) and never stages into the real index. The H9-hooks step, when built, runs in that scratch context too.
+- **After the commit: a narrow refresh of the real index** (decided 2026-11-26 under the owner's delegation; a requirement of the 1a gate). Without it, `git status` in a terminal would show the committed paths as staged reversions, which is not acceptable for a product with a file manager and git changes. The rules:
+  - It runs only **after** the compare-and-swap ref update succeeds. Nothing is written to the real index before or instead of it.
+  - It takes `index.lock` the way git does. If the lock is held (a CLI or the user's own git is working), the refresh is **skipped without error**, and the next `git status` simply shows the staged reversions.
+  - It rewrites **only** the entries whose index entry still equals the old HEAD tree's entry (same mode and object id) for a path the commit changed, and sets them to the new HEAD's entry. An entry that differs from old HEAD (the user's own `git add`, an intent-to-add entry, a conflict stage) is never touched, so no user staging is ever lost.
+  - Entries with skip-worktree or assume-unchanged bits, sparse-checkout paths and submodule (gitlink) entries keep their flags, or are left alone where the rule above cannot be applied exactly. It runs no hooks and no filters (the hardened prefix).
+  - Tests cover a concurrent user `git add`, a held lock, hooks and filters, sparse checkout, skip-worktree, assume-unchanged, intent-to-add and submodules.
 - DC-2's `build` registers the built tree in the daemon's reviewed-tree registry, bound to workspace, head, branch and snapshot, so `axis.git/1.commit` accepts it the same way it accepts a `review.diff` tree. It carries the per-file truncation acknowledgement (REV-1) for every file it includes. The UI shows the exact "Staged for commit" set that produced the `treeHash`, so "the commit is exactly the reviewed tree" holds for hunk selections. Hunk ids are content-addressed [V], so a changed file invalidates its selection.
 - + and - are shown as "Staged for commit" and "Changes", with a one-line note that Axis's staging is separate from `git add`. A one-way mirror into the real index (S2) is a later, separate decision.
 - Discard per file uses `axis.worktrees/1.discard`, which is tier 2 and backed up to a ref [V]. Discard per hunk and the hunk and selection reads are missing contracts (plan DC-2, DC-4).
@@ -173,5 +178,4 @@ It is a first-party module (`axis.social`) with its own nav item, routes and pro
 
 ## Open questions
 
-1. The real index after an Axis commit (DC-0's follow-up): leave it, or refresh only the entries that still equal the old HEAD entry, before the 1a gate? A one-way S2 mirror is a separate, later decision.
-2. Project kinds and agents without a worktree (the later ADR for non-code modules).
+1. Project kinds and agents without a worktree (the later ADR for non-code modules).
