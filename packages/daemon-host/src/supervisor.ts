@@ -266,6 +266,23 @@ export class DaemonSupervisor {
     }
   }
 
+  /**
+   * Post `window.gone` for a code window (PV-K2 K2-g4a; main's sender is `main/window-lifecycle.ts`). It is checked against the
+   * host's inbound schema first, so only a `w<n>` id is ever posted. `false` unless the host is `running`. Never throws.
+   */
+  windowGone(windowId: string): boolean {
+    const child = this.#child;
+    if (this.#state !== "running" || child === undefined) return false;
+    const parsed = inboundMessageSchema.safeParse({ type: "window.gone", windowId });
+    if (!parsed.success || parsed.data.type !== "window.gone") return false;
+    try {
+      child.postMessage(parsed.data);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   // ---- internals ----------------------------------------------------------------------------------------------
 
   #dropKey(): void {

@@ -128,6 +128,15 @@ export const projectsTrustSchema = z
 
 export const shutdownSchema = z.strictObject({ type: z.literal("shutdown") });
 
+/**
+ * Main to host: a code window was destroyed or its renderer died (PV-K2 K2-g4a). It ends the window's lifetime epoch even if a
+ * connection's close was never reported. A code window id only (`w<n>`, as main attests it), never a plugin view's `p<n>`.
+ */
+export const windowGoneSchema = z.strictObject({
+  type: z.literal("window.gone"),
+  windowId: z.string().regex(/^w[0-9]{1,10}$/),
+});
+
 /** Supervisor to host. */
 export const inboundMessageSchema = z.discriminatedUnion("type", [
   secretsResultSchema,
@@ -143,6 +152,7 @@ export const inboundMessageSchema = z.discriminatedUnion("type", [
   projectsRegisterSchema,
   projectsTrustSchema,
   shutdownSchema,
+  windowGoneSchema,
 ]);
 export type InboundMessage = z.infer<typeof inboundMessageSchema>;
 

@@ -17,6 +17,7 @@ import type {
   DaemonAuditSink,
   Handler,
   IdempotencyStore,
+  Identity,
   IdentityVerifier,
   Policy,
 } from "./types.js";
@@ -55,6 +56,17 @@ export interface DaemonOptions {
    * handlers are registered like any other. Shutdown ends every subscription before requests are cancelled.
    */
   readonly events?: EventHub;
+  /**
+   * Called once per attested session (PV-K2 K2-g4a): `accepted` when the attestation is verified and the session registered,
+   * before any request it queued is handled; `closed` once when it closes, by any cause. A refused attestation or a refused
+   * duplicate connection id calls neither. Both get the session's frozen identity. A throw is reported (`lifecycle`) and ignored.
+   */
+  readonly lifecycle?: SessionLifecycle;
+}
+
+export interface SessionLifecycle {
+  accepted(identity: Identity): void;
+  closed(identity: Identity): void;
 }
 
 /** Does the request schema declare an optional `approval` that accepts a challenge reference? */
@@ -257,13 +269,25 @@ export class Daemon {
         ...(this.#opts.events === undefined ? {} : { events: this.#opts.events }),
         onClosed: (x) => {
           if (this.#sessions.get(x.identity.connectionId) === x) this.#sessions.delete(x.identity.connectionId);
+          this.#hook("closed", x.identity);
         },
       }, this.#limits.handshakeTimeoutMs - (performance.now() - acceptedAt));
       session = s;
       uncount();
       this.#sessions.set(identity.connectionId, s);
+      this.#hook("accepted", s.identity);
       for (const raw of pending.splice(0)) s.handle(raw);
     })();
+  }
+
+  #hook(which: keyof SessionLifecycle, identity: Identity): void {
+    const lifecycle = this.#opts.lifecycle;
+    if (lifecycle === undefined) return;
+    try {
+      lifecycle[which](identity);
+    } catch (e) {
+      this.#opts.onInternalError?.("lifecycle", e);
+    }
   }
 
   /**
