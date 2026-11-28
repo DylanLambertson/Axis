@@ -37,14 +37,14 @@ test("commit: no commit hook runs on the bound path, with runHooks on or off", a
   }
 });
 
-test("commit: a tree mismatch is refused and nothing is committed", async () => {
+test("commit (DC-0): the reviewed tree is committed, not the index, and the user's later staging stays in the index untouched", async () => {
   const f = fixture();
   const reviewed = stage(f, "b.txt", "two\n");
-  stage(f, "c.txt", "changed after review\n");
-  const before = f.git("rev-parse", "HEAD").trim();
-  const e = await refusal(executeCommit(f.deps, { worktree: f.wt, reviewedTreeHash: reviewed, message: "m", ...pin(f) }));
-  assert.equal(e.code, "E_CONFLICT");
-  assert.equal(f.git("rev-parse", "HEAD").trim(), before);
+  const staged = stage(f, "c.txt", "staged after review\n");
+  const r = await executeCommit(f.deps, { worktree: f.wt, reviewedTreeHash: reviewed, message: "m", ...pin(f) });
+  assert.equal(r.tree, reviewed);
+  assert.equal(f.git("rev-parse", "HEAD^{tree}").trim(), reviewed, "c.txt is not committed");
+  assert.equal(f.git("write-tree").trim(), staged, "the index is as the user staged it");
 });
 
 test("commit: refused while a CLI run is active", async () => {
@@ -164,10 +164,10 @@ test("a filter driver in the config is neutralised by the daemon prefix, and the
   writeFileSync(join(f.wt.gitDir, "info", "attributes"), "*.txt filter=x\n");
   const tree = f.git("write-tree").trim();
   await planCommit(f.deps, { worktree: f.wt, reviewedTreeHash: tree, message: "m", ...pin(f) }).catch(() => undefined);
-  const call = f.seen.find((c) => c.context === "daemon" && c.argv.includes("write-tree"));
+  const call = f.seen.find((c) => c.context === "daemon" && c.argv.includes(`${tree}^{tree}`));
   assert.ok(call && call.argv.includes("filter.x.clean="), "the prefix neutralises the configured filter");
   const env = { PATH: PATHS, HOME: f.deps.env.daemon["HOME"] as string };
-  const head = call.argv.slice(0, call.argv.indexOf("write-tree"));
+  const head = call.argv.slice(0, call.argv.lastIndexOf("rev-parse"));
   // Setup above ran unhardened git (write-tree), which on some versions (2.53) runs the clean filter itself; start from a clean slate.
   rmSync(f.marker, { force: true });
   writeFileSync(join(f.wt.workTree, "a.txt"), "touched 1\n");

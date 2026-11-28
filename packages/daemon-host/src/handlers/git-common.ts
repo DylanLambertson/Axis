@@ -1,4 +1,5 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
+import type { AuditEventInput } from "@axis/audit";
 import type { ProjectTrustGate } from "../gate/project-trust.js";
 import { DaemonError, type HandlerContext } from "@axis/daemon";
 import type { Journal, Workspace } from "@axis/journal";
@@ -18,8 +19,16 @@ import { ReviewRefusal } from "../ports/review.js";
 import { toGitError } from "./git-errors.js";
 import type { ReviewedTrees } from "./review-store.js";
 
+/** The git handlers' own audit rows (DC-0 review 2 S2), and their payload keys (ids, a closed reason and a count only). */
+export const GIT_AUDIT = { indexRefresh: "git.index_refresh" } as const;
+export const GIT_PAYLOAD_ALLOWLIST: Readonly<Record<string, readonly string[]>> = Object.freeze({
+  [GIT_AUDIT.indexRefresh]: Object.freeze(["workspaceId", "result", "reason", "count"]),
+});
+
 export interface GitHandlerDeps {
   readonly ops: GitOperations;
+  /** Where the commit's index refresh outcome is recorded; the host's audit log. */
+  readonly audit?: { append(event: AuditEventInput): unknown };
   /** The project trust gate (commit and push): its ticket is spent by `ops` at the side effect. */
   readonly gate: ProjectTrustGate;
   /** The commit side of the review binding; the handle of a reviewed tree is only ever passed to it. */

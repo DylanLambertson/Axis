@@ -5,8 +5,9 @@
   decisions of 2026-11-26 and 2026-11-27 (owner delegation, reversible).
 - **Scope:** who may write `plugin_enablement` and `plugin_grants` (journal v16, PV-K1b), through which calls, what each write is
   bound to, and what a revoke or a disable ends.
-- **Not in scope:** install, update, signatures and extraction are the rest of PV-K2 and follow ADR 0008 decisions 7 and 8. They
-  create the plugin's row and propose grants; they grant only through the calls below (section 1, condition 4).
+- **Not in scope:** install, update, signatures and extraction are the rest of PV-K2 and follow ADR 0008 decisions 7 and 8
+  (designed in `plugin-install.md`). They create the plugin's row and propose grants; they grant only through the calls below
+  (section 1, condition 4).
 - **Sources:** ADR 0008 decisions 4, 6 and 8 and the amendment "how the main-built dialog is reached"; `plugin-grants.md`;
   `plugin-run-start.md` section 3.1; `threat-model-phase4a.md` OI-3 and gate 4a/L24 (partly superseded, section 4).
 
@@ -83,14 +84,26 @@ A new contract, `axis.plugins/1`. Every method is user-only:
   4. the audit hand-off;
   5. the write.
 
-  Every competing writer of the plugin rows (the other calls here, install and update) takes the same mutex.
+  Every competing **increase** (the other grant or enable, install and update) takes the same mutex, the worktrees binding's,
+  which a plugin's run start holds too (a source pin tests that the composition passes one instance to both, audit A L2).
+- **Decreases never wait** (audit A, L1). A revoke or a disable is one synchronous write and does not take the mutex, which a
+  plugin's start may hold for up to its 30 s budget across the provider's model list and the worktree's preparation. So a decrease
+  applies at once, and the start is refused at its next grant check (under the mutex, and in the service's synchronous step).
+  An increase approved before the decrease cannot then overwrite it: right before writing, the handler recomputes the digest from
+  the live state and refuses `plugin_changed` unless it equals the digest its approval was spent on. A no-op decrease (a disable
+  of a plugin that is already off, which is exactly when an enable is pending, or a revoke of a permission not granted) changes
+  nothing in the store, so the digest also binds a **decrease epoch**: an in-memory count per plugin and project that every
+  revoke and disable bumps, no-ops included. Any decrease after an increase's issue, or between its spend and its write, refuses
+  it (the review of the audit-A fix, S1).
 - **The write** is the built `journal.plugins.grant` or `setEnabled`. A permission already granted gives `E_CONFLICT` with reason
   `already_granted`, and nothing is written. The generation moves only on a real revoke, or an enabled-to-disabled change (the v16
   trigger; a no-op `disable` or a `revoke` of a missing grant leaves it unchanged, tested).
 
 ### 3.1 The native dialog line
 
-Main's dialog shows one line, built only from values the daemon derives, never from the manifest. `nativeSummary` replaces a
+Main's dialog shows one line, built only from values the daemon holds, never from a manifest. If the line is not found when
+the challenge is issued (its note was evicted from the shared preview cache), the grant or enable is refused before main is asked
+for a dialog, never shown with the bare target, which does not name the permission (audit A, L4). `nativeSummary` replaces a
 detail that holds a control, format (bidi, zero-width), surrogate or separator character, and cuts the detail at 80 UTF-16 units
 in the middle. A stored plugin id can be 64 characters, which would make a naive line 139 units, and the cut would lose the
 project and the permission's wording. So the line follows the task Start pattern (`tasks/confirm.ts`):
@@ -103,9 +116,12 @@ project and the permission's wording. So the line follows the task Start pattern
      runs").
   2. **The plugin**, in a stable id form of at most 22 units: the id when it fits, else its first 6 characters, "…" and the first
      15 hex digits of the SHA-256 of the whole id. The card shows the whole id and the same short form, so the user can match them.
-  3. **The project's display name**, which the user chose, in whatever units remain (at least 8).
-- **The project name comes last**, and the user chose it: at most it can add look-alike wording at the END of the line, after
-  the wording and the plugin, which it can never displace or cut (review K2-g2 N4).
+  3. **The project's display name** in whatever units remain (at least 8).
+- **Two parts are not the user's words** (audit A, L3). The project's display name is the repository folder's name, which a
+  repository author chooses, and the plugin id is its publisher's. Either can carry wording-like text ("only-reads-pages",
+  "demo - nothing granted - OK"). Both come **after** the fixed wording, which is first, whole and never cut, so at most they add
+  look-alike words after it; they can never displace or shorten it (review K2-g2 N4). The card shows the full request, and a
+  test pins that such names land only after the fixed wording.
 - **The short id is widened** (review K2-g2 N2; built). The earlier form, 12 characters and 6 hex digits (24 bits), let another
   id with the same short form be found in a few thousand tries; the tests keep two such pairs. The whole id cannot always fit:
   the worst case (the danger marker, the longest wording, the separators and the project's 8 units) leaves the plugin 22 units,
@@ -196,7 +212,7 @@ tests call `journal.plugins.grant` and `setEnabled`.
 | **K2-g3** | **Condition 4, by construction.** The journal mints grant tokens and hands its minting function out once (`takeGrantMint`), to the approved action at wiring time; `grant` and `setEnabled(…, true)` refuse any write without a token of that instance (section 8.4). **Built.** The writer and construction rules live in `test/packages/plugin-grant-writer-rule.mjs` and run in the gate's import walk; the second-open residual is RR-96. | K2-g2 | S |
 | **K2-g4a** | **Condition 6, the daemon part.** The lifecycle hook in `@axis/daemon` (`DaemonOptions.lifecycle`: `accepted`, `closed`, once per attested session); the strict `window.gone { windowId }` control message and its shell-independent sender in `daemon-host/src/main`; `WindowLifetimes` (epoch, counts, the ring of ended epochs, `alive`) with the epoch-rule tests. Not wired into the Code OSS seam (section 8.4). **Built.** `DaemonOptions.lifecycle` calls `accepted` before any message the session queued during the handshake is handled, so a close those messages cause always comes after it; a throwing hook is reported (`lifecycle`) and ignored. `plugins/window-lifetimes.ts` keeps a set of connection ids per live epoch, so a duplicate accept or close counts once and a late close of a connection from an ended epoch changes nothing; an epoch that cannot be drawn fresh leaves the window with none (fail closed). The supervisor posts `window.gone` only while the host runs and only a `w<n>` id the inbound schema accepts; `main/window-lifecycle.ts` is the sender the own shell calls. The composition does not create `WindowLifetimes` yet: K2-g4b wires it with the binding that reads it. | PV-K1e-b | M |
 | **K2-g4b** | **Condition 6, the binding and the checks.** `PluginChallenges` pins the host window's epoch at issue; `valid()` requires it alive; `ApprovedPluginStart` carries it; the three start checks (handler entry, the mutex, the service's synchronous step) test it and the plugin connection's signal; the tests at each await after the spend: plugin close, last host close, close then reopen, `window.gone`. **Built.** A host window with no live epoch refuses the challenge at issue (nothing issued or counted); every later check calls `alive()` with the pinned epoch, so an ended or unknown epoch is closed, and a throw is too. The pending listing ends a plugin challenge whose binding no longer holds, so a reopened window never lists a card from the lifetime before. The handler refuses `host_window_closed` (`E_CANCELLED` for the plugin connection) at entry, before waiting for the mutex, and again under it; it hands the same check to the service as `hostAlive`, required for a plugin start and checked right after `grantHolds`. The composition creates `WindowLifetimes`, passes it to the daemon as `lifecycle` and to the binding and the handler, and ends a lifetime on `window.gone`. Pausing at the policy row (where a closed plugin connection is stopped by the daemon itself), the mutex wait and the trust gate is tested with each of the four events; the model list and `engine.prepare` come before the service's synchronous check and are covered there. | K2-g4a | M |
-| **K2-enable** | Turns `pluginGrants` on in the production composition. Merges only when all six conditions hold: 1 (OS-30's card), 2 (Code OSS retired or every reader tolerant), 3 (the real-host test, after PV-K3), 4 (K2-g3, plus a check that install and update grant only through the grant action), 5 (met by decision 3) and 6 (K2-g4a and K2-g4b, plus OS-3 sending `window.gone` on destroy, renderer death and main-frame navigation start). The short plugin id is already widened (section 3.1). | all above; OS-30; PV-K3 | S (code), plus the evidence |
+| **K2-enable** | Turns `pluginGrants` on in the production composition. Merges only when all six conditions hold: 1 (OS-30's card), 2 (Code OSS retired or every reader tolerant), 3 (the real-host test, after PV-K3), 4 (K2-g3, plus a check that install and update grant only through the grant action), 5 (met by decision 3) and 6 (K2-g4a and K2-g4b, plus OS-3 sending `window.gone` on destroy, renderer death and main-frame navigation start). The short plugin id is already widened (section 3.1). Before `net:` becomes grantable, the enable dialog must carry the danger marker computed over the grants it turns back on (today it never does; harmless while no `net:` grant exists; audit A F6). | all above; OS-30; PV-K3 | S (code), plus the evidence |
 
 Install, update, signatures and extraction (ADR 0008 decisions 7 and 8) are the other PV-K2 tickets. They propose grants and
 call `grant` once per permission (decision 1). They never write the store directly, because K2-g3's token makes that impossible.

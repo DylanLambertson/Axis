@@ -51,8 +51,8 @@ test("a configured identity that differs from the expected one is refused", asyn
   assert.equal(await code(planCommit(makeDeps(r), { ...input, author: { name: "Evil", email: "e@x" } })), "E_POLICY_DENIED");
 });
 
-test("REV-1: an index tree that differs from the reviewed tree is refused", async () => {
-  const r = new FakeRunner(healthy((s) => (s[0] === "write-tree" ? { stdout: `${OTHER_TREE}\n` } : undefined)));
+test("REV-1: a reviewed id that is not a tree of the repository is refused, before any pty call", async () => {
+  const r = new FakeRunner(healthy((s) => (s[0] === "rev-parse" && s.includes(`${TREE}^{tree}`) ? { code: 1 } : undefined)));
   assert.equal(await code(planCommit(makeDeps(r), input)), "E_CONFLICT");
   assert.equal(r.ptyCalls().length, 0);
 });
@@ -107,7 +107,7 @@ test("filter drivers present in the config are neutralised on daemon calls", asy
     ),
   );
   await planCommit(makeDeps(r), input);
-  const wt = r.calls.find((c) => sub(c.argv)[0] === "write-tree");
+  const wt = r.calls.find((c) => sub(c.argv).includes(`${TREE}^{tree}`));
   assert.ok(wt);
   for (const f of ["lfs", "evil"]) {
     for (const k of ["clean", "smudge", "process"]) assert.ok(wt.argv.includes(`filter.${f}.${k}=`), `${f}.${k}`);
@@ -118,7 +118,7 @@ test("filter drivers present in the config are neutralised on daemon calls", asy
 test("an empty or upper-case filter name is neutralised as git spells it; a two-level filter key names no driver", async () => {
   const r = new FakeRunner(healthy((s) => (s[0] === "config" ? { stdout: "filter..process\0filter.Up.clean\0filter.process\0" } : undefined)));
   await planCommit(makeDeps(r), input);
-  const wt = r.calls.find((c) => sub(c.argv)[0] === "write-tree");
+  const wt = r.calls.find((c) => sub(c.argv).includes(`${TREE}^{tree}`));
   assert.ok(wt);
   for (const f of ["", "Up"]) {
     for (const k of ["clean", "smudge", "process"]) assert.ok(wt.argv.includes(`filter.${f}.${k}=`), `${f}.${k}`);
@@ -201,7 +201,10 @@ async function failure(p: Promise<unknown>): Promise<GitOpsError> {
 
 test("execute: success returns the commit and tree, and the ref moves by compare-and-swap from the expected parent", async () => {
   const r = bound();
-  assert.deepEqual(await executeCommit(makeDeps(r), input), { commit: NEW, tree: TREE });
+  const res = await executeCommit(makeDeps(r), input);
+  assert.deepEqual([res.commit, res.tree], [NEW, TREE]);
+  // The fake repository has no index file: the post-commit refresh is a skip, and a skip never fails the commit.
+  assert.ok(res.indexRefresh !== undefined && "skipped" in res.indexRefresh, JSON.stringify(res.indexRefresh));
   const update = r.calls.find((c) => sub(c.argv)[0] === "update-ref");
   assert.ok(update);
   assert.deepEqual(sub(update.argv).slice(-3), ["refs/heads/axis/feat", NEW, HEAD]);
@@ -259,4 +262,14 @@ test("a failed commit-tree is a conflict with a fixed message: git's stderr (pat
   assert.equal(e.code, "E_CONFLICT");
   assert.equal(e.message, "git commit-tree failed (exit 128); the branch was not updated");
   assert.equal(r.calls.some((c) => sub(c.argv)[0] === "update-ref"), false);
+});
+
+test("DC-0 review 1 S2: without the review freshness check a commit is refused before any git call (the tree object is all git-ops gets)", async () => {
+  for (const run of [planCommit, executeCommit]) {
+    const r = new FakeRunner(healthy());
+    const { assertReviewFresh: _dropped, ...deps } = makeDeps(r);
+    void _dropped;
+    assert.equal(await code(run(deps, input)), "E_POLICY_DENIED");
+    assert.equal(r.calls.length, 0);
+  }
 });

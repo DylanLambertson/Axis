@@ -67,7 +67,11 @@ export interface ConnectionVault {
   /** The current backend and whether a store would be allowed now. For the UI. */
   backend(): Promise<BackendReport>;
   store(connectionId: string, secret: string, options?: StoreOptions): Promise<ConnectionInfo>;
-  /** The plaintext, for the daemon's provider call only. Never forward it. */
+  /**
+   * The plaintext, for the daemon's own call only. Never forward it. An integration purpose, and any purpose under
+   * `weakPolicy: "refuse"`, also refuses (`weak_entry`) an entry whose own metadata, from the same backend read, is unprotected
+   * or names another backend or protection than the current one.
+   */
   reveal(connectionId: string, purpose: SecretPurpose): Promise<string>;
   /** Everything but the secret. */
   info(connectionId: string): Promise<ConnectionInfo | undefined>;
@@ -335,8 +339,14 @@ export function createVault(options: VaultOptions): ConnectionVault {
         audit("error");
         throw new VaultError("backend_changed");
       }
+      // An integration credential is handed out only from protected storage (net-read-slice.md §4 step 4), and under
+      // `weakPolicy: "refuse"` (the broker wiring, no consent path: secret-broker.md §6.1) a provider credential too: the current
+      // backend is read first, and the entry's own metadata below comes from the SAME read that carries the secret.
+      const gated = PURPOSE_KIND[purpose] === "integration" || weak === "refuse";
+      let current: BackendInfo | undefined;
       let entry: Awaited<ReturnType<SecretBackend["get"]>>;
       try {
+        if (gated) current = await currentInfo();
         entry = await backend.get(name);
       } catch {
         audit("error");
@@ -345,6 +355,19 @@ export function createVault(options: VaultOptions): ConnectionVault {
       if (entry === undefined) {
         audit("not_found");
         throw new VaultError("not_found");
+      }
+      if (current !== undefined) {
+        let held: EntryMeta;
+        try {
+          held = readMeta(entry.meta);
+        } catch {
+          audit("error");
+          throw new VaultError("backend_failed");
+        }
+        if (held.protection === "none" || current.protection === "none" || held.backend !== current.id || held.protection !== current.protection) {
+          audit("refused");
+          throw new VaultError("weak_entry");
+        }
       }
       // A weak copy may have been found while this read was in flight (SF-3).
       if (quarantine.has(name)) {

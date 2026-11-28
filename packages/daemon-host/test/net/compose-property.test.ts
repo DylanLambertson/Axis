@@ -27,13 +27,13 @@ function rng(seed: number): () => number {
 }
 
 // Pieces chosen to hit the edges: separators, controls, escapes in both cases, dots, sub-delimiters, Unicode, surrogates.
-const PIECES = ["%2%65", "%2%66", "%5%63", "\uff0e", "\uff0f", "\u3002", "a", "Z", "0", "-", "_", "~", ".", "..", "/", "?", "#", "\\", "%", "%2e", "%2E", "%2f", "%5C", "%3b", "%25", "%41", "%0a", "%7F", " ", "+", "&", "=", "!", "'", "(", "*", ";", ":", "@", "$", ",", "[", "]", "\t", "\n", "\r", "\u0000", "\u007f", "\u0085", "\u2028", "\u202e", "\u00e9", "e\u0301", "\ud83d\ude00", "\ud800", "\udc00", "\uff46", "\uff0e", "\ufe52", "\u0130", "\u00df"];
+const PIECES = ["%2%65", "%2%66", "%5%63", "\uff0e", "\uff0f", "\u3002", "a", "Z", "0", "-", "_", "~", ".", "..", "/", "?", "#", "\\", "%", "%2e", "%2E", "%2f", "%5C", "%3b", "%25", "%41", "%0a", "%7F", " ", "+", "&", "=", "!", "'", "(", "*", ";", ":", "@", "$", ",", "[", "]", "\t", "\n", "\r", "\u0000", "\u007f", "\u0085", "\u2028", "\u202e", "\u00e9", "e\u0301", "\ud83d\ude00", "\ud800", "\udc00", "\uff46", "\uff0e", "\ufe52", "\u0130", "\u00df", "\u00b7", "\u06d4", "\u0701", "\ua4f8"];
 
 function expectRefused(v: string, inPath: boolean): boolean {
   const bytes = new TextEncoder().encode(v).byteLength;
   const lone = /[\ud800-\udfff]/.test(v.replace(/[\ud800-\udbff][\udc00-\udfff]/g, ""));
   return v === "" || /[\u0000-\u001f\u007f-\u009f\u2028\u2029\u202a-\u202e\u2066-\u2069]/.test(v) || /[/?#\\;]/.test(v) || v.includes("%") ||
-    (inPath && (v === "." || v === ".." || /[\u2024\u2044\u2215\u2216\u29f5\u29f8\u3002\ufe52\ufe68\uff0e\uff0f\uff3c\uff61]/.test(v))) || lone || bytes > 256;
+    (inPath && (v === "." || v === ".." || /[\u00b7\u0387\u06d4\u0701\ua4f8\u2024\u2044\u2215\u2216\u29f5\u29f8\u3002\ufe52\ufe68\uff0e\uff0f\uff3c\uff61]/.test(v))) || lone || bytes > 256;
 }
 
 test("compose -> parse -> match is the identity for every accepted value, and refusal matches the rule (fixed seeds)", (t) => {

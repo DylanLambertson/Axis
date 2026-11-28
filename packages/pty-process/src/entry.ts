@@ -1,5 +1,6 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import { PTY_ENV_GH, PTY_ENV_GIT, PTY_ENV_SCRATCH, readPtyExecConfig } from "./config.js";
+import { defaultEndpointDir, type EndpointHostConfig } from "./endpoint-host.js";
 import { createNodeExec } from "./exec-node.js";
 import { adaptMessagePort, type MessagePortLike } from "./port-adapter.js";
 import type { SpawnFn } from "./ports.js";
@@ -39,7 +40,7 @@ export interface PtyParentPortLike {
 
 export interface PtyEntryProcess {
   exit(code?: number): unknown;
-  on(event: "SIGTERM" | "SIGINT" | "exit", listener: () => void): unknown;
+  on(event: "SIGTERM" | "SIGINT" | "SIGUSR1" | "exit", listener: () => void): unknown;
   removeListener(event: "SIGTERM" | "SIGINT" | "exit", listener: () => void): unknown;
 }
 
@@ -50,6 +51,8 @@ export interface PtyEntryDeps {
   readonly execArgv: readonly string[];
   readonly spawn: SpawnFn;
   readonly platform?: NodeJS.Platform;
+  /** This process's uid (the endpoint directory's required owner). Default `process.getuid()`. */
+  readonly uid?: number;
   /** One closed line per refusal. */
   readonly stderr: (line: string) => void;
 }
@@ -72,7 +75,26 @@ const closeAll = (ports: readonly MessagePortLike[]): void => {
   }
 };
 
+/** The one closed line the entry writes when SIGUSR1 arrives (the inspector stays closed). */
+export const DEBUG_SIGNAL_LINE = "axis.pty ignored SIGUSR1: the inspector stays closed";
+/** The one `execArgv` the pty process may be forked with: the flag that stops SIGUSR1 from opening the inspector. */
+export const EXEC_ARGV_ALLOWED = "--disable-sigusr1";
+
 export function runPtyEntry(deps: PtyEntryDeps): PtyEntryHandle {
+  // Audit C M1: SIGUSR1 would open Node's unauthenticated inspector on 127.0.0.1:9229, from which any local user could read
+  // this process's heap. The complete fix is `--disable-sigusr1` (EXEC_ARGV_ALLOWED), which holds from the first instruction;
+  // this listener is the second line, for a fork without it, and holds only once this file runs. Installed first, on every
+  // path, and never removed, not even by `dispose`: with no listener the signal's default applies again.
+  let signalled = false;
+  deps.process.on("SIGUSR1", () => {
+    if (signalled) return;
+    signalled = true;
+    try {
+      deps.stderr(DEBUG_SIGNAL_LINE);
+    } catch {
+      /* a failing log line never changes the outcome */
+    }
+  });
   const refuse = (reason: string): PtyEntryHandle => {
     try {
       deps.stderr(`axis.pty refused to start: ${reason}`);
@@ -84,7 +106,8 @@ export function runPtyEntry(deps: PtyEntryDeps): PtyEntryHandle {
   };
   if (deps.parentPort === undefined || typeof deps.parentPort.on !== "function") return refuse("not_utility_process");
   if (deps.execArgv.some((a) => DEBUG_FLAG.test(a))) return refuse("debug_flag_refused");
-  if (deps.execArgv.length > 0) return refuse("exec_args_refused");
+  // The one allowed argument is the flag that keeps the inspector closed, alone (audit C M1).
+  if (!(deps.execArgv.length === 0 || (deps.execArgv.length === 1 && deps.execArgv[0] === EXEC_ARGV_ALLOWED))) return refuse("exec_args_refused");
   const nodeOptions = deps.env["NODE_OPTIONS"];
   if (nodeOptions !== undefined && nodeOptions !== "") return refuse("node_options_refused");
 
@@ -108,7 +131,13 @@ export function runPtyEntry(deps: PtyEntryDeps): PtyEntryHandle {
     // PV-D2 slice 2: the forge path's own exec function, which can start only the gh it was given (never git).
     forge = { exec: createNodeExec(new Set([execConfig.ghPath]), platform), ghPath: execConfig.ghPath, scratchParent: execConfig.scratchParent, baseEnv };
   }
-  const service = createPtyService({ spawn: deps.spawn, ...(deps.platform === undefined ? {} : { platform: deps.platform }), ...(git === undefined ? {} : { git }), ...(forge === undefined ? {} : { forge }) });
+  // PV-M7 slice 2: the CLI endpoint listener's configuration on Unix (the runtime directory, the platform, this process's uid).
+  // Nothing is created here: the listener opens one socket only when the daemon asks for one endpoint in a spawn, which it does
+  // only while the user's switch is on. Windows has none (decision 8), and an undefined directory or uid configures none.
+  const uid = deps.uid ?? process.getuid?.();
+  const dir = uid === undefined ? undefined : defaultEndpointDir(deps.env, platform, uid);
+  const endpoints: EndpointHostConfig | undefined = platform === "win32" || uid === undefined || dir === undefined ? undefined : { dir, platform, uid };
+  const service = createPtyService({ spawn: deps.spawn, ...(endpoints === undefined ? {} : { messagesEndpoints: endpoints }), ...(deps.platform === undefined ? {} : { platform: deps.platform }), ...(git === undefined ? {} : { git }), ...(forge === undefined ? {} : { forge }) });
   let disposed = false;
 
   const onMessage = (event: { data: unknown; ports?: readonly MessagePortLike[] }): void => {

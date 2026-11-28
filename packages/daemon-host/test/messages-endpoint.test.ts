@@ -64,7 +64,7 @@ const send = (to: string, body: string, over: Record<string, unknown> = {}) => (
 
 test("inert in production: the host's binding mints no endpoint; nor for a composer agent, messaging off, Windows, a dead run or twice", async (t) => {
   // The host's agentOf is the run's recorded agent (PV-G3 slice 2): a run started without one (every run until PV-G4) has none.
-  const hostDeps = hostMessagingDeps({ journal: { messages: {} as never, agents: { agentOfRun: () => undefined } as never, getProject: () => undefined, getRun: () => undefined, cliEndpoint: { enabled: () => false } }, audit: { append: () => undefined }, monotonic: () => 0, scan: async () => [], logger: undefined, holdsSecret: () => false });
+  const hostDeps = hostMessagingDeps({ journal: { messages: {} as never, agents: { agentOfRun: () => undefined } as never, getProject: () => undefined, getRun: () => undefined, transitions: () => [], cliEndpoint: { enabled: () => false } }, audit: { append: () => undefined }, monotonic: () => 0, scan: async () => [], logger: undefined, holdsSecret: () => false });
   assert.equal(hostDeps.agentOf?.("any-run"), undefined);
   const r = await deliveryRig(t, { noDelivery: true });
   const prod = createMessagingBinding({ journal: r.c.journal, audit: r.c.audit, random: { bytes: (n) => randomBytes(n) }, monotonic: () => 0, scan: async () => [], holdsSecret: () => false, directory: { project: () => true, agent: (id) => ({ agentId: id, projectId: "p", groupId: null, kind: "cli" }), group: () => undefined, agents: () => [] }, runLive: () => true, platform: "linux" });
@@ -305,6 +305,19 @@ test("PV-M7 slice 2: the user's switch off: nothing is minted even for an enable
   assert.deepEqual(json(out[1]), { ok: false, reason: "revoked" });
   assert.deepEqual(afterRevoke(f.ep, await f.open("c-2")), { ok: false, reason: "revoked" }, "and it stays revoked");
   assert.equal(f.r.m.endpoints.relay.mint(f.r.run("c1")), undefined, "nothing new is minted");
+});
+
+test("PV-M7 slice 2: revokeAll revokes every live endpoint at once (one close each), later frames answer revoked, and nothing is left", async (t) => {
+  const f = await fx(t);
+  const conn = await f.authed();
+  const second = f.r.m.endpoints.relay.mint(f.r.run("c1"));
+  assert.ok(second !== undefined, "a second run of the worker has its own endpoint");
+  const outs = f.r.m.endpoints.relay.revokeAll();
+  assert.deepEqual(outs.map((o) => o.t === "endpoint-close" && o.endpoint).sort(), [f.ep, second.endpointId].sort());
+  assert.ok(outs.every((o) => o.t === "endpoint-close" && o.reason === "revoked"));
+  assert.deepEqual(f.r.m.endpoints.relay.revokeAll(), [], "nothing is left to revoke");
+  const late = await f.frame(conn, { op: "read", id: "r1" });
+  assert.deepEqual(afterRevoke(f.ep, late), { ok: false, reason: "revoked" });
 });
 
 test("PV-M6 slice 3: dropPaused drops the connections of an endpoint whose sender a pause now covers (worker, group, project), and no other", async (t) => {

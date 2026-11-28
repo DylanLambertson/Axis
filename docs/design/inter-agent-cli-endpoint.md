@@ -1,6 +1,6 @@
 # Inter-agent communication: the CLI agent endpoint
 
-- **Status:** Accepted by ADR 0007. Built: the daemon side of the relay (PV-M6 slice 1, `messages-contract.md` section 12) and the pty process listener (slice 2, section 13), both off by default and inert until PV-G4; not built: the shim (PV-M7) and the peer-credential and Windows pipe helpers. Companion to `docs/design/inter-agent-communication.md` ("the main design"); split out after security design review 1 (items S3, S4, S5, S11, N5) to keep both files short.
+- **Status:** Accepted by ADR 0007. The daemon relay and pty process listener are built. The user-controlled endpoint switch is stored in journal schema version 20: on requires tier 4 native confirmation and a single-use token, off is tier 1. The endpoint stays off by default; the `axis-messages` shim, peer-credential helper and Windows pipe helper remain unbuilt. Companion to `docs/design/inter-agent-communication.md` ("the main design"); split out after security design review 1 (items S3, S4, S5, S11, N5) to keep both files short.
 - **Date:** 2026-11-06. Verified against `origin/main` at `74cd12e`; E1 (`116ef22`) and P1d (`e52114f`) have merged since.
 - **Depends on:** ADR 0004 decisions 8 and 10 and implication 3 (PTY-5), `docs/security/threat-model-phase1.md` (PTY-3, PTY-5, NET-1, A10, assumption on same-user processes), `docs/design/daemon-host-plan.md` §3 Q16 (permission-bypass entries), B9 (pty process, branch `feat/pty-process`).
 - **Evidence tags:** as in `product-vision-v2.md`.
@@ -33,7 +33,7 @@
 | Reads | 60 per minute per endpoint, shared by all its connections |
 | Sends | the main design's per-agent limits |
 | Authentication failures | compared in constant time; counted only **after** the peer checks of §2 pass (so another uid or a process outside the run's tree cannot lock the shim out); backoff is per peer process id (5 failures, then that peer is refused for 60 s), not for the whole endpoint; where peer checks are unavailable, the per-peer backoff uses the connection and the residual is stated (review 2, N-D); audited as one aggregated `message.endpoint` row per endpoint per minute (count, first and last time), never one row per attempt |
-| Revocation | at run end, at a settings change that disables messaging, or at Pause of its scope: open connections are closed at once and later calls answer `revoked` or `paused`. A run that leaves RUNNING for BLOCKED or REVIEWING has its endpoint revoked and it stays revoked for that run, even if the run returns to RUNNING (decided 2026-11-27, fail closed) |
+| Revocation | at run end, at a settings change that disables messaging, or at Pause of its scope: open connections are closed at once and later calls answer `revoked` or `paused`. A run that leaves RUNNING for BLOCKED or REVIEWING has its endpoint revoked and it stays revoked for that run, even if the run returns to RUNNING (decided 2026-11-27, fail closed): the relay reads the run's transition history at every mint and every message, so it is revoked at its next message even with none in between (audit B F3; `messages-contract.md` section 14) |
 
 All per-connection buffers are bounded; an idle authenticated connection is closed after 10 minutes.
 

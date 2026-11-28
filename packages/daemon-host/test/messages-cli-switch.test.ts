@@ -36,6 +36,7 @@ async function setup(t: TestContext, over: { platform?: NodeJS.Platform } = {}) 
   const db = openDatabase(":memory:");
   const audit = new AuditLog(db);
   const journal = Journal.open(db, { audit });
+  const changes: boolean[] = [];
   const dialogs: Array<{ request: NativeConfirmRequest; answer: (confirmed: boolean) => void }> = [];
   const control: NativeControl = {
     nativeConfirm: (request) => new Promise((resolve) => dialogs.push({ request, answer: (confirmed) => resolve({ confirmed, proof: request.proof, windowId: request.windowId }) })),
@@ -57,6 +58,7 @@ async function setup(t: TestContext, over: { platform?: NodeJS.Platform } = {}) 
     mutex: new ProjectMutex(),
     platform: over.platform ?? "linux",
     onPreview: approvals.onPreview,
+    onChanged: (on: boolean) => void changes.push(on),
   };
   registerMessagesHandlers({ register: (c, v, h, o) => (o === undefined ? daemon.register(c, v, h) : daemon.register(c, v, h, o)) }, { service: m.service, settings: m.settings, cliSwitch });
   const ports: MessagePort[] = [];
@@ -89,7 +91,7 @@ async function setup(t: TestContext, over: { platform?: NodeJS.Platform } = {}) 
     return challenge;
   };
   const records = () => audit.list({ limit: 100 }).filter((e) => e.action === CLI_ENDPOINT_RECORD_ACTION);
-  return { journal, approvals, dialogs, connect, ask, records, cliSwitch, m };
+  return { journal, approvals, dialogs, connect, ask, records, cliSwitch, m, changes };
 }
 const reasonOf = (m: Msg): unknown => m.error?.details?.["reason"];
 const spend = (challenge: Row) => ({ approval: { challengeId: challenge["challengeId"] } });
@@ -111,6 +113,7 @@ test("enable: tier 4 with main's native dialog, the exact line; nothing is writt
   assert.deepEqual(done.result, { enabled: true, changed: true }, JSON.stringify(done.error));
   assert.equal(s.journal.cliEndpoint.enabled(), true);
   assert.deepEqual(s.records().map((e) => e.payload), [{ field: "cli_endpoint", enabled: true }], "one journal event");
+  assert.deepEqual(s.changes, [true], "the live wiring is told after the write");
   s.journal.registerProject({ id: "p1", path: "/repo/one", displayName: "One", trusted: false, actor: "user" });
   const settings = await user.call("axis.messages", "settings", { projectId: "p1" });
   assert.equal(settings.result?.["cliEndpoint"], true, `settings answers the switch: ${JSON.stringify(settings.error)}`);
@@ -157,6 +160,7 @@ test("disable: tier 1, at once, no dialog; a repeat changes nothing", async (t) 
   assert.equal(s.journal.cliEndpoint.enabled(), false);
   assert.equal(s.dialogs.length, 0);
   assert.deepEqual((await user.call("axis.messages", "disableCliEndpoint", {})).result, { enabled: false, changed: false });
+  assert.deepEqual(s.changes, [false, false], "the live wiring is told off each time (revoking nothing the second time)");
   assert.equal(s.records().length, 2, "the test's enable and the one change");
 });
 
@@ -200,6 +204,17 @@ test("the handlers refuse again behind the policy: another caller, no approval, 
   // With no switch wired, both refuse.
   const none = createMessagesHandlers({ service: s.m.service, settings: s.m.settings });
   assert.equal(await code(none.disableCliEndpoint(ctx({}), {} as never)), "E_UNAVAILABLE:endpoint_unavailable");
+});
+
+test("a live wiring that throws never undoes the committed change", async (t) => {
+  const s = await setup(t);
+  switchOnForTests(s.journal.cliEndpoint);
+  let logged = 0;
+  const h = createMessagesHandlers({ service: s.m.service, settings: s.m.settings, cliSwitch: { ...s.cliSwitch, onChanged: () => { throw new Error("relay gone"); }, onLiveError: () => void logged++ } });
+  const ctx = { identity: { actor: "user", clientKind: "desktop" }, requestId: "q", correlationId: "k", signal: new AbortController().signal } as unknown as HandlerContext;
+  assert.deepEqual(await h.disableCliEndpoint(ctx, {} as never), { enabled: false, changed: true });
+  assert.equal(s.journal.cliEndpoint.enabled(), false, "off stays off");
+  assert.equal(logged, 1, "and the host is told, to log a closed line");
 });
 
 test("the disable takes the switch mutex: it waits while the enable's spend holds it", async (t) => {

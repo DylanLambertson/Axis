@@ -70,7 +70,8 @@ export const MAX_ALLOWED_BINARY_IDS = MAX_BLOCKED_BINARY_FILES;
 export const GIT_COMMIT_REFUSALS = {
   /**
    * `head_moved`: HEAD, the checked-out branch or the parent is not the one reviewed. `stale`: `assertReviewFresh`, the
-   * worktree no longer matches the reviewed tree. `index_changed`: the staged index changed since the review.
+   * worktree no longer matches the reviewed tree. `index_changed`: RETIRED, no longer produced (DC-0: the real index is not part
+   * of a commit any more); it stays in the closed set so an older client still parses every answer.
    * `operation_in_progress`: a merge, cherry-pick, revert, rebase or bisect is under way or the index has unmerged paths.
    * `ref_update_failed`: the branch could not be moved by compare-and-swap (a lock); it was left as it was. `snapshot_failed`: the worktree could not be read for the freshness check.
    * `git_drift`: the repository's git configuration changed since it was recorded (`commit` re-takes the drift check before it commits).
@@ -234,7 +235,18 @@ export const gitCommitRequestSchema = guarded(
     author: commitAuthorSchema.optional(),
   }),
 );
-export const gitCommitResponseSchema = guarded(z.strictObject({ commit: objectIdSchema, tree: objectIdSchema }));
+/**
+ * What the narrow refresh of the person's own index did after the commit (DC-0, ADR 0011 Decision 3): `refreshed` entries
+ * moved to the new commit, or `skipped` with a closed reason. **On a skip the UI must say so:** the committed paths then show
+ * as staged reversions in `git status`, and a plain `git commit` in a terminal would undo the Axis commit until those paths
+ * are reset (`git reset -q -- <paths>`) or the index refreshed. Absent from a reply made before the refresh existed.
+ */
+export const GIT_INDEX_REFRESH_SKIPS = ["locked", "head_moved", "split_index", "sparse", "unmerged", "symlink", "unreadable", "lock_lost", "rename_failed", "failed"] as const;
+export const gitIndexRefreshSchema = z.union([
+  z.strictObject({ refreshed: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER) }),
+  z.strictObject({ skipped: z.enum(GIT_INDEX_REFRESH_SKIPS) }),
+]);
+export const gitCommitResponseSchema = guarded(z.strictObject({ commit: objectIdSchema, tree: objectIdSchema, indexRefresh: gitIndexRefreshSchema.optional() }));
 
 // push (network, tier 4, idempotency required): always a challenge with native confirmation, bound to the plan the user saw.
 export const gitPushRequestSchema = guarded(

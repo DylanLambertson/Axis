@@ -1,6 +1,6 @@
 # The integrations read slice (PV-N1f, read path)
 
-- **Status:** design, for review before any code. Review round 1 folded in.
+- **Status:** Built on main as the PV-N1f read slice. `packages/daemon-host/test/integrations/handlers.test.ts`, `test/integrations/service.test.ts` and `test/slice/integrations-canary.test.ts` cover the served path; production still has no vault backend (§7).
 - **Date:** 2026-11-27.
 - **Inputs:**
   - ADR 0009 decisions 1, 2, 3, 4 and 8.
@@ -20,7 +20,7 @@ This slice serves `axis.integrations/1.list`, `.status` and `.read` for ONE buil
 
 ## 2. The connector registry
 
-- **Where:** `packages/daemon-host/src/integrations/registry.ts` (a future path), a frozen, daemon-only constant. Declared origins, scopes and operations live ONLY here, in daemon source. No request, reply, setting or renderer value can add or change them. Plugin-contributed connectors are PV-K, with their own design.
+- **Where:** `packages/daemon-host/src/integrations/registry.ts`, a frozen, daemon-only constant. Declared origins, scopes and operations live ONLY here, in daemon source. No request, reply, setting or renderer value can add or change them. Plugin-contributed connectors are PV-K, with their own design.
 - **Shape:** `Connector { id, label, origins, declaredScopes, auth: "bearer", tokenShape, operations }`.
   - `tokenShape` is the credential's shape, checked on every reveal before use (§4 step 4).
   - Each operation is `{ kind: "read", template: OperationTemplate, result: schema }`.
@@ -33,7 +33,7 @@ This slice serves `axis.integrations/1.list`, `.status` and `.read` for ONE buil
   - Two example operations:
     - `pulls_list`: `GET /repos/{owner:id}/{repo:id}/pulls` with optional `state` (enum `open`, `closed`, `all`) and `per_page` (int 1 to 100);
     - `issue_get`: `GET /repos/{owner:id}/{repo:id}/issues/{number:int ≥ 1}`.
-  - Each result keeps only a few named fields: number, title (bounded text), state, html URL host check, author login.
+  - Each result keeps only a few named fields: number, title (bounded text), state and author login. No URL is kept (§4 step 11).
 - **A registry test** checks every template with `templateProblem`, every origin with `originSchema`, every `tokenShape` against good and bad samples, and that every operation in the slice is `kind: "read"`.
 
 ## 3. Where the state lives
@@ -89,9 +89,10 @@ Each failure answers a closed error with `INTEGRATIONS_REFUSAL_MESSAGE` and `det
      - The new closed vault code is `weak_entry`, mapped to `needs_reconnect`. The existing quarantine check (SF-3) stays and maps the same way.
      - Provider reveals are unchanged.
    - The handler then checks the token against the connector's `tokenShape` before step 5, and refuses with `needs_reconnect` on a mismatch.
-   - The vault's `onAccess` events are not the audit: their exceptions are ignored by design, so steps 6 and 10 write the service's own rows.
+   - The vault's `onAccess` events are not the audit: their exceptions are ignored by design, so the service writes its own rows.
+   - **Every reveal attempt is audited** (audit C L1, as the providers binding audits every read, DMN-5). A vault refusal, a token that fails `tokenShape` (the vault accepts 8 characters, GitHub's shape needs 20), or a failed registration (step 5) writes one `integration.credential` row with outcome `failure` and the closed reason. The call keeps that reason, even if the row cannot be written, and nothing is sent.
 5. **Register with the redactor at once,** before anything else uses the value: the exact header value (`Bearer <token>`) and the token alone.
-6. **Audit `integration.credential`** (§5). If the row cannot be written, the call answers `audit_unavailable` and nothing is sent.
+6. **Audit `integration.credential`** with outcome `success` and reason `ok` (§5). If the row cannot be written, the call answers `audit_unavailable` and nothing is sent.
 7. **Attach and send:**
    - `new Credential(header, { integration: "github", origin })`, then `authorize(matched, credential)`, then `client.sendAuthorized(request, { signal: context.signal })`.
    - The client takes the credential once and attaches it to exactly the matched URL.
@@ -103,13 +104,14 @@ Each failure answers a closed error with `INTEGRATIONS_REFUSAL_MESSAGE` and `det
 10. **Epilogue: audit `integration.request`.**
     - This step runs whenever step 6 wrote its row, on EVERY exit path that follows: success, any refusal, an echo, a parse failure, cancellation, or an internal error. The handler holds steps 7 to 9 in a `try` with this step in its `finally`.
     - If the row cannot be written, any result is discarded and the call answers `audit_unavailable`. A cancelled call still answers `E_CANCELLED`.
-    - A refusal before step 6 writes no integration row (neither kind), because nothing was revealed for a send.
+    - A refusal before the reveal (step 4) writes no integration row of either kind, because nothing was revealed. A refused reveal writes only its `failure` credential row (step 4) and no request row, because nothing was sent.
 11. **Reply:** `{ status, result }`. No header, no URL, no `Location`.
 
 **Order invariant:**
 - The redactor registration (5) comes before any use (7).
 - The first echo scan (8) comes before any parse (9), and both scans come before any reply, event or log.
-- A written credential row (6) is always followed by exactly one request row (10).
+- A written `success` credential row (6) is always followed by exactly one request row (10), unless the process dies between the two.
+- **A crash between the two rows** (a crash or `SIGKILL` after step 6 and before the epilogue) leaves a credential row with no request row. Such an orphan row means the send's outcome is unknown: a request may or may not have gone out. The audit chain stays valid, and nothing reconciles the orphan at the next start.
 
 ### 4.1 Cancel, disconnect and failure mid-flight
 
@@ -144,6 +146,9 @@ The first scan runs on the exact bytes the client collected, because only they h
   - `BodyCollector` joins every chunk into one buffer, and the scan runs once, on the complete body, after `end`. So a credential split across chunks is whole in the buffer that is scanned.
   - A body over the 4 MiB cap fails whole (`response_too_large`), and a connection that ends early is `network_unavailable`. In both cases nothing is returned.
 - **Headers:** the scan covers every header name and value as the client returns them, including each value of a repeated header such as `set-cookie`.
+  - Node's HTTP parser lowercases header names, and drops the repeated values of some headers (for example `server` and `location`), before the scan sees them. The scan is case-sensitive.
+  - So a token with upper-case letters, echoed in a header NAME, is not flagged.
+  - This loses only the `credential_echoed` signal, never the token: headers never reach the reply, an event, a log line or an audit row.
 - **Non-2xx answers and redirects never reach the scan:**
   - The client refuses a redirect, a 429 or 503, and any other non-2xx status before it returns headers or a body. A redirect's `Location` is never read and never followed.
   - So their content is discarded by the lower layer, not by the scan. §8 tests those refusals end to end.
@@ -163,12 +168,12 @@ The first scan runs on the exact bytes the client collected, because only they h
 
 ## 5. The audit rows (exact fields, allowlisted)
 
-- **`integration.credential`:** written at step 6, before attach. Fields: `integrationId`, `operation`, `projectId`, `actorKind` (`user` in this slice), `purpose` (`integration_request`).
+- **`integration.credential`:** one row per reveal attempt. It is `success` at step 6, before attach, or `failure` for a reveal refused at step 4 or 5. Fields: `integrationId`, `operation`, `projectId`, `actorKind` (`user` in this slice), `purpose` (`integration_request`), and `reason` (`ok`, or the refusal's closed reason).
 - **`integration.request`:** written by the epilogue (step 10). Fields:
   - `integrationId`, `operation`, `projectId`;
   - `status`: the HTTP status as an integer, when one was received;
   - `bytesOut`: the UTF-8 byte length of the composed request target (path and `?query`, exactly as on the request line) plus the request body's length (0 for `GET` and `HEAD`). It is computed once from the composed, already-encoded URL, so an encoded argument is never counted twice. It is charged when step 7 starts, and is 0 for an exit before the send.
-  - `bytesIn`: the length of the body the client returned. It is 0 on every failure, including a partial body. It counts what reached the handler, not bytes on the wire: the client's errors carry no counters, and wire counters would change the pinned client. They are left to the budget work (RR-87).
+  - `bytesIn`: the length of the body the client returned, also when a later step refuses it (an echo, a parse failure, a schema mismatch). It is 0 when the client failed, including after a partial body. It counts what reached the handler, not bytes on the wire: the client's errors carry no counters, and wire counters would change the pinned client. They are left to the budget work (RR-87).
   - `durationMs`;
   - `reason`, from a closed audit set that is separate from the wire reasons: `ok`, `cancelled`, `internal`, or the wire reason of the exit.
 - Every counter is a finite non-negative integer.
@@ -212,7 +217,7 @@ The test runs through the REAL host composition (the `test/slice/` headless rig)
 
 **The canary.** One plainly synthetic token sits in the fake vault, for example `canary"T0k3n\x+y/z=Q9w-synthetic-0001`. Its quote and backslash need JSON escaping, and its `"`, `\`, `+`, `/` and `=` need URL encoding. So its JSON-escaped, URL-encoded and base64 forms each differ from the raw token, and the test asserts that, using `secretForms` itself, before any case runs. It still fits GitHub's `tokenShape` (visible ASCII).
 
-**Every sink.** For every case below (success, each echo, each refusal, each cancel), one shared assertion checks every sink for the token and for every registered form:
+**Every sink.** For every case below (success, each echo, each refusal, and the no-backend hosts), one shared assertion checks every sink for the token and for every registered form:
 - the reply or error, and its text;
 - every event emitted;
 - the pending-approvals listing and approval detail, which must show no challenge at tier 0;
@@ -231,22 +236,26 @@ The test runs through the REAL host composition (the `test/slice/` headless rig)
   - It answers `credential_echoed`.
 - **Mutants:** removing the first scan, and removing the second scan, must each fail a behavioural assertion: the first-scan cases for the one, the second-scan case for the other.
 - **Echoes the client refuses:** a 401 whose body and headers hold the token, and a 302 whose `Location` holds it. Each answers its closed reason (`upstream_status`, `redirect_refused`), the redirect is not followed, and no sink holds the canary.
+- **Other refusals:**
+  - an unknown operation;
+  - an argument with a separator;
+  - an answer over its caps;
+  - a socket dropped mid-body;
+  - a schema mismatch;
+  - a TLS failure.
+
+**Proven in unit tests with fakes, not by the acceptance test.** The child-process host cannot inject these conditions, so the canary test does not claim them. They run over the real vault code, the real redactor and the real read flow, with a fake sender and a hand-built backend (`test/integrations/service.test.ts`, `handlers.test.ts`, `packages/vault/test/integration-reveal.test.ts`):
 - **Audit failures, at both boundaries:**
-  - The credential row fails: `audit_unavailable`, and the server sees nothing.
+  - The credential row fails: `audit_unavailable`, and nothing is sent.
   - The request row fails after a successful send: `audit_unavailable`, and the result is discarded.
 - **The weak gate:**
   - A seeded entry whose metadata is weak answers `needs_reconnect`, with zero sends.
   - So does an entry whose metadata changes to a weak backend between `info` and `reveal`.
   - So does a token that fails `tokenShape`.
   - `status` shows `needs_reconnect` for the weak entry.
-- **Cancel and disconnect:** the cases of §4.1.
-- **Other refusals:**
-  - an unknown operation;
-  - a write operation via `read`;
-  - an argument with a separator;
-  - no vault entry (`not_connected`);
-  - an answer over its caps;
-  - a TLS failure.
+- **Cancel and disconnect:** the cases of §4.1. An abort before the reveal, after the credential row, and during the send (the client's `aborted`).
+- **A write operation via `read`** (`operation_kind_mismatch`), with a test registry, since the built-in one has no write operation.
+- **No vault entry** (`not_connected`).
 - **The renderer side:** the test connects as a `user` window through the composition's real connection path, so every message that crosses to a window is checked. It cannot show what an own-shell renderer does with them (no renderer exists yet).
 
 ## 9. What this slice cannot prove yet

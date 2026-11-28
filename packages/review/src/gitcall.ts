@@ -21,7 +21,7 @@ export const OBJECT_ID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 
 export interface GitCallOptions {
   readonly stdin?: string;
-  /** Absolute path of a temporary index: sets GIT_INDEX_FILE and turns sparse checkout off for the call. */
+  /** Absolute path of a temporary index: sets GIT_INDEX_FILE and turns sparse checkout and the split index off for the call. */
   readonly index?: string;
   /** `key=value` settings placed before the subcommand (`-c`), for this call only. */
   readonly config?: readonly string[];
@@ -69,7 +69,9 @@ export async function reviewGitFor(deps: ReviewDeps, w: WorktreeRef): Promise<Re
       return Promise.reject(invalid("a temporary index must be an absolute path"));
     }
     return runner.run({
-      argv: [...head, ...(index === undefined ? [] : ["-c", "core.sparseCheckout=false"]), ...(opts.config ?? []).flatMap((c) => ["-c", c]), ...sub],
+      // A private index is never sparse, and never split: with `core.splitIndex=true` a write of it would leave a
+      // `sharedindex.*` file in the repository's own git directory (DC-0 review 1 S1).
+      argv: [...head, ...(index === undefined ? [] : ["-c", "core.sparseCheckout=false", "-c", "core.splitIndex=false"]), ...(opts.config ?? []).flatMap((c) => ["-c", c]), ...sub],
       cwd: w.workTree,
       env: index === undefined ? env : { ...env, GIT_INDEX_FILE: index },
       context: "daemon",

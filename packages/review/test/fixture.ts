@@ -76,6 +76,7 @@ export function fixture(over: { objectFormat?: "sha1" | "sha256"; deps?: Partial
     runHooks: false,
     isCliRunActive: () => false,
     assertNoDrift: async () => undefined,
+    assertReviewFresh: async () => undefined,
     ...over.git,
   };
   const { provider, counts } = tempIndexes(join(root, "indexes"));

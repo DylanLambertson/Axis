@@ -8,6 +8,7 @@ import { findOverride, identityOverrides, overrideMessage, withNoPrompt } from "
 import { runBound } from "./boundCommit.js";
 import { GitOpsError, conflict, denied, headMoved, invalid, mapUnexpected } from "./errors.js";
 import { assertNoOperation } from "./operation.js";
+import type { IndexRefreshOutcome } from "./indexRefresh.js";
 import type { GitOpsDeps, GitRunRequest, WorktreeRef } from "./types.js";
 
 export interface CommitInput {
@@ -47,6 +48,8 @@ export interface CommitPlan {
 export interface CommitResult {
   readonly commit: string;
   readonly tree: string;
+  /** What the post-commit refresh of the real index did (DC-0 slice 2); absent only from results made before it existed. */
+  readonly indexRefresh?: IndexRefreshOutcome;
 }
 
 const MAX_MESSAGE = 64 * 1024;
@@ -56,6 +59,9 @@ function line(r: { stdout: string }): string {
 }
 
 async function check(deps: GitOpsDeps, input: CommitInput): Promise<{ plan: CommitPlan; git: DaemonGit }> {
+  // DC-0 review 1 S2: git-ops commits the tree OBJECT it is given, so the check that it is the reviewed one is required, not
+  // optional. Without it any existing tree could be committed; the refusal comes before any git call.
+  if (typeof deps.assertReviewFresh !== "function") throw denied("a commit needs the review freshness check (assertReviewFresh); refused");
   const platform = platformOf(deps);
   checkWorktree(input.worktree, platform);
   if (!OBJECT_ID.test(input.reviewedTreeHash)) throw invalid("reviewedTreeHash must be a full lower-case object id");
@@ -85,11 +91,11 @@ async function check(deps: GitOpsDeps, input: CommitInput): Promise<{ plan: Comm
   if (line(parentR) !== input.expectedParent) throw headMoved("HEAD is not the commit that was reviewed; review the changes again");
   await assertNoOperation(git, input.worktree, deps);
 
-  const index = await git(["write-tree"]);
-  if (index.code !== 0) throw conflict("the index cannot be written as a tree (unmerged paths?)");
-  if (line(index) !== input.reviewedTreeHash) {
-    throw conflict("the index differs from the tree that was reviewed; review the changes again");
-  }
+  // DC-0 (ADR 0011 S1): the commit is built from the reviewed tree OBJECT; the real index is never read as the commit's tree
+  // nor written, so the user's own staging is untouched. The id must name a tree that exists here. That it is the tree the
+  // user reviewed is the caller's binding (the daemon's reviewed-tree registry, `prepareCommit`, `assertReviewFresh`).
+  const tree = await git(["rev-parse", "--verify", "--quiet", "--end-of-options", `${input.reviewedTreeHash}^{tree}`]);
+  if (tree.code !== 0 || line(tree) !== input.reviewedTreeHash) throw conflict("the reviewed tree is not a tree of this repository; review the changes again");
   const headTree = await git(["rev-parse", "--verify", "--end-of-options", "HEAD^{tree}"]);
   if (headTree.code === 0 && line(headTree) === input.reviewedTreeHash) throw invalid("nothing to commit");
 
@@ -125,7 +131,7 @@ async function check(deps: GitOpsDeps, input: CommitInput): Promise<{ plan: Comm
     stdin: normalisedMessage(msg),
     context: "pty",
   };
-  if (deps.assertReviewFresh) await reviewFresh(deps, input);
+  await reviewFresh(deps, input);
   return { plan: { worktree: input.worktree, branch, reviewedTreeHash: input.reviewedTreeHash, parent: line(parentR), command }, git };
 }
 
