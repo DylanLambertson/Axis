@@ -24,6 +24,7 @@ test("decideExternal: characters, length, credentials and hosts", () => {
   }
   assert.deepEqual(decideExternal(`https://e.com/${"a".repeat(MAX_EXTERNAL_URL)}`), { ok: false, reason: "too_long" }, "E3");
   assert.equal(decideExternal(`https://e.com/${"a".repeat(MAX_EXTERNAL_URL - 20)}`).ok, true);
+  assert.deepEqual(decideExternal(`https://e.com/${"./".repeat(MAX_EXTERNAL_URL)}a`), { ok: false, reason: "too_long" }, "E3: the raw text is bounded, even when it normalises short");
   assert.deepEqual(decideExternal("https://bank.example@evil.example/"), { ok: false, reason: "credentials" }, "E4");
   assert.deepEqual(decideExternal("https://u:p@evil.example/"), { ok: false, reason: "credentials" }, "E4");
   assert.deepEqual(decideExternal("mailto:"), { ok: false, reason: "no_host" });
@@ -37,6 +38,8 @@ test("externalConfirmation: the full URL, Cancel the default, no approval wordin
   const c = externalConfirmation("https://example.com/x?y");
   assert.deepEqual(c, { message: "Open this link in your browser?", detail: "https://example.com/x?y", buttons: ["Cancel", "Open link"], defaultId: 0, cancelId: 0, noLink: true }, "E5/E6");
   assert.doesNotMatch(`${c.message} ${c.buttons.join(" ")}`, /approv|native|tier/i);
+  const long = `https://example.com/${"p".repeat(200)}?token=${"t".repeat(100)}`;
+  assert.equal(externalConfirmation(long).detail, long, "E5: the detail is the whole href, never cut");
 });
 
 function rig(answer: (id: number, c: ExternalConfirmation) => Promise<boolean>) {

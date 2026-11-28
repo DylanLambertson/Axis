@@ -74,7 +74,7 @@ test("resolveAppPath: unsafe segments are not found", () => {
     const r = resolveAppPath(`axis-app://shell${p}`, "GET");
     assert.equal(r.ok, false, `M4: ${p}`);
   }
-  for (const p of ["/CON.js", "/nul.html", "/com1.css", "/LPT9.js", "/index.html.", "/aux"]) {
+  for (const p of ["/CON.js", "/nul.html", "/com1.css", "/LPT9.js", "/index.html.", "/aux", "/assets./a.js", "/a./b./c.js"]) {
     assert.equal(resolveAppPath(`axis-app://shell${p}`, "GET").ok, false, `M5: ${p}`);
   }
   assert.equal(resolveAppPath(`axis-app://shell/${Array(17).fill("a").join("/")}.js`, "GET").ok, false, "too many segments");
@@ -140,6 +140,9 @@ test("handler: the containment check is on the real root plus the separator", as
   assert.equal((await h2.handle({ url: "axis-app://shell/a.js", method: "GET" })).status, 404, "M7: the root itself");
   const h3 = createAppSchemeHandler({ root: "/r/bundle", csp, files: files({ "/r/bundle": "/real/bundle", "/real/bundle/a.js": "/real/bundle/a.js" }) });
   assert.equal((await h3.handle({ url: "axis-app://shell/a.js", method: "GET" })).status, 200);
+  const dir: AppFiles = { ...files({ "/r/bundle": "/real/bundle", "/real/bundle/d.js": "/real/bundle/d.js" }), stat: async () => ({ isFile: () => false, size: 1 }) };
+  const h4 = createAppSchemeHandler({ root: "/r/bundle", csp, files: dir });
+  assert.equal((await h4.handle({ url: "axis-app://shell/d.js", method: "GET" })).status, 404, "M9: a directory named like a file");
 });
 
 test("handler: the size cap, and a root that fails is retried", async () => {
