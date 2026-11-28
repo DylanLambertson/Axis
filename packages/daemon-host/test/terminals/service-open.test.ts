@@ -200,5 +200,5 @@ test("review S2: a cancellation in the same tick as the spawn's answer ends the 
   assert.notEqual(r.registry.get(h.terminalId)?.state, "open");
   assert.deepEqual(h.kills, ["SIGKILL"]);
   assert.deepEqual(r.port.revokes, [h.terminalId]);
-  assert.deepEqual(r.audits.map((a) => [a.action, a.outcome]), [["terminal.close", "success"]], "the shell that existed is audited as closed");
+  assert.deepEqual(r.audits.map((a) => [a.action, a.outcome]), [["terminal.open", "success"], ["terminal.close", "success"]], "the shell that existed is audited opened, then closed");
 });
