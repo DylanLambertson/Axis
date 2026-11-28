@@ -36,7 +36,7 @@ test("S2: closing the control channel ends every running terminal, tells the att
   const b = await r.port.spawn({ ...SPEC, runId: "run2" });
   const data = channelPair();
   r.service.serveData(data.b, "c1");
-  r.port.grant(a.terminalId, "c1");
+  r.port.grantTerminal(a.terminalId, "c1");
   await settle();
   data.a.send({ t: "attach", term: a.terminalId });
   await settle();

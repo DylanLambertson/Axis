@@ -11,6 +11,10 @@
     ".": {
       "types": "./dist/src/index.d.ts",
       "default": "./dist/src/index.js"
+    },
+    "./debug-flags": {
+      "types": "./dist/src/debug-flags.d.ts",
+      "default": "./dist/src/debug-flags.js"
     }
   },
   "scripts": {

@@ -27,7 +27,7 @@ test("PTY-7: a spawned shell sees only stdio, although the parent holds more des
     const term = h.terminalId;
     const data = channelPair();
     svc.serveData(data.b, "c1");
-    port.grant(h.terminalId, "c1");
+    port.grantTerminal(h.terminalId, "c1");
     await settle();
     let out = "";
     data.a.onMessage((m) => void (out += (m as { chunk?: string }).chunk ?? ""));
