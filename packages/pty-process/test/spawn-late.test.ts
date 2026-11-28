@@ -148,3 +148,14 @@ test("the port can revoke a terminal; a closed port sends nothing", () => {
   s.port.dispose();
   assert.equal(s.port.revoke("pty_1"), false);
 });
+
+test("review S1: dispose settles every tracked terminal's exit (unknown), as a channel close does, so its owner can end it", async () => {
+  const r = rig();
+  const h = await r.port.spawn(SPEC);
+  const exits: unknown[] = [];
+  h.onExit((e) => exits.push(e));
+  r.port.dispose();
+  await settle();
+  assert.deepEqual(exits, [{ exitCode: null, signal: null }]);
+  assert.equal(r.port.trackedTerminals(), 0);
+});

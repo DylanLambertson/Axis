@@ -349,6 +349,9 @@ export function createPtyProcessPort(options: PtyProcessPortOptions): PtyProcess
         execs.failAll("channel_closed");
         forge.failAll("channel_closed");
         killKnown();
+        // DC-3a review S1: no `exit` can come any more (a replaced port, or a shutdown), so say so with an unknown exit, as a channel
+        // close does: the owner ends its record, and never later signals a recorded group id that may since belong to someone else.
+        for (const t of terms.values()) settleExit(t, { exitCode: null, signal: null });
       }
       subs.forEach((s) => s.dispose());
       terms.clear();

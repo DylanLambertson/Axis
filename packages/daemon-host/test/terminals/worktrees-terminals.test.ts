@@ -62,9 +62,20 @@ test("remove is refused active_run while a terminal's group lives (closed first)
 });
 
 test("a terminals view that throws counts as busy (fail closed)", { skip }, async (t) => {
-  const r = await worktreesRig({ terminals: { closeWorkspace: () => { throw new Error("x"); } } });
+  const r = await worktreesRig({ terminals: { closeWorkspace: () => { throw new Error("x"); }, busy: () => { throw new Error("x"); } } });
   t.after(() => r.cleanup());
   const user = await r.connect();
   const { id } = await createWsRaw(user, (_m, x) => (assert.equal(x.ok, true, JSON.stringify(x.error)), x));
   assert.equal((await finaliseApproved(r, user, id, "archived")).error?.details?.["reason"], "active_run");
+});
+
+test("review N1: finalise waits, boundedly, for a killed group that goes shortly after, instead of refusing the first try", { skip }, async (t) => {
+  const s = await setup(t);
+  const h = s.open();
+  h.survives = true; // the kill is a message: the group goes a moment later
+  const kill = h.kill.bind(h);
+  h.kill = (sig) => (kill(sig), void setTimeout(() => (h.alive = false), 100));
+  const done = await finaliseApproved(s.r, s.user, s.id, "archived");
+  assert.equal(done.ok, true, JSON.stringify(done.error));
+  assert.equal(s.registry.get(h.terminalId), undefined, "closed and forgotten once its group was gone");
 });

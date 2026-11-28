@@ -195,3 +195,13 @@ test("closing a workspace's terminals (finalise, remove): pending abandoned, liv
   assert.equal(r.reg.closeWorkspace("ws1"), false, "nothing left");
   assert.equal(r.reg.closeWorkspace("ws9"), false);
 });
+
+test("review N3: an answer that repeats a recorded terminal id is refused without touching the live terminal", () => {
+  const r = rig(2);
+  const live = r.open();
+  const dup = new FakeHandle(live.rec.terminalId);
+  assert.equal(r.reg.publish(r.op(), dup), undefined);
+  assert.deepEqual(r.port.revokes, [], "the live terminal's grant is untouched");
+  assert.deepEqual([live.h.kills, dup.kills], [[], []]);
+  assert.equal(r.reg.attachable(live.rec.terminalId)?.state, "open");
+});

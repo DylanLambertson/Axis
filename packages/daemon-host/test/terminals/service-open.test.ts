@@ -78,6 +78,7 @@ test("each change landing inside the gate's await is refused by the final admiss
   const cases: Array<[string, (r: ReturnType<typeof serviceRig>) => void]> = [
     ["untrust", (r) => setP(r, { trusted: false })],
     ["a new binding", (r) => setP(r, { gitDirId: "9:9" })],
+    ["a new common directory alone (review S4)", (r) => setP(r, { commonDir: "/elsewhere/.git" })],
     ["a moved project", (r) => setP(r, { path: "/other" })],
     ["a window revoke", (r) => r.trust.set({ windowId: "w1" }, false)],
     ["a workspace revoke", (r) => r.trust.set({ windowId: "w9", workspaceId: "ws1" }, false)],
@@ -185,4 +186,19 @@ test("with 8 open in the workspace a ninth is too_many_terminals, without a spaw
   }
   await assert.rejects(openTerminal(r.deps, REQ, r.context()), code("E_CONFLICT", "too_many_terminals"));
   assert.equal(r.port.spawns.length, 8);
+});
+
+test("review S2: a cancellation in the same tick as the spawn's answer ends the published terminal (closing, revoked, killed) and audits it", async () => {
+  const r = serviceRig();
+  const p = openTerminal(r.deps, REQ, r.context());
+  await dispatched(r);
+  const h = new FakeHandle();
+  r.port.spawns[0]?.resolve(h);
+  r.ctl.abort(); // before the race settles: the record may already be published
+  await assert.rejects(p, code("E_CANCELLED"));
+  assert.equal(r.registry.attachable(h.terminalId), undefined, "never attachable");
+  assert.notEqual(r.registry.get(h.terminalId)?.state, "open");
+  assert.deepEqual(h.kills, ["SIGKILL"]);
+  assert.deepEqual(r.port.revokes, [h.terminalId]);
+  assert.deepEqual(r.audits.map((a) => [a.action, a.outcome]), [["terminal.close", "success"]], "the shell that existed is audited as closed");
 });

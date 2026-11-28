@@ -119,7 +119,7 @@ export interface RigOptions {
   /** Replaces the binding's view of active runs (the runs rig points it at the real run binding, built after this rig). */
   hasActiveRun?: (workspaceId: string) => boolean;
   /** DC-3a: the plain terminals finalise and remove close first. */
-  terminals?: { closeWorkspace(workspaceId: string): boolean };
+  terminals?: { closeWorkspace(workspaceId: string): boolean; busy(workspaceId: string): boolean };
 }
 
 export async function worktreesRig(options: RigOptions = {}): Promise<Rig> {

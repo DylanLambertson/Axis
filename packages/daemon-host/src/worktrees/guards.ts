@@ -34,19 +34,32 @@ export function assertNoActiveRun(journal: GuardJournal, runs: Pick<RunsService,
 export interface WorkspaceTerminals {
   /** Abandons the workspace's pending opens and closes its live plain terminals; true while any of its slots is still charged. */
   closeWorkspace(workspaceId: string): boolean;
+  /** True while any of the workspace's slots is still charged (a group alive or an outcome unknown). */
+  busy(workspaceId: string): boolean;
 }
 
+/** How long finalise and remove wait for the killed groups to go before refusing (review N1): a kill is a message to the pty process. */
+export const TERMINALS_GONE_WAIT_MS = 2_000;
+const POLL_MS = 25;
+
 /**
- * Before finalise or remove: the workspace's plain terminals are closed first, and the call is refused (`active_run`, as for a run)
- * while any of their groups may still live. Fails closed: a throw counts as busy.
+ * Before finalise or remove: the workspace's plain terminals are closed first; then the call waits, at most
+ * `TERMINALS_GONE_WAIT_MS`, for their groups to be gone, and is refused (`active_run`, as for a run) if any may still live. Fails
+ * closed: a throw counts as busy.
  */
-export function closeWorkspaceTerminals(terminals: WorkspaceTerminals | undefined, workspaceId: string): void {
+export async function closeWorkspaceTerminals(terminals: WorkspaceTerminals | undefined, workspaceId: string, waitMs = TERMINALS_GONE_WAIT_MS): Promise<void> {
   if (terminals === undefined) return;
-  let busy = true;
-  try {
-    busy = terminals.closeWorkspace(workspaceId);
-  } catch {
-    busy = true;
+  const busy = (first: boolean): boolean => {
+    try {
+      return first ? terminals.closeWorkspace(workspaceId) : terminals.busy(workspaceId);
+    } catch {
+      return true;
+    }
+  };
+  let still = busy(true);
+  for (let waited = 0; still && waited < waitMs; waited += POLL_MS) {
+    await new Promise<void>((resolve) => setTimeout(resolve, POLL_MS));
+    still = busy(false);
   }
-  if (busy) throw worktreeFailure("E_CONFLICT", "active_run");
+  if (still) throw worktreeFailure("E_CONFLICT", "active_run");
 }

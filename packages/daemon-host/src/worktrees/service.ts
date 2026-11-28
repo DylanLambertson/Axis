@@ -204,7 +204,7 @@ export function createWorktreesService(deps: WorktreesServiceDeps): WorktreesRun
           if (ws.state === "FINALISED") throw worktreeFailure("E_CONFLICT", "already_finalised");
           if (ws.state !== "READY") throw worktreeFailure("E_CONFLICT", "not_ready");
           assertNoActiveRun(journal, deps.runs, ws.id);
-          closeWorkspaceTerminals(deps.terminals, ws.id);
+          await closeWorkspaceTerminals(deps.terminals, ws.id);
           const ref = await locator.locate(ws.id);
           return withLockRecord(ws.id, actor, async () => {
             const project = journal.getProject(ws.projectId);
@@ -270,7 +270,7 @@ export function createWorktreesService(deps: WorktreesServiceDeps): WorktreesRun
           const ws = liveWorkspace(journal, req.id);
           if (ws.state !== "FINALISED") throw worktreeFailure("E_CONFLICT", "not_finalised");
           assertNoActiveRun(journal, deps.runs, ws.id);
-          closeWorkspaceTerminals(deps.terminals, ws.id);
+          await closeWorkspaceTerminals(deps.terminals, ws.id);
           const ref = await locator.locate(ws.id);
           // Journal first: REMOVING is written (and audited by the transition record) before the repository changes.
           journal.transitionWorkspace(ws.id, "REMOVING", { actor, reason: "REMOVE_REQUESTED", expectedFrom: "FINALISED" });

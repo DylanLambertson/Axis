@@ -4,6 +4,7 @@
 // environment with secret names stripped: no messaging names, no secret-looking names, the sockets and HOME and PATH kept.
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import type { Project } from "@axis/journal";
 import { attachTerminal, closeTerminal, openTerminal, plainTerminalEnv } from "../../src/terminals/service.js";
 import { FakeHandle } from "./fakes.js";
 import { serviceRig } from "./service-rig.js";
@@ -102,4 +103,15 @@ test("attach is refused after a revoke of the caller's window, or of the termina
     assert.throws(() => attachTerminal(r.deps, id, "c1", r.context()), notFound, label);
     assert.deepEqual(r.port.grants, [], `${label}: no grant`);
   }
+});
+
+test("review N2: attach reads the journal's project trust now: an untrusted project's terminal (a CLI run's, before its stop) is refused", async () => {
+  const { r } = await opened();
+  const run = new FakeHandle();
+  r.registry.addCliRun(run, { runId: "run1", workspaceId: "ws1", projectId: "p1" });
+  r.projects.set("p1", { ...(r.projects.get("p1") as Project), trusted: false });
+  assert.throws(() => attachTerminal(r.deps, run.terminalId, "c1", r.context()), notFound);
+  r.projects.delete("p1");
+  assert.throws(() => attachTerminal(r.deps, run.terminalId, "c1", r.context()), notFound, "an unknown project");
+  assert.deepEqual(r.port.grants, []);
 });

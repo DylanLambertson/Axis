@@ -120,10 +120,19 @@ export class TerminalRegistry {
     this.#endUnpublished(c, outcome.handle);
   }
 
-  /** The open was cancelled or its project's trust ended: whatever handle comes for it is never published. */
-  abandon(op: TerminalOp): void {
+  /**
+   * The open was cancelled or its project's trust ended: whatever handle comes for it is never published. If one was already
+   * published for it (the answer and the cancellation in the same turn), that terminal is ended now (closing, revoked, killed), and
+   * returned so the caller can audit it.
+   */
+  abandon(op: TerminalOp): TerminalRecord | undefined {
     const c = this.#charge(op);
-    if (c !== undefined) c.abandoned = true;
+    if (c === undefined) return undefined;
+    c.abandoned = true;
+    const rec = [...this.#recs.values()].find((r) => r.charge === c);
+    if (rec === undefined) return undefined;
+    this.#end(rec);
+    return this.#view(rec);
   }
 
   /** The spawn resolved. Publishes an `open` terminal, or ends an abandoned or invalid one (`undefined`). */
@@ -134,7 +143,13 @@ export class TerminalRegistry {
       return undefined;
     }
     c.settled = true;
-    if (c.abandoned || !validHandle(handle) || this.#recs.has(handle.terminalId)) {
+    // An id already recorded (only a faulty pty process could answer one): refused without touching the live terminal of that id,
+    // and the slot stays charged (what the answer stands for cannot be tracked).
+    if (validHandle(handle) && this.#recs.has(handle.terminalId)) {
+      c.unknown = true;
+      return undefined;
+    }
+    if (c.abandoned || !validHandle(handle)) {
       this.#endUnpublished(c, handle);
       return undefined;
     }
@@ -185,6 +200,11 @@ export class TerminalRegistry {
   closeWorkspace(workspaceId: string): boolean {
     for (const c of this.#charges) if (c.workspaceId === workspaceId && !c.settled) c.abandoned = true;
     for (const r of [...this.#recs.values()]) if (r.workspaceId === workspaceId && r.kind === "plain") this.#end(r);
+    return this.busy(workspaceId);
+  }
+
+  /** True while any of the workspace's plain slots is still charged (a group alive or an outcome unknown). */
+  busy(workspaceId: string): boolean {
     this.sweep();
     for (const c of this.#charges) if (c.workspaceId === workspaceId) return true;
     return false;
