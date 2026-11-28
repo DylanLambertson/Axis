@@ -241,7 +241,7 @@ export const gitCommitRequestSchema = guarded(
  * as staged reversions in `git status`, and a plain `git commit` in a terminal would undo the Axis commit until those paths
  * are reset (`git reset -q -- <paths>`) or the index refreshed. Absent from a reply made before the refresh existed.
  */
-export const GIT_INDEX_REFRESH_SKIPS = ["locked", "head_moved", "split_index", "sparse", "unmerged", "symlink", "unreadable", "rename_failed", "failed"] as const;
+export const GIT_INDEX_REFRESH_SKIPS = ["locked", "head_moved", "split_index", "sparse", "unmerged", "symlink", "unreadable", "lock_lost", "rename_failed", "failed"] as const;
 export const gitIndexRefreshSchema = z.union([
   z.strictObject({ refreshed: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER) }),
   z.strictObject({ skipped: z.enum(GIT_INDEX_REFRESH_SKIPS) }),
