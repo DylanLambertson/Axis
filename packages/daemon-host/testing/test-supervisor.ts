@@ -19,6 +19,7 @@ import {
   type DisposableChannel,
   type OutboundMessage,
 } from "../src/index.js";
+import { FakeSecretsMain } from "./secrets-main.js";
 
 /**
  * The test-only supervisor (plan section 1.1): it starts a host as a real child process (or as a worker thread for
@@ -53,6 +54,11 @@ export interface TestSupervisorOptions {
    * where stdout is ignored and `stderr` keeps the last 64 KiB.
    */
   readonly fullOutput?: boolean;
+  /**
+   * Answer `secrets.*` from this model of main's broker (PV-N0c-1, `secrets-main.ts`): an in-memory store with main's
+   * per-name ordering, budgets and limits, and hooks for slow, hung, failing or malformed answers. Unset: never answered.
+   */
+  readonly secrets?: FakeSecretsMain;
 }
 
 export interface ExitInfo {
@@ -82,6 +88,8 @@ export class TestSupervisor {
   /** Answer for `trust.check`; `undefined` means do not answer. */
   trustAnswer: (m: Extract<OutboundMessage, { type: "trust.check" }>) => boolean | undefined = () => true;
   settings: Record<string, unknown> = {};
+  /** Main's secret broker, when the test gave one (`TestSupervisorOptions.secrets`). */
+  secrets: FakeSecretsMain | undefined;
   stderr = "";
   #output: string | undefined;
   /** Everything the child wrote to stdout and stderr, uncapped. Only with `fullOutput`: otherwise reading it throws. */
@@ -123,6 +131,7 @@ export class TestSupervisor {
     this.exited = exited;
     this.anchor = options.anchor ?? null;
     this.holdAcks = options.holdAcks ?? false;
+    this.secrets = options.secrets;
     this.mux = new ChannelMux(channel);
     this.mux.onControl((raw) => this.#onControl(raw));
     appendStderr((t) => void (this.stderr = (this.stderr + t).slice(-MAX_STDERR_CHARS)));
@@ -298,6 +307,15 @@ export class TestSupervisor {
         this.mux.sendControl({ type: "settings.result", requestId: m.requestId, key: m.key, value: (this.settings[m.key] ?? null) as never });
         break;
       default:
+        if (this.secrets !== undefined && FakeSecretsMain.handles(m)) {
+          this.secrets.handle(m as never, (answer) => {
+            try {
+              this.mux.sendControl(answer);
+            } catch {
+              // the channel closed: the host is gone
+            }
+          });
+        }
         break;
     }
     for (const w of [...this.#waiters]) {

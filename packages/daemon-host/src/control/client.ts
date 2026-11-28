@@ -12,6 +12,7 @@ import {
   type OutboundMessage,
   type SettingKey,
 } from "./messages.js";
+import type { SecretsError, SecretsRequest, SecretsValue } from "./secrets-messages.js";
 
 /**
  * The typed side of the control plane: parses every inbound control message with the strict schemas, delivers events
@@ -24,6 +25,19 @@ import {
 export const DEFAULT_TIMEOUTS_MS = Object.freeze({ anchor: 5_000, native: 60_000, trust: 2_000, settings: 2_000 });
 const MAX_TIMEOUT_MS = 600_000;
 const DEFAULT_MAX_PENDING = 64;
+
+/**
+ * The secret broker's budgets (`docs/design/secret-broker.md` §3.4): 65 s for `get` and `put`, where main may wait 60 s on a
+ * keychain or keyring prompt, and 10 s for the rest, so main always answers or gives up first.
+ */
+export const SECRETS_TIMEOUTS_MS = Object.freeze({ slow: 65_000, fast: 10_000 });
+/** The secrets requests the daemon may have outstanding, counted on their own (not in the client's general limit's place). */
+export const MAX_SECRETS_OUTSTANDING = 8;
+
+/** A secrets request without its id (the client mints one per request and never reuses it). */
+export type SecretsAsk = SecretsRequest extends infer R ? (R extends { requestId: string } ? Omit<R, "requestId"> : never) : never;
+/** Main's answer: the value of the request's own kind, or one closed error. */
+export type SecretsAnswer = { readonly ok: true; readonly value: SecretsValue } | { readonly ok: false; readonly error: SecretsError };
 
 export interface RequestOptions {
   /** Overrides the request's default timeout (1 to 600000). */
@@ -60,7 +74,7 @@ export interface ControlStats {
   readonly duplicateInits: number;
 }
 
-type Kind = "anchor" | "native" | "trust" | "settings";
+type Kind = "anchor" | "native" | "trust" | "settings" | "secrets";
 
 interface Pending {
   readonly accept: (message: InboundMessage) => unknown | undefined;
@@ -92,6 +106,7 @@ export class ControlClient {
   readonly #onInit: Handlers<Record<string, unknown>> = [];
   readonly #onAck: Handlers<number> = [];
   #nextId = 1;
+  #secretsOutstanding = 0;
   #initSeen = false;
   #disposed = false;
   #invalid = 0;
@@ -234,6 +249,32 @@ export class ControlClient {
     );
   }
 
+  /**
+   * One secrets request (PV-N0c-1). Resolves with main's answer, matched by id AND by op: an answer of another kind, or one
+   * that fails the strict schema while its id names this request, rejects at once (`answer_invalid`), never as a partial
+   * value. `E_BACKPRESSURE` (`secrets_busy`) when 8 are outstanding: the ninth is never sent. A timeout, abort or dispose
+   * clears the pending entry, its timer and its listener; a late answer is ignored and counted.
+   */
+  async secrets(ask: SecretsAsk, options: RequestOptions = {}): Promise<SecretsAnswer> {
+    if (this.#secretsOutstanding >= MAX_SECRETS_OUTSTANDING && !this.#disposed) {
+      throw new AxisError("E_BACKPRESSURE", "Too many secrets requests outstanding", { reason: "secrets_busy" });
+    }
+    const requestId = this.#id();
+    const op = ask.type.slice("secrets.".length);
+    const timeout = ask.type === "secrets.get" || ask.type === "secrets.put" ? SECRETS_TIMEOUTS_MS.slow : SECRETS_TIMEOUTS_MS.fast;
+    this.#secretsOutstanding += 1;
+    try {
+      const m = await this.#request<Extract<InboundMessage, { type: "secrets.result" }>>("secrets", requestId, { ...ask, requestId } as OutboundMessage, timeout, options, (r) =>
+        r.type === "secrets.result" ? { value: r } : undefined,
+      );
+      if (m.ok && m.value !== undefined && m.value.op === op) return { ok: true, value: m.value };
+      if (!m.ok && m.error !== undefined) return { ok: false, error: m.error };
+      throw new AxisError("E_INTERNAL", "The supervisor's answer was refused", { reason: "answer_invalid" });
+    } finally {
+      this.#secretsOutstanding -= 1;
+    }
+  }
+
   /** Reject everything waiting, remove every listener and refuse later use. Idempotent. */
   dispose(): void {
     if (this.#disposed) return;
@@ -322,6 +363,7 @@ export class ControlClient {
     if (!parsed.success) {
       this.#invalid++;
       this.#logger?.warn("control.invalid", { reason: "schema" });
+      this.#refuseSecretsAnswer(raw);
       return;
     }
     const m = parsed.data;
@@ -356,7 +398,17 @@ export class ControlClient {
         return this.#answer("trust", m.requestId, m);
       case "settings.result":
         return this.#answer("settings", m.requestId, m);
+      case "secrets.result":
+        return this.#answer("secrets", m.requestId, m);
     }
+  }
+
+  /** A `secrets.result` that failed the schema but names a waiting request fails that request now, not at its timeout. */
+  #refuseSecretsAnswer(raw: unknown): void {
+    if (typeof raw !== "object" || raw === null) return;
+    const r = raw as Record<string, unknown>;
+    if (r["type"] !== "secrets.result" || typeof r["requestId"] !== "string") return;
+    this.#pending.get(`secrets:${r["requestId"]}`)?.reject(new AxisError("E_INTERNAL", "The supervisor's answer was refused", { reason: "answer_invalid" }));
   }
 
   #answer(kind: Kind, id: string, m: InboundMessage): void {

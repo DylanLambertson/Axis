@@ -50,6 +50,8 @@ async function run(identity: Identity, m: Op): Promise<Record<string, unknown>> 
       return { acks: [...acks] };
     case "settings":
       return { value: await client.settingsGet(m["key"] as "axis.cliAgents") };
+    case "secrets":
+      return { answer: await client.secrets(m["ask"] as never) };
     default:
       return { unknown: true };
   }
