@@ -15,6 +15,16 @@ export function contentIdOf(newMode: string, newOid: string, protectedPath = fal
   return createHash("sha256").update(protectedPath ? `${newMode} ${newOid} protected` : `${newMode} ${newOid}`, "utf8").digest("hex");
 }
 
+/**
+ * `versionId` (DC-2): SHA-256 of the canonical JSON of both sides' mode and object id, the old path of a rename and the
+ * WT-3 flag. Anything about the file that changes after the user looked (either side, a mode, a rename, the flag) gives
+ * another id; an exact revert gives the same one.
+ */
+export function versionIdOf(f: Pick<RoundFile, "oldMode" | "oldOid" | "newMode" | "newOid" | "oldPath">, protectedPath: boolean): string {
+  const canonical = JSON.stringify(["axis.review.version/1", f.oldMode, f.oldOid, f.newMode, f.newOid, f.oldPath ?? null, protectedPath]);
+  return createHash("sha256").update(canonical, "utf8").digest("hex");
+}
+
 /** A path that does not decode as strict UTF-8 holds U+FFFD: it is not a usable path, whatever the review package said. */
 export const hasReplacementChar = (path: string): boolean => path.includes("\uFFFD");
 
@@ -112,4 +122,15 @@ export class AckSessions {
       this.#sessions.delete(oldest.value);
     }
   }
+}
+
+/** `fn` over `items`, at most `limit` at a time, results in input order. */
+export async function mapLimit<T, R>(items: readonly T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+  const out = new Array<R>(items.length);
+  let next = 0;
+  const worker = async (): Promise<void> => {
+    for (let i = next++; i < items.length; i = next++) out[i] = await fn(items[i] as T);
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return out;
 }

@@ -19,6 +19,9 @@ export interface RoundFile {
   readonly oldPath?: string;
   readonly status: (typeof REVIEW_CHANGE_STATUSES)[number];
   readonly kind: (typeof REVIEW_CHANGE_KINDS)[number];
+  /** The file's mode and object id in the base (HEAD) tree: `000000` and a null id for an added file. Part of the `versionId`. */
+  readonly oldMode: string;
+  readonly oldOid: string;
   /** The file's mode and object id in the snapshot tree. */
   readonly newMode: string;
   readonly newOid: string;
@@ -53,6 +56,17 @@ export interface BuiltTree {
   readonly handle: ReviewHandle;
 }
 
+/** One hunk as `@axis/review`'s view shows it (`HunkView`): escaped text, the cut marked only by the flags. */
+export interface RoundHunk {
+  readonly id: string;
+  readonly header: string;
+  readonly lines: readonly { readonly kind: " " | "-" | "+"; readonly text: string; readonly eol: "lf" | "crlf" | "none"; readonly truncated: boolean }[];
+  readonly truncated: boolean;
+}
+
+/** The hunks of a file, or why only a whole-file decision is offered (the core's own reason string). */
+export type RoundHunks = { readonly kind: "hunks"; readonly hunks: readonly RoundHunk[] } | { readonly kind: "file-level"; readonly reason: string };
+
 export interface ReviewRound {
   /** The commit HEAD pointed at when the round opened. */
   readonly head: string;
@@ -71,6 +85,10 @@ export interface ReviewRound {
   readNewBlob(path: string, bound: { readonly wholeUpTo: number; readonly prefix: number }): Promise<{ readonly size: number; readonly bytes: Uint8Array; readonly complete: boolean }>;
   /** Accepts a whole file. `acceptTruncated` only for a file the user acknowledged. */
   accept(path: string, options: { readonly acceptTruncated: boolean }): void;
+  /** The hunks of one file of this round (loaded once and kept for `acceptHunk` and `build`). */
+  hunks(path: string): Promise<RoundHunks>;
+  /** Accepts one hunk of a file whose hunks were loaded. `acceptTruncated` only for a hunk the user acknowledged. */
+  acceptHunk(path: string, hunkId: string, options: { readonly acceptTruncated: boolean }): void;
   /** Builds the reviewed tree from what was accepted. Refuses (`ReviewRefusal`) for anything the review would not commit. */
   build(): Promise<BuiltTree>;
 }

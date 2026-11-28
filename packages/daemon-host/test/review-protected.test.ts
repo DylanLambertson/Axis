@@ -23,13 +23,15 @@ function fake(list: RoundFile[], seen: { accepted: Array<[string, boolean]> } = 
         head: "a".repeat(40), branch: "axis/feat", files: list, skipped: [], skippedCount: 0,
         async hasCutLines(p) { return p.startsWith("cut"); },
         async readNewBlob() { throw new Error("not read in this test"); },
+        async hunks() { throw new Error("not read in this test"); },
+        acceptHunk() { throw new Error("not used in this test"); },
         accept(p, o) { seen.accepted.push([p, o.acceptTruncated]); },
         async build() { return { reviewedTree: "c".repeat(40), head: "a".repeat(40), branch: "axis/feat", handle: {} as never }; },
       };
     },
   });
 }
-const file = (path: string, over: Partial<RoundFile> = {}): RoundFile => ({ path, status: "A", kind: "text", newMode: "100644", newOid: "b".repeat(40), unsafePath: false, protectedRules: [], warnings: [], ...over });
+const file = (path: string, over: Partial<RoundFile> = {}): RoundFile => ({ path, status: "A", kind: "text", oldMode: "000000", oldOid: "0".repeat(40), newMode: "100644", newOid: "b".repeat(40), unsafePath: false, protectedRules: [], warnings: [], ...over });
 
 test("protected files are flagged and listed first; the review's order is kept inside each group", { skip: SKIP ?? false }, async (t) => {
   const list = [file("a.txt"), file("b.txt", { protectedRules: ["Makefile"] }), file("c.txt"), file("d.txt", { protectedRules: ["matcher-error"] }), file("e.txt")];

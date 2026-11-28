@@ -33,7 +33,7 @@ test("registry: tiers, side effects, idempotency, as in the design table", () =>
     assert.equal(Object.isFrozen(spec), true);
   }
   assert.deepEqual(Object.keys(contracts["axis.git/1"] ?? {}).sort(), ["commit", "compareUrl", "push", "pushPlan"]);
-  assert.deepEqual(Object.keys(contracts["axis.review/1"] ?? {}).sort(), ["complete", "content", "diff"]);
+  assert.deepEqual(Object.keys(contracts["axis.review/1"] ?? {}).sort(), ["build", "complete", "content", "diff", "hunks"]);
   assert.deepEqual(tableProblems(contracts), []);
 });
 

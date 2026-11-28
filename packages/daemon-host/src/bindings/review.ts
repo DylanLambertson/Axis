@@ -85,6 +85,8 @@ export function createReviewService(deps: ReviewBindingDeps): ReviewService {
             ...(f.oldPath === undefined ? {} : { oldPath: f.oldPath }),
             status: f.status,
             kind: f.kind,
+            oldMode: f.oldMode,
+            oldOid: f.oldOid,
             newMode: f.newMode,
             newOid: f.newOid,
             ...(f.similarity === undefined ? {} : { similarity: f.similarity }),
@@ -102,6 +104,19 @@ export function createReviewService(deps: ReviewBindingDeps): ReviewService {
           accept: (path, options) => {
             try {
               session.acceptFile(path, options.acceptTruncated ? { acceptTruncated: true } : {});
+            } catch (e) {
+              refuse(e);
+            }
+          },
+          hunks: (path) =>
+            guarded(async () => {
+              const h = await session.hunks(path);
+              if (h.hunks === undefined) return { kind: "file-level" as const, reason: h.fileLevelReason ?? "unreadable" };
+              return { kind: "hunks" as const, hunks: h.hunks.map((x) => ({ id: x.id, header: x.header, lines: x.lines.map((l) => ({ kind: l.kind, text: l.text, eol: l.eol, truncated: l.truncated })), truncated: x.truncated })) };
+            }),
+          acceptHunk: (path, hunkId, options) => {
+            try {
+              session.acceptHunk(path, hunkId, options.acceptTruncated ? { acceptTruncated: true } : {});
             } catch (e) {
               refuse(e);
             }

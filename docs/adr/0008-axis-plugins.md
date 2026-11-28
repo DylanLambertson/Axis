@@ -106,7 +106,7 @@ One **sandboxed `WebContentsView` per plugin**, created and placed by main insid
 | `pages.read` | `axis.pages/1` list, get of the current version and the version list (PV-Q1) | 0 | none |
 | `pages.write` | `axis.pages/1` create a page, and add a **new version** (author `plugin:<id>`, hop recorded) | 2 | export to repository, restore, mark reviewed, delete, attachment add and remove (all user-only, ADR 0010) |
 | `runs.start` | `axis.runs/1.start` (composer only), raised to a tier-3 user challenge under the three rules below | 3 | `axis.cli-runs/1.start`; `axis.runs/1.cancel` |
-| `files.read` | `axis.review/1.content`, `diff` (review containment, the §3.5 path refusals) | 1 | `axis.review/1.complete`; every write |
+| `files.read` | `axis.review/1.content`, `diff` (review containment, the §3.5 path refusals) | 1 | `axis.review/1.complete`, `hunks`, `build` (DC-2, user only); every write |
 
 - **Scope is forced, not trusted.** Every plugin handler takes the project from the attested connection: where a request's project or workspace is optional (for example `axis.runs/1.list`'s `workspaceId`), the plugin handler **forces** it to the connection's project, and a value naming another project is refused [D].
 - **`runs.start` stays in 4a under three rules** (the plugin authors the prompt and chooses `workspaceId`, `mode`, `providerId` and `modelId` in `composerStartRequestSchema` [V, `packages/protocol/src/composer-runs.ts`]):

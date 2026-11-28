@@ -42,6 +42,8 @@ export const PLUGIN_DENY_METHODS: ReadonlySet<string> = new Set([
   "axis.runs/1.cancel",
   "axis.runs/1.events",
   "axis.review/1.complete",
+  "axis.review/1.hunks",
+  "axis.review/1.build",
   "axis.messages/1.pause",
   "axis.messages/1.resume",
   "axis.messages/1.settings",

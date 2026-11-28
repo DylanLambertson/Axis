@@ -22,13 +22,15 @@ function fake(list: RoundFile[], seen: { hasCut: string[]; accepted: Array<[stri
         head: "a".repeat(40), branch: "axis/feat", files: list, skipped: [], skippedCount: 0,
         async hasCutLines(p) { seen.hasCut.push(p); return cut(p); },
         async readNewBlob() { throw new Error("not read in this test"); },
+        async hunks() { throw new Error("not read in this test"); },
+        acceptHunk() { throw new Error("not used in this test"); },
         accept(p, o) { seen.accepted.push([p, o.acceptTruncated]); },
         async build() { seen.built++; return { reviewedTree: "c".repeat(40), head: "a".repeat(40), branch: "axis/feat", handle: {} as never }; },
       };
     },
   });
 }
-const file = (path: string, over: Partial<RoundFile> = {}): RoundFile => ({ path, status: "A", kind: "text", newMode: "100644", newOid: "b".repeat(40), unsafePath: false, protectedRules: [], warnings: [], ...over });
+const file = (path: string, over: Partial<RoundFile> = {}): RoundFile => ({ path, status: "A", kind: "text", oldMode: "000000", oldOid: "0".repeat(40), newMode: "100644", newOid: "b".repeat(40), unsafePath: false, protectedRules: [], warnings: [], ...over });
 
 test("a path that holds U+FFFD is an unsafe row even if the review did not say so, and the tree is null", { skip: SKIP ?? false }, async (t) => {
   const seen = { hasCut: [] as string[], accepted: [] as Array<[string, boolean]>, built: 0 };

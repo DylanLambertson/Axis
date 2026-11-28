@@ -16,6 +16,7 @@ export * from "./display.js";
 export * from "./git.js";
 export * from "./review.js";
 export * from "./review-content.js";
+export * from "./review-hunks.js";
 export * from "./composer-runs.js";
 export * from "./taint.js";
 export * from "./events.js";

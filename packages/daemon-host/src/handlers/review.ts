@@ -16,9 +16,10 @@ import type { PortContext } from "../ports/common.js";
 import type { ReviewRound, ReviewService, RoundFile } from "../ports/review.js";
 import type { RunsService } from "../ports/runs.js";
 import { createReviewContentHandler } from "./review-content.js";
+import { createReviewBuildHandler, createReviewHunksHandler } from "./review-hunks.js";
 import { fail, mapRefusal, NOT_AVAILABLE } from "./review-errors.js";
 import { ReviewedTrees } from "./review-store.js";
-import { AckSessions, contentIdOf, fileIdOf, foldEqualPaths, hasReplacementChar, isProtected, protectedFirst, wireRow, wireSkipped } from "./review-wire.js";
+import { AckSessions, contentIdOf, fileIdOf, foldEqualPaths, hasReplacementChar, isProtected, mapLimit, protectedFirst, wireRow, wireSkipped } from "./review-wire.js";
 
 /**
  * `axis.review/1` (design section 4.2): `diff` (read, tier 1) and `complete` (write, tier 2); `content` (read, tier 1) is in
@@ -59,16 +60,6 @@ export interface ReviewHandlerDeps {
 }
 
 const CUT_CHECK_CONCURRENCY = 8;
-
-async function mapLimit<T, R>(items: readonly T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
-  const out = new Array<R>(items.length);
-  let next = 0;
-  const worker = async (): Promise<void> => {
-    for (let i = next++; i < items.length; i = next++) out[i] = await fn(items[i] as T);
-  };
-  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
-  return out;
-}
 
 export function createReviewDiffHandler(deps: ReviewHandlerDeps): Handler {
   const acks = deps.acks ?? new AckSessions();
@@ -214,6 +205,12 @@ export function createReviewCompleteHandler(deps: ReviewHandlerDeps): Handler {
 }
 
 /** The handlers of this contract by method name, as the registry assembly (design section 4) expects them. */
-export function createReviewHandlers(deps: ReviewHandlerDeps): { readonly diff: Handler; readonly content: Handler; readonly complete: Handler } {
-  return { diff: createReviewDiffHandler(deps), content: createReviewContentHandler(deps), complete: createReviewCompleteHandler(deps) };
+export function createReviewHandlers(deps: ReviewHandlerDeps): { readonly diff: Handler; readonly content: Handler; readonly hunks: Handler; readonly build: Handler; readonly complete: Handler } {
+  return {
+    diff: createReviewDiffHandler(deps),
+    content: createReviewContentHandler(deps),
+    hunks: createReviewHunksHandler(deps),
+    build: createReviewBuildHandler(deps, (workspaceId, treeHash) => deps.journal.recordReviewedTree(workspaceId, treeHash, userPrincipal())),
+    complete: createReviewCompleteHandler(deps),
+  };
 }

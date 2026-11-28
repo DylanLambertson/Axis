@@ -4,6 +4,7 @@ import { cliRunSchema } from "./cliRuns.js";
 import { axisBranchSchema, objectIdSchema } from "./git.js";
 import { countSchema, displayTextSchema, guarded } from "./guard.js";
 import { reviewContentRequestSchema, reviewContentResponseSchema } from "./review-content.js";
+import { reviewBuildRequestSchema, reviewBuildResponseSchema, reviewHunksRequestSchema, reviewHunksResponseSchema } from "./review-hunks.js";
 import { contentIdSchema, fileIdSchema, MAX_REVIEW_PATH } from "./review-ids.js";
 import { runIdSchema, workspaceIdSchema, type MethodSpec } from "./worktrees.js";
 
@@ -12,7 +13,8 @@ export { contentIdSchema, fileIdSchema, MAX_REVIEW_PATH } from "./review-ids.js"
 /**
  * `axis.review/1` (docs/design/daemon-host.md section 4.2). `diff` is the read side of `@axis/review`: the changed files
  * of a workspace against its HEAD, and the tree hash a later `axis.git/1.commit` is bound to (REV-1). `complete` is the
- * user's decision that a run in REVIEWING is done.
+ * user's decision that a run in REVIEWING is done. `hunks` and `build` (DC-2, `review-hunks.ts`) are the per-hunk side: a
+ * reviewed tree from a selection of files and hunks, registered like a `diff` tree.
  *
  * `complete` is for the user principal only: policy admits only the `user` actor, and the daemon mints the
  * `UserPrincipal` the journal needs (`@axis/journal` refuses REVIEWING to COMPLETED for any other actor). The request
@@ -36,26 +38,7 @@ export const MAX_REVIEW_FILES = 200;
 export const MAX_REVIEW_SKIPPED = 50;
 const MAX_FILE_TAGS = 4;
 
-/**
- * `details.reason` values `diff` can answer with, by error code: what `@axis/review` raises on the path the host runs
- * (`ReviewSession.start`, `hasCutLines`, `acceptFile`, `build`). Closed set; never free text. `unsafe_path`, `filtered_path`,
- * `truncated_hunk` and `nothing_accepted` are refusals of `build()` that a handler following the rules below never
- * triggers (it does not build such a review and answers `treeHash: null`), but a handler bug would, so they are on the
- * wire. Not on this wire: `not_a_commit` and `no_hunks` (no `against`, no hunk API), and the commit-side reasons
- * (`head_moved`, `stale`, `index_changed` (retired, no longer produced), `operation_in_progress`, `detached_head`), which are `axis.git/1.commit`'s.
- */
-export const REVIEW_DIFF_REFUSALS = {
-  /** `too_large`: more files than the review holds (see `MAX_REVIEW_FILES`), or git output cut off. `not_found`: HEAD is gone. */
-  E_INVALID_ARGUMENT: ["too_large", "not_found"],
-  E_CONFLICT: ["snapshot_failed", "hunks_do_not_apply", "index_refused", "path_conflict", "not_head"],
-  E_POLICY_DENIED: ["no_head", "unsafe_path", "filtered_path", "nothing_accepted", "truncated_hunk"],
-} as const;
-export const REVIEW_DIFF_REASONS = [
-  ...REVIEW_DIFF_REFUSALS.E_INVALID_ARGUMENT,
-  ...REVIEW_DIFF_REFUSALS.E_CONFLICT,
-  ...REVIEW_DIFF_REFUSALS.E_POLICY_DENIED,
-] as const;
-export const reviewDiffReasonSchema = z.enum(REVIEW_DIFF_REASONS);
+export { REVIEW_DIFF_REASONS, REVIEW_DIFF_REFUSALS, reviewDiffReasonSchema } from "./review-reasons.js";
 
 /*
  * Copies of `ChangeStatus` and `ChangeKind` in `@axis/review` (types only, so no runtime check is possible);
@@ -211,6 +194,27 @@ export const reviewMethods = {
   content: {
     request: reviewContentRequestSchema,
     response: reviewContentResponseSchema,
+    sideEffect: "read",
+    tier: 1,
+    idempotency: "none",
+    timeoutMs: 30_000,
+  },
+  /** DC-2: the hunks of one file, with the version id a selection must carry (read, tier 1, user only). */
+  hunks: {
+    request: reviewHunksRequestSchema,
+    response: reviewHunksResponseSchema,
+    sideEffect: "read",
+    tier: 1,
+    idempotency: "none",
+    timeoutMs: 30_000,
+  },
+  /**
+   * DC-2: a reviewed tree from a selection of whole files and hunks. Writes git objects only (the worktree, the index and the
+   * refs are untouched, as for `diff`), so it is a read at tier 1; the commit stays `axis.git/1.commit` at tier 2.
+   */
+  build: {
+    request: reviewBuildRequestSchema,
+    response: reviewBuildResponseSchema,
     sideEffect: "read",
     tier: 1,
     idempotency: "none",
