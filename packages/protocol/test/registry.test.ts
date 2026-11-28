@@ -118,6 +118,11 @@ const EXPECTED: readonly Row[] = [
   ["axis.plugins", "enable", "write", 4, "none", 30_000],
   ["axis.tasks", "startPreview", "read", 0, "none", 5_000],
   ["axis.tasks", "start", "write", 4, "required", 30_000],
+  // DC-3a/DC-3c: axis.terminals/1 (terminals-contract.md section 1)
+  ["axis.terminals", "open", "write", 2, "required", 30_000],
+  ["axis.terminals", "list", "read", 0, "none", 5_000],
+  ["axis.terminals", "close", "write", 2, "required", 15_000],
+  ["axis.terminals", "attach", "write", 2, "none", 5_000],
 ];
 
 function actualRows(): Row[] {
