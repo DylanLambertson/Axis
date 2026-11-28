@@ -1,6 +1,6 @@
 # Trust-registry revocations reach terminals (DC-3c)
 
-- **Status:** Proposed. Security review. Review 1 folded. Follows DC-3a (`terminals-contract.md`). Until this lands, DC-3a's `open` is refused by a capability check (that contract, section 2 step 5).
+- **Status:** Proposed. Security review. Reviews 1 and 2 folded. Follows DC-3a (`terminals-contract.md`). Until this lands, DC-3a's `open` is refused by a capability check (that contract, section 2 step 5).
 - **Builds on:**
   - the trust registry (`packages/daemon-host/src/policy/trust-registry.ts`), fed only by the supervisor's `trust.set`;
   - DC-3a's terminal registry, its monotonic lifecycle, the per-terminal revoke in the pty process, and the definitive-outcome and late-spawn reporting of the pty client (section 6 names them);
@@ -100,7 +100,7 @@ The gate itself is unchanged. Its other callers' scope is not this note's to wid
 - **`installTerminalRevocationRouting(trust, registry)`** registers the listener on the composed registry's `onRevoked`. It returns an owned **`TerminalRevocationRouting`** with `active(): boolean` and `dispose()`.
 - **`active()` attests to the installed subscription itself:** it is true only between a successful registration and `dispose()`, and `dispose()` removes the listener. It is not an enable flag. A registry without `onRevoked` gives no routing object at all.
 - **One predicate, `terminalsServable(port, routing)`,** used by production, by the default composition and by every injected test composition. It requires:
-  - the terminal port's four parts: `spawn` with `onLate`, `grant`, `revoke`, and `lateSpawnReports`;
+  - the terminal port's four parts (`PtyTerminalPort` in `ports/pty.ts`, merged with DC-3a's daemon side): `spawn(spec, onLate?)`, `grantTerminal(terminalId, conn)`, `revoke(terminalId)`, and `lateSpawnReports`;
   - `routing?.active() === true`.
 
   The host advertises `axis.terminals/1`, holds its policy rows, and registers its handlers only when the predicate holds. Each handler checks `routing.active()` again per call, and answers `not_found` once the routing is disposed.
@@ -115,18 +115,28 @@ The gate itself is unchanged. Its other callers' scope is not this note's to wid
 
 ### 6.2 The pty handoff
 
-These are merged in `@axis/pty-process`; DC-3a adapts them, and DC-3c only consumes them:
+These are merged in `@axis/pty-process` (`client.ts`); DC-3a adapts them, and DC-3c only consumes them:
 - `spawn(spec, onLate?)`;
 - `PtySpawnError.definitive`: true for a refusal before sending, or `spawn-failed`; false for a timeout or an in-flight channel loss;
 - `LateSpawn`: `{ kind: "spawned", handle }` or `{ kind: "failed", code }`;
 - a handle's `terminalId`;
-- `grant` and `revoke(terminalId): boolean`.
+- `grantTerminal(terminalId, conn)` (the `grant` message; never named `grant` on a port, which the plugin-grant writer rule fences) and `revoke(terminalId): boolean`.
 
-DC-3a's daemon slice forwards all of them through the control slot (`bindings/pty-control.ts`) and declares them in the daemon's port (`ports/pty.ts`, `PtyTerminalPort`).
+DC-3a's daemon side forwards all of them through the control slot (`bindings/pty-control.ts`) and declares them in the daemon's port (`ports/pty.ts`): `PtyTerminalPort`, `PtyTerminalHandle`, `PtyLateSpawn` (the client's `LateSpawn`, compared field for field by a compile-time test) and `isDefinitiveSpawnFailure`.
+
+**`lateSpawnReports` (review 2 N1) is a DAEMON-port capability attestation, not a pty-process API.**
+- Its shape is `readonly lateSpawnReports: true`, a member of `PtyTerminalPort` only (on main since DC-3a's daemon side).
+- The control slot supplies it because it forwards both `onLate` and the client's `definitive`.
+- `terminalPortOf` and `terminalsServable` read it as the literal `true`.
+- The pty client has no such member. A self-asserted marker alone cannot prove forwarding, so the real-adapter test that drops `onLate` while spawn still works stays (`pty-control.test.ts`).
 
 **Accounting rules:**
 - a late `failed` releases the pending slot;
-- a late `spawned` group is already revoked, killed and tracked by the client, and also reaches the daemon's accounting, never publication;
+- a late `spawned` group (review 2 N2):
+  - the merged client sends `revoke` and then `kill` for it (`client.ts`, since DC-3a's daemon side; before that, `kill` only);
+  - the client tracks the group and hands the handle to `onLate`;
+  - the daemon's registry also revokes and kills it, and keeps its slot charged until the group is gone;
+  - it is never published or granted. The daemon's own revoke is required whatever the client does;
 - a lost channel, or an evicted late callback with no authoritative outcome, keeps the slot charged.
 
 ## 7. Every authority-loss event (review 1 S2)
@@ -184,3 +194,22 @@ DC-3a's daemon slice forwards all of them through the control slot (`bindings/pt
   - routing disposed before the handlers answer.
 - **Capability:** as section 6.1.
 - **The pty handoff:** through the real control slot, a timeout keeps the slot charged and a late spawned or failed outcome reaches the daemon; dropping `onLate` while spawn still works must fail.
+
+**Must prove before the contract is served** (from DC-3a's daemon review):
+1. `active()` reflects the live subscription: true only between registration and `dispose()`, and every method answers `not_found` after `dispose()`. A source without `onRevoked` gives no routing object.
+2. Routing reaches pending and live terminals synchronously inside `set`:
+   - a window revoke;
+   - a subject revoke, workspace and project, from any window;
+   - `all` on saturation.
+
+   There is a mutant per mapping.
+3. The move to served keeps the rows as they are:
+   - user only, at tiers 2, 0, 2 and 2 (open per-start);
+   - on the plugin deny list;
+   - out of `WEB_ALLOWED`;
+   - served only with both the four port parts and the installed routing, shown by a composition test.
+4. DC-3a's review S1 and S2 repros stay as tests: a replaced control port settles its terminals, and a cancelled open never leaves a published shell.
+5. The audit allow-list, through the host's own merged allow-list and the real audit log: ids and `conn` kept, no path, environment or data.
+6. The both-subject admission tests, for `attach` as well as `open`.
+7. With the real pty service: a terminal reached by a registry revoke stops getting output on its data connection, and other terminals on the same connection are unaffected.
+8. **Residual, stated until DC-3b:** `conn` is a name the caller gives. Main mints it for a port it hands to the window that asked only with DC-3b. Until then, a caller that may attach (only the user's own desktop connection) could name any data connection it knows.
