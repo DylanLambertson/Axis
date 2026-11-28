@@ -1,25 +1,32 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
-// Renderer entry: applies the colour tokens, sets the title from the brand module, mounts the frame.
+// Renderer entry: applies the colour tokens for the OS theme, sets the title from the brand module, installs the key
+// handling and mounts the frame.
 import { useEffect } from "react";
 import { createRoot } from "react-dom/client";
-import { cssVariables, windowTitle, type ThemeKind } from "@axis/ui";
+import { CommandRegistry, cssVariables, windowTitle, type ThemeKind } from "@axis/ui";
 import { App } from "./App.js";
+import { installKeyboard, platformOf } from "./frame/keyboard.js";
 
 function applyTokens(theme: ThemeKind): void {
-  for (const [name, value] of cssVariables(theme)) document.documentElement.style.setProperty(name, value);
+  const root = document.documentElement;
+  for (const [name, value] of cssVariables(theme)) root.style.setProperty(name, value);
+  root.dataset.theme = theme;
 }
 
 const dark = window.matchMedia("(prefers-color-scheme: dark)");
 applyTokens(dark.matches ? "dark" : "light");
 dark.addEventListener("change", (e) => applyTokens(e.matches ? "dark" : "light"));
 document.title = windowTitle();
+const platform = platformOf(navigator);
+const commands = new CommandRegistry(platform);
+installKeyboard(window, commands, platform);
 
 /** Marks the page once React has committed the frame (the smoke test waits for it). */
 function Root() {
   useEffect(() => {
     document.documentElement.dataset.axisShell = "mounted";
   }, []);
-  return <App />;
+  return <App initialHash={window.location.hash} isMac={platform === "mac"} commands={commands} />;
 }
 
 const root = document.getElementById("root");

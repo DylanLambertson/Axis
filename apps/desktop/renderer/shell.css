@@ -1,29 +1,282 @@
 /* Copyright (c) 2026 Dylan Lambertson. All rights reserved. */
-/* Colours come only from the --axis-* tokens that renderer/main.tsx sets from @axis/ui. */
+/* The own shell's styles, direction C ("Precise instrument", docs/design/ui/tokens.md). Colours come only from the
+   --axis-* properties renderer/main.tsx sets from @axis/ui; the sizes, type and motion below are not colours and live
+   here. Flat bordered surfaces; only the pending decision is lifted (elev-2) and only overlays use elev-3. */
+
+:root {
+  --axis-font-ui: system-ui, -apple-system, "Segoe UI", sans-serif;
+  --axis-font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --axis-text-xs: 11px;
+  --axis-text-sm: 12px;
+  --axis-text-md: 13px;
+  --axis-text-lg: 14px;
+  --axis-text-xl: 18px;
+  --axis-text-2xl: 22px;
+  --axis-space-1: 4px;
+  --axis-space-2: 8px;
+  --axis-space-3: 12px;
+  --axis-space-4: 16px;
+  --axis-space-6: 24px;
+  --axis-radius-xs: 4px;
+  --axis-radius-sm: 6px;
+  --axis-radius-md: 8px;
+  --axis-radius-lg: 10px;
+  --axis-control: 30px;
+  --axis-control-sm: 24px;
+  --axis-dur-fast: 120ms;
+  --axis-dur-mid: 160ms;
+  --axis-dur-slow: 200ms;
+  --axis-ease-out: cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --axis-dur-fast: 0ms;
+    --axis-dur-mid: 0ms;
+    --axis-dur-slow: 0ms;
+  }
+}
+
+* { box-sizing: border-box; }
+
 html,
-body {
+body,
+#root {
   margin: 0;
   height: 100%;
+}
+
+body {
   background: var(--axis-canvas);
   color: var(--axis-text);
-  font-family: system-ui, sans-serif;
-  font-size: 13px;
+  font: var(--axis-text-md) / 20px var(--axis-font-ui);
+  font-variant-numeric: tabular-nums;
 }
 
-#root,
-.axis-shell {
-  height: 100%;
+button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; }
+button:disabled { cursor: not-allowed; }
+h1, h2, h3, p, dl, dd, ul { margin: 0; }
+ul { padding: 0; list-style: none; }
+
+:focus-visible {
+  outline: 2px solid var(--axis-accent-text);
+  outline-offset: 2px;
 }
 
-.axis-shell {
-  display: flex;
-  align-items: center;
-  justify-content: center;
+.axis-sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
 }
 
-.axis-shell__title {
-  margin: 0;
-  font-size: 14px;
-  font-weight: 600;
+.axis-label {
+  font: 500 var(--axis-text-xs) / 16px var(--axis-font-mono);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
   color: var(--axis-text-secondary);
+}
+
+/* Frame */
+.axis-frame { display: flex; flex-direction: column; height: 100%; }
+
+/* The top bar keeps one 44px row while it fits and wraps onto more rows when it does not (320 CSS px, 400% zoom), so
+   the command button and the activity text stay whole and nothing scrolls sideways. */
+.axis-top {
+  min-height: 44px;
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px var(--axis-space-3);
+  padding: 6px var(--axis-space-3);
+  background: var(--axis-surface);
+  border-bottom: 1px solid var(--axis-border);
+}
+.axis-top:focus-visible, .axis-main:focus-visible, .axis-terminal:focus-visible { outline-offset: -2px; }
+.axis-top__brand { font-weight: 600; }
+.axis-top__brand, .axis-top__crumb, .axis-top__activity { min-width: 0; overflow-wrap: anywhere; }
+.axis-top__crumb { color: var(--axis-text-secondary); flex: 0 1 auto; }
+.axis-top__crumb [aria-current] { color: var(--axis-text); font-weight: 500; }
+.axis-top__gap { flex: 1; }
+.axis-top__activity { color: var(--axis-text-secondary); }
+
+.axis-body { flex: 1; display: flex; min-height: 0; }
+
+/* The rail is 72px at its 11px labels and grows with enlarged text (WCAG 1.4.4), up to a share of the window; past that,
+   or with spaced text (1.4.12), a label wraps, so the rail never scrolls sideways. */
+.axis-rail {
+  font-size: var(--axis-text-xs);
+  width: calc(72em / 11);
+  min-width: 72px;
+  max-width: min(30vw, 160px);
+  flex: none;
+  padding: var(--axis-space-2) 6px;
+  background: var(--axis-surface);
+  border-right: 1px solid var(--axis-border);
+  overflow: auto;
+}
+.axis-rail__list { display: flex; flex-direction: column; gap: 2px; }
+.axis-rail__item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  min-height: 44px;
+  padding: 6px 2px;
+  border-radius: var(--axis-radius-sm);
+  color: var(--axis-text-secondary);
+  font-size: var(--axis-text-xs);
+  line-height: 1.2;
+  text-align: center;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  transition: background-color var(--axis-dur-fast) var(--axis-ease-out);
+}
+.axis-rail__item:hover { background: var(--axis-hover); color: var(--axis-text); }
+.axis-rail__item[aria-current="page"] { background: var(--axis-accent-soft); color: var(--axis-text); box-shadow: inset 2px 0 0 var(--axis-accent-text); }
+.axis-rail__item:focus-visible { outline-offset: -2px; }
+.axis-rail__icon { font-size: 15px; line-height: 18px; }
+
+/* Names and values the shell did not write (project, branch and file names, decision fields) may be one long word: they
+   wrap anywhere. Only code and diffs (.axis-diff) scroll sideways, inside their own box, at 320 CSS px and with enlarged
+   or spaced text alike (the frame smoke test measures all three). */
+.axis-main { flex: 1; min-width: 0; overflow: auto; padding: var(--axis-space-4) var(--axis-space-6); display: flex; flex-direction: column; gap: var(--axis-space-3); overflow-wrap: anywhere; }
+.axis-main > * { min-width: 0; max-width: 100%; }
+.axis-main__title { font-size: var(--axis-text-xl); line-height: 24px; font-weight: 600; letter-spacing: -0.01em; }
+
+/* Controls: a label and its keycaps stay on one line while they fit and wrap when they do not (320 CSS px, enlarged or
+   spaced text); the accessible name is the same either way. */
+.axis-btn {
+  min-height: var(--axis-control);
+  padding: 0 var(--axis-space-3);
+  border-radius: var(--axis-radius-sm);
+  font-weight: 500;
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 2px var(--axis-space-2);
+  max-width: 100%;
+  min-width: 0;
+  text-align: start;
+  overflow-wrap: anywhere;
+  transition: background-color var(--axis-dur-fast) var(--axis-ease-out);
+}
+.axis-btn--primary { background: var(--axis-accent); color: var(--axis-on-accent); }
+.axis-btn--primary:hover:not(:disabled) { background: var(--axis-accent-hover); }
+.axis-btn--secondary { border: 1px solid var(--axis-control-border); color: var(--axis-text); }
+.axis-btn--secondary:hover:not(:disabled) { background: var(--axis-hover); }
+.axis-btn:disabled { background: var(--axis-hover); color: var(--axis-text-disabled); border: 1px solid var(--axis-border); }
+
+.axis-keycaps { display: inline-flex; flex-wrap: wrap; gap: 2px; max-width: 100%; }
+.axis-kbd { font: var(--axis-text-xs) / 17px var(--axis-font-mono); border: 1px solid currentColor; border-radius: var(--axis-radius-xs); padding: 0 5px; }
+
+.axis-tag { font-size: var(--axis-text-sm); line-height: 18px; padding: 0 6px; border-radius: var(--axis-radius-xs); border: 1px solid var(--axis-control-border); color: var(--axis-text-secondary); overflow-wrap: anywhere; }
+.axis-tag--warn { border-color: var(--axis-warn); color: var(--axis-warn); background: var(--axis-warn-soft); }
+
+/* Status glyphs: one shape per state, never the only cue */
+.axis-g { width: 9px; height: 9px; flex: none; display: inline-block; }
+.axis-g--run { border-radius: 50%; background: var(--axis-accent-text); }
+.axis-g--wait, .axis-g--warn { background: var(--axis-warn); transform: rotate(45deg) scale(0.86); border-radius: 1.5px; }
+.axis-g--bad { background: var(--axis-bad); border-radius: 1.5px; }
+.axis-g--ok { border-radius: 50%; border: 2px solid var(--axis-ok); }
+.axis-g--quiet { border-radius: 50%; border: 1.5px dashed var(--axis-text-secondary); }
+.axis-g--idle { border-radius: 50%; border: 1.5px solid var(--axis-text-secondary); }
+.axis-g--info { border-radius: 50%; border: 2px solid var(--axis-info); }
+
+/* Notices */
+.axis-notices { display: flex; flex-direction: column; gap: var(--axis-space-2); }
+.axis-notice {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 10px var(--axis-space-3);
+  border: 1px solid var(--axis-border);
+  border-left: 3px solid var(--axis-info);
+  border-radius: var(--axis-radius-md);
+  background: var(--axis-surface);
+}
+.axis-notice .axis-g { margin-top: 5px; flex: none; }
+.axis-notice > p { min-width: 0; }
+.axis-notice--warning { border-color: var(--axis-warn); border-left-width: 4px; background: var(--axis-warn-soft); }
+.axis-notice--error { border-color: var(--axis-bad); border-left-width: 4px; }
+
+/* State screens */
+.axis-state { display: flex; flex-direction: column; gap: var(--axis-space-2); align-items: flex-start; max-width: 560px; min-width: 0; padding: var(--axis-space-6) 0; }
+.axis-state > * { max-width: 100%; }
+.axis-state__title { font-size: var(--axis-text-2xl); line-height: 28px; font-weight: 600; display: flex; align-items: center; gap: var(--axis-space-2); }
+.axis-state__body, .axis-state__why { color: var(--axis-text-secondary); }
+.axis-state__action { display: flex; flex-direction: column; gap: var(--axis-space-1); margin-top: var(--axis-space-2); }
+.axis-state--refused { border: 1px solid var(--axis-bad); border-left-width: 4px; border-radius: var(--axis-radius-md); padding: var(--axis-space-3) var(--axis-space-4); background: var(--axis-surface); }
+.axis-state--refused .axis-state__title { font-size: var(--axis-text-lg); line-height: 20px; }
+.axis-skeleton { display: flex; flex-direction: column; gap: var(--axis-space-2); width: min(560px, 100%); }
+.axis-skeleton__row { height: 42px; border-radius: var(--axis-radius-sm); background: var(--axis-raised); border: 1px solid var(--axis-border); }
+
+/* Decision card: the one lifted surface */
+.axis-decision { border-radius: var(--axis-radius-lg); background: var(--axis-raised); box-shadow: var(--axis-elev-2); border: 1px solid var(--axis-warn); max-width: 640px; min-width: 0; overflow-wrap: anywhere; }
+.axis-decision__head { display: flex; align-items: center; gap: 9px; padding: 10px 14px 0; }
+.axis-decision__head { flex-wrap: wrap; }
+.axis-decision__head h3 { font-size: var(--axis-text-md); font-weight: 600; flex: 1 1 12em; min-width: 0; }
+.axis-decision__fields { display: grid; gap: 4px; padding: 10px 14px; }
+.axis-decision__field { display: grid; grid-template-columns: 92px minmax(0, 1fr); gap: 14px; }
+.axis-decision__field dd { min-width: 0; }
+.axis-decision__field dt { color: var(--axis-text-secondary); }
+.axis-decision__why { padding: 0 14px 8px; color: var(--axis-text-secondary); }
+.axis-decision__actions { display: flex; gap: var(--axis-space-2); padding: 0 14px 12px; flex-wrap: wrap; }
+
+/* Terminal pane */
+.axis-terminal { border: 1px solid var(--axis-border); border-radius: var(--axis-radius-md); background: var(--axis-canvas); min-height: 120px; display: flex; flex-direction: column; }
+.axis-terminal__head { padding: 6px var(--axis-space-3); border-bottom: 1px solid var(--axis-border); }
+.axis-terminal__body { padding: var(--axis-space-3); display: flex; flex-direction: column; gap: var(--axis-space-2); align-items: flex-start; color: var(--axis-text-secondary); font-family: var(--axis-font-mono); font-size: var(--axis-text-sm); }
+
+/* Review layout: list beside the diff; at a narrow pane the list goes above it, so lines keep the full width */
+.axis-review { container-type: inline-size; display: flex; flex-direction: column; gap: var(--axis-space-2); min-width: 0; }
+.axis-review__head h2 { font-size: var(--axis-text-lg); font-weight: 600; }
+.axis-review__note { color: var(--axis-text-secondary); font-size: var(--axis-text-sm); }
+.axis-review__body { display: grid; grid-template-columns: minmax(200px, 280px) minmax(0, 1fr); gap: var(--axis-space-3); align-items: start; }
+.axis-review__files { border: 1px solid var(--axis-border); border-radius: var(--axis-radius-md); background: var(--axis-surface); }
+.axis-review__files summary { padding: 6px var(--axis-space-3); cursor: pointer; }
+.axis-review__files li { display: flex; gap: var(--axis-space-2); justify-content: space-between; padding: 4px var(--axis-space-3); cursor: pointer; min-height: var(--axis-control-sm); align-items: center; }
+.axis-review__files li[aria-selected="true"] { background: var(--axis-accent-soft); box-shadow: inset 2px 0 0 var(--axis-accent-text); }
+.axis-review__files li:focus-visible { outline-offset: -2px; }
+.axis-review__path { font-family: var(--axis-font-mono); font-size: var(--axis-text-sm); overflow-wrap: anywhere; }
+.axis-review__diff { min-width: 0; }
+.axis-counts { font-family: var(--axis-font-mono); font-size: var(--axis-text-sm); white-space: nowrap; }
+.axis-counts__add { color: var(--axis-ok); }
+.axis-counts__del { color: var(--axis-bad); }
+.axis-diff { margin: 0; padding: var(--axis-space-3); border: 1px solid var(--axis-border); border-radius: var(--axis-radius-md); background: var(--axis-canvas); font: 12.5px / 20px var(--axis-font-mono); overflow-x: auto; }
+@container (max-width: 720px) {
+  .axis-review__body { grid-template-columns: minmax(0, 1fr); }
+}
+
+/* Narrow windows and high zoom: less padding, and a decision field's term goes above its value */
+@media (max-width: 480px) {
+  .axis-main { padding: var(--axis-space-3); }
+  .axis-decision__field { grid-template-columns: minmax(0, 1fr); gap: 0; }
+}
+
+/* Gallery */
+.axis-gallery { display: flex; flex-direction: column; gap: var(--axis-space-6); }
+.axis-gallery__item { display: flex; flex-direction: column; gap: var(--axis-space-2); }
+
+/* Command palette: the overlay level (elev-3) over the scrim; results change at once (no motion) */
+.axis-top__cmd { min-height: 28px; color: var(--axis-text-secondary); }
+.axis-scrim { position: fixed; inset: 0; background: var(--axis-scrim); display: flex; justify-content: center; align-items: flex-start; padding: 12vh var(--axis-space-4) 0; z-index: 10; }
+.axis-palette { width: min(560px, 100%); max-height: 60vh; display: flex; flex-direction: column; background: var(--axis-overlay); border: 1px solid var(--axis-border); border-radius: 12px; box-shadow: var(--axis-elev-3); overflow: hidden; }
+.axis-palette__input { font: inherit; font-size: 14px; color: var(--axis-text); background: transparent; border: 0; border-bottom: 1px solid var(--axis-border); padding: var(--axis-space-3) var(--axis-space-4); outline-offset: -2px; }
+.axis-palette__input::placeholder { color: var(--axis-text-secondary); }
+.axis-palette__list { list-style: none; margin: 0; padding: 6px; overflow-y: auto; }
+.axis-palette__item { display: flex; align-items: center; justify-content: space-between; gap: var(--axis-space-3); padding: 6px 10px; border-radius: var(--axis-radius-sm); cursor: pointer; color: var(--axis-text); }
+.axis-palette__item:hover { background: var(--axis-hover); }
+.axis-palette__item[aria-selected="true"] { background: var(--axis-accent-soft); box-shadow: inset 2px 0 0 var(--axis-accent-text); }
+.axis-palette__empty { margin: 0; padding: var(--axis-space-3) var(--axis-space-4); color: var(--axis-text-secondary); }
+
+/* Forced colours: shadows vanish, so the lifted and refused surfaces keep a border */
+@media (forced-colors: active) {
+  .axis-decision, .axis-state--refused, .axis-notice { border: 2px solid CanvasText; }
+  .axis-rail__item[aria-current="page"] { outline: 2px solid Highlight; }
+  .axis-palette { border: 2px solid CanvasText; }
+  .axis-palette__item[aria-selected="true"] { outline: 2px solid Highlight; }
 }
