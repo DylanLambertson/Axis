@@ -10,8 +10,8 @@
 import { runMutants } from "./run.mjs";
 const root = process.argv[2];
 const D = `${root}/apps/desktop/dist/tsc`;
-const F = { h: `${D}/main/hardening.js`, g: `${D}/main/g28.js` };
-const T = { h: [`${D}/test/hardening.test.js`], g: [`${D}/test/hardening.test.js`] };
+const F = { h: `${D}/main/hardening.js`, g: `${D}/main/g28.js`, s: `${D}/main/seam.js`, i: `${D}/main/instance.js` };
+const T = { h: [`${D}/test/hardening.test.js`], g: [`${D}/test/hardening.test.js`], s: [`${D}/test/seam.test.js`], i: [`${D}/test/instance.test.js`] };
 const M = [
   ["g", "H1 check skipped", "if (refused.length === 0)", "if (true)"],
   ["g", "H1 no exit", "exit(DEBUG_FLAG_EXIT);", ""],
@@ -40,5 +40,16 @@ const M = [
   ["h", "H13 link", "noLink: c.noLink", "noLink: false"],
   ["h", "H13 detail", "detail: c.detail", "detail: c.detail.slice(0, 20)"],
   ["h", "H13 opens on any answer", "return answer?.response === OPEN_BUTTON;", "return true;"],
+  ["s", "S1 packaged starts", "if (!shouldStartDaemon(deps.packaged))", "if (false)"],
+  ["s", "S2 daemon before the anchor and the pty", "void started.then(() => supervisor.start());", "supervisor.start();"],
+  ["s", "S3 cwd not the bundle", "entry, service, env, deps.bundleDir, deps.platform", "entry, service, env, \"/\", deps.platform"],
+  ["s", "S3 env not allow-listed", "daemonEnvironment(deps.env)", "deps.env"],
+  ["s", "S4 stdout unread", 'child.stdout?.on("data", () => {', 'void (() => {'],
+  ["s", "S4 stderr unbounded", ".trimEnd().slice(0, MAX_STDERR_LINE)", ".trimEnd()"],
+  ["s", "S6 pty not stopped after the daemon", "shutdownInOrder(() => supervisor.shutdown(), pty, timers, DAEMON_STOP_BOUND_MS)", "Promise.resolve(pty.stop?.()).then(() => supervisor.shutdown())"],
+  ["s", "S7 native confirmed", "dialog: { confirm: async () => false }", "dialog: { confirm: async () => true }", "defence in depth: no window can be named (codeWindowOf), so the dialog port is never asked; the S7 window mutant covers that layer"],
+  ["s", "S7 a window named", "windows: { codeWindowOf: () => undefined }", "windows: { codeWindowOf: () => 1 }"],
+  ["i", "I1 second instance runs on", "if (!app.requestSingleInstanceLock())", "if (false)"],
+  ["i", "I2 no show on second launch", 'app.on("second-instance", () => show());', ""],
 ];
 runMutants({ root, files: F, tests: T, mutants: M });

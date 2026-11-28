@@ -12,6 +12,14 @@
       "types": "./dist/src/index.d.ts",
       "default": "./dist/src/index.js"
     },
+    "./main": {
+      "types": "./dist/src/main/index.d.ts",
+      "default": "./dist/src/main/index.js"
+    },
+    "./entry": {
+      "types": "./dist/src/entry.d.ts",
+      "default": "./dist/src/entry.js"
+    },
     "./signal-guard": {
       "types": "./dist/src/signal-guard.d.ts",
       "default": "./dist/src/signal-guard.js"

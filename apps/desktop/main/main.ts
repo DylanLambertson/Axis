@@ -1,13 +1,17 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 // Electron main of the own shell, loaded by main/entry.ts only after the G-28 check. OS-1 scaffold; OS-2 wires the window and
 // session hardening (main/hardening.ts over @axis/desktop-main, docs/design/own-shell-main-hardening.md); the daemon seam is OS-3.
-import { app, BrowserWindow, dialog, ipcMain, nativeTheme, protocol, session, shell } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, MessageChannelMain, nativeTheme, protocol, safeStorage, session, shell, utilityProcess, type MessagePortMain } from "electron";
+import { createHmac, randomBytes } from "node:crypto";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import { axisDataRoots } from "@axis/daemon-host";
+import { axisDataRoots } from "@axis/daemon-host/main";
 import { APP_PARTITION, APP_URL, WindowRegistry, type DesktopPlatform } from "@axis/desktop-main";
 import { createMainExternalOpener, hardenAppSession, installAppHardening, openAppWindow, prepareBeforeReady, registerOpenExternal, type AppSessionLike, type HardeningEvent } from "./hardening.js";
 import { mainWindowOptions } from "./window.js";
+import { SEAM_SHUTDOWN_BOUND_MS, startMainSeam, type MainSeam } from "./seam.js";
+import { claimSingleInstance } from "./instance.js";
+import { safeStorageCipher } from "./safe-storage.js";
 import { PAGE_PROBE, smokeLine, smokeReport } from "./smoke.js";
 
 const PLATFORM = process.platform as DesktopPlatform;
@@ -31,7 +35,16 @@ function userDataOverride(): string | undefined {
   return arg === undefined ? undefined : arg.slice("--user-data-dir=".length);
 }
 
+let mainWindow: BrowserWindow | undefined;
+
 function start(): void {
+  // One instance per profile, before anything is forked or registered.
+  if (!claimSingleInstance(app, () => {
+    if (mainWindow === undefined || mainWindow.isDestroyed()) return;
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.show();
+    mainWindow.focus();
+  }, (line) => void process.stderr.write(`${line}\n`))) return;
   prepareBeforeReady({
     app,
     protocol,
@@ -44,14 +57,52 @@ function start(): void {
     app.exit(1);
   });
   app.on("window-all-closed", () => app.quit());
+  // The daemon and the pty process stop first (bounded), then main quits.
+  let quitting = false;
+  let stopped = false;
+  app.on("before-quit", (event) => {
+    if (stopped || seam === undefined) return;
+    event.preventDefault();
+    if (quitting) return;
+    quitting = true;
+    const bound = new Promise<void>((resolve) => setTimeout(resolve, SEAM_SHUTDOWN_BOUND_MS));
+    void Promise.race([seam.shutdown(), bound]).finally(() => {
+      stopped = true;
+      app.quit();
+    });
+  });
   app.whenReady().then(ready).catch((error: unknown) => {
     process.stderr.write(`main window failed: ${error instanceof Error ? error.message : String(error)}\n`);
     app.exit(1);
   });
 }
 
+let seam: MainSeam | undefined;
+
+/** OS-3.1: the daemon and the pty process (docs/design/own-shell-main-seam.md). After ready: safeStorage needs it. */
+function startSeam(dir: string): void {
+  seam = startMainSeam<MessagePortMain>({
+    platform: PLATFORM,
+    packaged: PACKAGED,
+    bundleDir: dir,
+    config: { ...axisDataRoots(PLATFORM, process.env, homedir()), platform: PLATFORM, logLevel: "info", devDiagnostics: !PACKAGED },
+    env: process.env,
+    utilityProcess: utilityProcess as never,
+    createChannel: () => new MessageChannelMain(),
+    closePort: (port) => port.close(),
+    cipher: safeStorageCipher(safeStorage, PLATFORM),
+    randomBytes: (n) => new Uint8Array(randomBytes(n)),
+    hmacSha256: (key, text) => new Uint8Array(createHmac("sha256", key).update(text, "utf8").digest()),
+    now: () => performance.now(),
+    timers: { set: (fn, ms) => setTimeout(fn, ms), clear: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>) },
+    killPid: (pid, signal) => process.kill(pid, signal),
+    log: { trace: (line) => (PACKAGED ? undefined : void process.stderr.write(`${line}\n`)), warn: (line) => void process.stderr.write(`${line}\n`), error: (line) => void process.stderr.write(`${line}\n`) },
+  });
+}
+
 async function ready(): Promise<void> {
   const dir = bundleDir();
+  startSeam(dir);
   hardenAppSession(session.fromPartition(APP_PARTITION) as unknown as AppSessionLike, { bundleRoot: join(dir, "renderer"), packaged: PACKAGED, onEvent: log });
   const registry = new WindowRegistry();
   const windows = new Map<number, BrowserWindow>();
@@ -77,6 +128,7 @@ async function ready(): Promise<void> {
     onEvent: log,
   });
   windows.set(id, win);
+  mainWindow = win;
   if (SMOKE !== "1" && SMOKE !== "boundary") return;
   const wait = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
   const report = await smokeReport({ title: () => win.getTitle(), probe: () => win.webContents.executeJavaScript(PAGE_PROBE, false) as Promise<unknown>, wait });
