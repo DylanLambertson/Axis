@@ -425,3 +425,17 @@ test("OS-3h: only a daemon that ended pty_required is restarted after a pty star
   assert.equal(t.sup.restartAfterPtyRequired(), false, "V3: another bad_config stays failed");
   assert.equal(t.children.length, 2);
 });
+
+test("OS-3h review S1: a held start can end in a reported failure", () => {
+  const t = rig({ mayStart: () => false });
+  t.sup.start();
+  assert.equal(t.sup.state(), "backoff");
+  t.sup.failHeld("pty_unavailable");
+  assert.equal(t.sup.state(), "failed", "V4");
+  assert.equal(t.sup.failure(), "pty_unavailable");
+  assert.ok(t.events.some(([e, f]) => e === "failed" && f["reason"] === "pty_unavailable"), "V4: reported");
+  const r = rig();
+  r.sup.start();
+  r.sup.failHeld("pty_unavailable");
+  assert.equal(r.sup.state(), "starting", "no effect unless a start is held");
+});

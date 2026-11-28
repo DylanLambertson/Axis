@@ -62,5 +62,9 @@ const M = [
   ["s", "S17 failed hand-over leaves the pty running", "ptyHeld = true;", ""],
   ["s", "S17 a held pty process restarted", "mayStart: () => !ptyHeld,", "mayStart: () => true,"],
   ["s", "S18 pty_required daemon stranded", "if (restartedForPty !== ptyChildren && supervisor.restartAfterPtyRequired())", "if (false)"],
+  ["s", "S19 the hold never released", "            if (ptyHeld) {\n                ptyHeld = false;\n                queueMicrotask(() => pty.resume());\n            }", ""],
+  ["s", "S19 a failed pty process leaves the daemon waiting", "            if (pty.state() === \"failed\") {", "            if (false) {"],
+  ["s", "S20 the window always open", "firstMessage[side] ||", "true ||"],
+  ["s", "S20 the pty instance unchecked", "if (from !== ptyFork)", "if (false)", "defence in depth: an old pty instance's listener is removed on its exit, and the hand-over also checks the instance (A9)"],
 ];
 runMutants({ root, files: F, tests: T, mutants: M });

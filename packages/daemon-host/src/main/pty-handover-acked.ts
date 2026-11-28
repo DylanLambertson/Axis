@@ -33,6 +33,13 @@ export interface AckedHandoverOptions<P> {
   /** Every generation of this round failed. */
   readonly onFailed: () => void;
   readonly onEvent?: (event: AckedHandoverEvent, fields: { readonly generation?: number; readonly side?: HandoverSide; readonly attempt?: number }) => void;
+  /**
+   * Whether a side's acknowledgement window is open (OS-3h review S2): a child still loading cannot answer yet. The seam opens it
+   * at the child's first message, or after a start grace. While it is closed an unanswered generation waits (not counted as a
+   * failure) and an unanswered close never tears the child down: the child's own start bound (the daemon's ready timeout) applies.
+   * Default: always open.
+   */
+  readonly windowOpen?: (side: HandoverSide) => boolean;
   readonly ackMs?: number;
   readonly closeMs?: number;
   readonly maxGenerations?: number;
@@ -71,10 +78,11 @@ export class AckedHandover<P> {
     this.#child("daemon", child, alive);
   }
 
-  /** A child's `pty-control-adopted`. */
-  adopted(side: HandoverSide, generation: number): void {
+  /** A child's `pty-control-adopted`. `from` is the child instance it came from: an answer from any other instance is ignored. */
+  adopted(side: HandoverSide, generation: number, from?: AckedHandoverChild): void {
     const f = this.#inFlight;
     if (this.#disposed || f === undefined || f.generation !== generation) return;
+    if (from !== undefined && this.#children.get(side) !== from) return;
     f.acks.add(side);
     if (f.acks.size < 2) return;
     this.#o.timers.clear(f.timer);
@@ -83,8 +91,9 @@ export class AckedHandover<P> {
     this.#emit("handed_over", { generation });
   }
 
-  /** A child's `pty-control-closed`. */
-  closed(side: HandoverSide, generation: number): void {
+  /** A child's `pty-control-closed`, from the instance `from` (any other instance is ignored). */
+  closed(side: HandoverSide, generation: number, from?: AckedHandoverChild): void {
+    if (from !== undefined && this.#children.get(side) !== from) return;
     const c = this.#closing.get(side);
     if (c === undefined || c.generation !== generation) return;
     this.#o.timers.clear(c.timer);
@@ -159,12 +168,18 @@ export class AckedHandover<P> {
     }
     this.#emit("posted", { generation, attempt: this.#attempts });
     const f: InFlight = { generation, acks: new Set(), timer: undefined };
-    f.timer = this.#o.timers.set(() => {
-      if (this.#inFlight !== f) return;
-      this.#inFlight = undefined;
-      this.#retire(generation);
-      this.#failedGeneration(generation);
-    }, this.#o.ackMs ?? DEFAULT_HANDOVER_ACK_MS);
+    const arm = (): void => {
+      f.timer = this.#o.timers.set(() => {
+        if (this.#inFlight !== f) return;
+        // A side that has not answered and is still starting: wait another window, uncounted.
+        const waiting = (["pty", "daemon"] as const).filter((side) => !f.acks.has(side));
+        if (waiting.some((side) => !this.#open(side))) return arm();
+        this.#inFlight = undefined;
+        this.#retire(generation);
+        this.#failedGeneration(generation);
+      }, this.#o.ackMs ?? DEFAULT_HANDOVER_ACK_MS);
+    };
+    arm();
     this.#inFlight = f;
   }
 
@@ -182,20 +197,37 @@ export class AckedHandover<P> {
   #retire(generation: number): void {
     this.#emit("retired", { generation });
     for (const [side, child] of this.#children) {
+      // A newer retire replaces an older one's teardown timer for this side: the child is then waited on for the newer close only,
+      // which also covers the older generation (a child holds one generation at a time).
       const prev = this.#closing.get(side);
       if (prev !== undefined) this.#o.timers.clear(prev.timer);
-      const timer = this.#o.timers.set(() => {
-        if (this.#closing.get(side)?.generation !== generation) return;
-        this.#closing.delete(side);
-        this.#emit("teardown", { generation, side });
-        try {
-          this.#o.teardown(side);
-        } catch {
-          // already gone
-        }
-      }, this.#o.closeMs ?? DEFAULT_HANDOVER_CLOSE_MS);
-      this.#closing.set(side, { generation, timer });
+      const arm = (): unknown =>
+        this.#o.timers.set(() => {
+          const c = this.#closing.get(side);
+          if (c?.generation !== generation) return;
+          // A child still starting is never torn down here: its own start bound applies.
+          if (!this.#open(side)) {
+            c.timer = arm();
+            return;
+          }
+          this.#closing.delete(side);
+          this.#emit("teardown", { generation, side });
+          try {
+            this.#o.teardown(side);
+          } catch {
+            // already gone
+          }
+        }, this.#o.closeMs ?? DEFAULT_HANDOVER_CLOSE_MS);
+      this.#closing.set(side, { generation, timer: arm() });
       this.#post(child, { type: "pty-control-close", generation });
+    }
+  }
+
+  #open(side: HandoverSide): boolean {
+    try {
+      return this.#o.windowOpen?.(side) ?? true;
+    } catch {
+      return true;
     }
   }
 

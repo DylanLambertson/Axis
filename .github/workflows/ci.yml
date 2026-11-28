@@ -281,6 +281,50 @@ jobs:
         timeout-minutes: 5
         run: xvfb-run -a npm run smoke --workspace @axis/desktop
 
+  mutation:
+    # The own shell's mutation runners (OS-2, OS-3h review): every mutant must be killed and no anchor may be stale. They are
+    # not part of the gate (each mutant reruns test files), so CI runs them on every change.
+    name: Mutation (own shell main and hand-over)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Read the pinned Node version from the manifest
+        id: manifest
+        run: |
+          set -euo pipefail
+          node_version="$(jq -er '.node' code-oss/upstream.json)"
+          [[ "$node_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+            echo "::error file=code-oss/upstream.json::node is not MAJOR.MINOR.PATCH: $node_version"
+            exit 1
+          }
+          echo "node=$node_version" >>"$GITHUB_OUTPUT"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ steps.manifest.outputs.node }}
+          package-manager-cache: false
+
+      - name: Install dependencies (lockfile only, no install scripts)
+        run: npm ci --ignore-scripts
+
+      - name: Build the packages and the desktop app's tests
+        run: npm run build && npx tsc -b apps/desktop
+
+      - name: "@axis/desktop-main"
+        run: node scripts/mutation/desktop-main.mjs "$PWD"
+
+      - name: The desktop wiring (main)
+        run: node scripts/mutation/desktop-wiring.mjs "$PWD"
+
+      - name: The acknowledged pty hand-over (OS-3h)
+        run: node scripts/mutation/os-3h.mjs "$PWD"
+
   workflow-lint:
     name: Workflow lint
     runs-on: ubuntu-24.04

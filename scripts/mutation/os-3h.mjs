@@ -49,5 +49,9 @@ const M = [
   ["v", "V1 answers dropped", "this.#o.onHandover?.(m);", ""],
   ["v", "V2 gate ignored", "if (this.#o.mayStart !== undefined && !this.#o.mayStart()) {", "if (false) {"],
   ["v", "V3 any bad_config restarted", ' || this.#fatalReason !== "pty_required"', ""],
+  ["a", "A9 an answer from another instance counted", "            return;\n        if (from !== undefined && this.#children.get(side) !== from)\n            return;\n        f.acks.add(side);", "            return;\n        f.acks.add(side);"],
+  ["a", "A10 retried while a side is starting", "if (waiting.some((side) => !this.#open(side)))", "if (false)"],
+  ["a", "A10 torn down while starting", "if (!this.#open(side)) {", "if (false) {"],
+  ["v", "V4 failHeld does nothing", "this.#fail(reason);", "void reason;"],
 ];
 runMutants({ root, files: F, tests: T, mutants: M });

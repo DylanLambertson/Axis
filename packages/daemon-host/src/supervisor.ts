@@ -36,7 +36,7 @@ export const SUPERVISED_EXIT = Object.freeze({ OK: 0, UNSETTLED: 1, INTERNAL: 70
 export type SupervisorState = "idle" | "starting" | "running" | "backoff" | "stopping" | "stopped" | "failed";
 
 /** Why the supervisor is `failed`: a closed set, never text from the child. */
-export type FailureReason = "lock_held" | "bad_config" | "degraded" | "crash_loop";
+export type FailureReason = "lock_held" | "bad_config" | "degraded" | "crash_loop" | "pty_unavailable";
 
 export interface DaemonChild {
   /** `transfer` carries the one port of a `connect` (Electron `MessagePortMain`); absent for every other message. */
@@ -158,6 +158,17 @@ export class DaemonSupervisor {
    */
   resume(): void {
     if (this.#held && this.#state === "backoff") this.#spawn();
+  }
+
+  /**
+   * A start held by `mayStart` ends here, reported as failed with `reason` (OS-3h review S1: the pty process will not come back,
+   * so waiting would be silent forever). No effect unless a start is held.
+   */
+  failHeld(reason: FailureReason): void {
+    if (this.#held && this.#state === "backoff") {
+      this.#held = false;
+      this.#fail(reason);
+    }
   }
 
   /**

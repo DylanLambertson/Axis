@@ -9,7 +9,9 @@
 //   forged line of main's, an escape sequence); S11 settings answered with anything but unset; S12 the daemon killed by SIGTERM
 //   only; S13 a quit during start still spawning the daemon; S14 a dead daemon left in the control hand-over; S16 a hand-over
 //   counted as done before both acknowledged (OS-3h); S17 a failed hand-over leaving the pty process running or restarted; S18 a
-//   pty_required daemon stranded after the pty process came back; S15 a stderr line
+//   pty_required daemon stranded after the pty process came back; S19 a failed hand-over stranding a daemon that crashes later, or
+//   a failed pty process leaving the daemon waiting in silence (review S1); S20 a slow-starting child torn down or retried on before
+//   its window opens (review S2); S21 the teardown pids swapped; S15 a stderr line
 //   escaped before it is cut (a flood line's whole length escaped on main's thread).
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -18,7 +20,7 @@ import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { UTILITY_EXEC_ARGV } from "@axis/desktop-main";
-import { DAEMON_FILE, PTY_FILE, SEAM_SHUTDOWN_BOUND_MS, DAEMON_STOP_BOUND_MS, childStderrLines, startMainSeam, type UtilityChildLike } from "../main/seam.js";
+import { DAEMON_FILE, HANDOVER_START_GRACE_MS, PTY_FILE, SEAM_SHUTDOWN_BOUND_MS, DAEMON_STOP_BOUND_MS, childStderrLines, startMainSeam, type UtilityChildLike } from "../main/seam.js";
 import { safeStorageCipher } from "../main/safe-storage.js";
 
 type Listener = (value: never) => void;
@@ -307,6 +309,7 @@ test("OS-3h: without acknowledgements the hand-over fails, the pty process is to
   const r = rig(t);
   await until(() => r.forks.length === 2, "both forked");
   const p = r.forks.find((f) => f.options["serviceName"] === "axis-pty")!;
+  r.clock.advance(HANDOVER_START_GRACE_MS); // neither child ever sends anything: their windows open at the grace
   for (let i = 0; i < 3; i++) {
     r.clock.advance(5_000);
     r.clock.advance(2_000);
@@ -337,4 +340,67 @@ test("OS-3h: a daemon that ended pty_required is started again once the pty proc
 test("a flood line is cut before it is escaped, so main's work per line is bounded", () => {
   const [line] = childStderrLines("axis-pty", "x".repeat(100) + "\u0001".repeat(131_072));
   assert.equal(line, `[axis-pty stderr] ${"x".repeat(100)}${"\\u{1}".repeat(412)}`, "S15: the first 512 characters, then escaped");
+});
+
+const of = (r: ReturnType<typeof rig>, service: string) => r.forks.filter((f) => f.options["serviceName"] === service);
+
+test("OS-3h review S1: after a failed hand-over, a daemon that crashes later is not stranded", async (t) => {
+  const r = rig(t);
+  await until(() => r.forks.length === 2, "both forked");
+  r.clock.advance(HANDOVER_START_GRACE_MS);
+  for (let i = 0; i < 3; i++) (r.clock.advance(5_000), r.clock.advance(2_000));
+  assert.ok(r.lines.some((l) => l.startsWith("axis pty: handover_failed")));
+  of(r, "axis-pty")[0]!.child.emit("exit", 137); // the teardown took effect
+  of(r, "axis-daemon")[0]!.child.emit("exit", 1); // the healthy daemon crashes later
+  r.clock.advance(60_000);
+  await until(() => of(r, "axis-pty").length === 2 && of(r, "axis-daemon").length === 2, "S19: both started again");
+  await r.seam!.shutdown();
+});
+
+test("OS-3h review S1: a pty process that failed for good fails the waiting daemon, reported", async (t) => {
+  const r = rig(t);
+  await until(() => r.forks.length === 2, "both forked");
+  for (let i = 0; i < 8 && r.seam !== undefined; i++) {
+    const p = of(r, "axis-pty").at(-1)!;
+    p.child.emit("exit", 1);
+    r.clock.advance(60_000);
+    await settle();
+  }
+  assert.ok(r.lines.some((l) => l.startsWith("axis pty: failed")), "the pty process crash-looped to failed");
+  of(r, "axis-daemon").at(-1)!.child.emit("exit", 1);
+  r.clock.advance(60_000);
+  await until(() => r.lines.includes("axis daemon: failed reason=pty_unavailable"), "S19: reported, not silent");
+  assert.equal(r.seam!.supervisor.state(), "failed");
+  await r.seam!.shutdown();
+});
+
+test("OS-3h review S2: a child still loading is neither retried on nor torn down before its window opens", async (t) => {
+  const r = rig(t);
+  await until(() => r.forks.length === 2, "both forked");
+  const d = of(r, "axis-daemon")[0]!;
+  const p = of(r, "axis-pty")[0]!;
+  const g = (p.child.posted.find((m) => (m.message as { type?: string })?.type === "pty-control")!.message as { generation: number }).generation;
+  p.child.emit("message", { type: "pty-control-adopted", generation: g }); // the pty process answers; the daemon is still loading
+  r.clock.advance(HANDOVER_START_GRACE_MS - 1_000);
+  assert.equal(r.log.includes(`killPid ${d.child.pid}`), false, "S20: not torn down while loading");
+  assert.equal(p.child.posted.filter((m) => (m.message as { type?: string })?.type === "pty-control").length, 1, "S20: not retried while loading");
+  d.child.emit("message", { type: "pty-control-adopted", generation: g });
+  assert.ok(r.lines.includes(`axis pty: handed_over generation=${g}`), "the slow daemon completes the same generation");
+  await r.seam!.shutdown();
+});
+
+test("OS-3h: an unanswered close tears down that side's own pid", async (t) => {
+  const r = rig(t);
+  await until(() => r.forks.length === 2, "both forked");
+  const d = of(r, "axis-daemon")[0]!;
+  const p = of(r, "axis-pty")[0]!;
+  d.child.emit("message", { type: "log", level: "info", event: "x.y" }); // the daemon has spoken: its window is open
+  r.clock.advance(HANDOVER_START_GRACE_MS); // the windows open and generation 1, unacknowledged, is retired at both
+  const g = 1;
+  assert.ok(p.child.posted.some((m) => (m.message as { type?: string; generation?: number })?.type === "pty-control-close"), "retired");
+  d.child.emit("message", { type: "pty-control-closed", generation: g }); // only the daemon answers its close
+  r.clock.advance(2_000);
+  assert.ok(r.log.includes(`killPid ${p.child.pid}`), "S21: the pty process's pid");
+  assert.equal(r.log.includes(`killPid ${d.child.pid}`), false, "S21: never the daemon's");
+  await r.seam!.shutdown();
 });

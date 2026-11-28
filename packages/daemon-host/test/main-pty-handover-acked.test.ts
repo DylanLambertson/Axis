@@ -4,7 +4,8 @@
 // (stale, future, or never sent) accepted; A3 no retry after a missing acknowledgement, or more than three; A4 no close
 // instruction to the receivers, or no teardown when a close goes unanswered; A5 no handover_failed after the last generation; A6
 // a post that throws leaking the other side's port, or not counted; A7 a child's exit leaving its timers or round running; A8 the
-// confirmation not sent to both.
+// confirmation not sent to both; A9 a late exit of an old instance removing its successor, or an answer from another instance
+// counted.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { AckedHandover, DEFAULT_HANDOVER_ACK_MS, DEFAULT_HANDOVER_CLOSE_MS, type AckedHandoverChild, type HandoverSide } from "../src/main/pty-handover-acked.js";
@@ -160,4 +161,60 @@ test("a child's exit ends the round and cancels its timers; the next start begin
   r.h.adopted("pty", 2);
   r.h.adopted("daemon", 2);
   assert.ok(r.events.includes("handed_over 2"));
+});
+
+test("a late exit of an old instance does not remove its successor; answers from another instance are ignored", () => {
+  const r = rig();
+  const oldPty = new Child();
+  const newPty = new Child();
+  const d = new Child();
+  r.h.pty(oldPty, true);
+  r.h.daemon(d, true);
+  r.h.pty(newPty, true); // the successor arrives before the old one's exit is reported
+  r.h.pty(oldPty, false); // the old instance's late exit
+  const g = newPty.of("pty-control").at(-1)!;
+  r.h.adopted("pty", g, oldPty); // an answer from the old instance
+  r.h.adopted("daemon", g, d);
+  assert.equal(r.events.includes(`handed_over ${g}`), false, "A9: the old instance cannot complete it");
+  r.h.adopted("pty", g, newPty);
+  assert.ok(r.events.includes(`handed_over ${g}`), "A9: the successor still counts");
+});
+
+test("a side still starting (window closed) is waited on: no retry and no teardown until its window opens", () => {
+  let open = false;
+  let now = 0;
+  let id = 0;
+  const q: Array<{ at: number; fn: () => void; id: number }> = [];
+  const teardowns: string[] = [];
+  const h = new AckedHandover<number>({
+    createChannel: () => ({ port1: 1, port2: 2 }),
+    closePort: () => undefined,
+    timers: { set: (fn, ms) => (q.push({ at: now + ms, fn, id: ++id }), id), clear: (t) => void q.splice(q.findIndex((x) => x.id === t) >>> 0, q.some((x) => x.id === t) ? 1 : 0) },
+    teardown: (side) => void teardowns.push(side),
+    onFailed: () => undefined,
+    windowOpen: (side) => side === "pty" || open,
+  });
+  const advance = (ms: number) => {
+    now += ms;
+    for (;;) {
+      q.sort((a, b) => a.at - b.at);
+      const t = q[0];
+      if (t === undefined || t.at > now) return;
+      q.shift();
+      t.fn();
+    }
+  };
+  const p = new Child();
+  const d = new Child();
+  h.pty(p, true);
+  h.daemon(d, true);
+  h.adopted("pty", 1, p);
+  advance(DEFAULT_HANDOVER_ACK_MS * 10);
+  assert.deepEqual(p.of("pty-control"), [1], "A10: no retry while the daemon is still starting");
+  open = true;
+  advance(DEFAULT_HANDOVER_ACK_MS);
+  assert.deepEqual(p.of("pty-control"), [1, 2], "the window opened: the unanswered generation is retired and the next posted");
+  open = false;
+  advance(DEFAULT_HANDOVER_CLOSE_MS * 10);
+  assert.deepEqual(teardowns.filter((s) => s === "daemon"), [], "A10: no teardown of a side whose window is closed");
 });
