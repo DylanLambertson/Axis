@@ -8,7 +8,7 @@ import { createSecretScanner, type ScanMode } from "@axis/secret-scan";
 import { anchorPreflight } from "./anchor/preflight.js";
 import { createAgentBinding, type AgentBinding } from "./bindings/agent.js";
 import { asVaultBackend, createProvidersBinding, productionConnection, type AnthropicConnectionOptions, type ProvidersBinding } from "./bindings/providers.js";
-import { awaitAnchorAck } from "./compose-anchor.js";
+import { confirmFinalAnchor } from "./compose-anchor.js";
 import { secretBrokerWiring, type SecretBrokerOption } from "./compose-secrets.js";
 import { selectPtyGitRunner } from "./bindings/pty-git.js";
 import { createRunsBinding, type RunsBinding } from "./bindings/runs.js";
@@ -458,15 +458,7 @@ export function composeDaemonHost(options: ComposeOptions): ComposedHost {
     if (!(await settleComposer(built.composer, auditSeal, options.composerSettleMs ?? 1_000))) logger?.warn("request.failed", { reason: "composer_unsettled" });
     built.agent?.dispose();
     services.flushAnchor();
-    const target = services.anchor().put;
-    const head = services.auditRead.head();
-    // The final put must cover the newest row; one that could not be sent (a closed channel) leaves rows unanchored.
-    if (head !== null && (target === undefined || target === null || target.seq < head.seq) && services.anchor().ackedSeq < head.seq) {
-      throw new AxisError("E_UNAVAILABLE", "The final audit anchor could not be sent", { reason: "final_anchor_unsent" });
-    }
-    if (target === undefined || target === null || services.anchor().ackedSeq >= target.seq) return;
-    const acked = await awaitAnchorAck(control, () => services.anchor().ackedSeq >= target.seq, options.finalAnchorWaitMs ?? 1_500);
-    if (!acked) throw new AxisError("E_UNAVAILABLE", "The final audit anchor was not acknowledged", { reason: "final_anchor_unacked" });
+    await confirmFinalAnchor(control, { anchor: () => services.anchor(), head: () => services.auditRead.head() }, options.finalAnchorWaitMs ?? 1_500);
   }
 
   function stop(): Promise<DisposeResult> {
