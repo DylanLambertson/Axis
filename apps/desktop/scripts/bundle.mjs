@@ -23,7 +23,7 @@ export async function bundle(out = join(appDir, "dist", "app")) {
   const common = { bundle: true, metafile: true, logLevel: "warning", legalComments: "linked", sourcemap: false };
   const node = { ...common, platform: "node", format: "cjs", target: "node24", external: ["electron"] };
   const meta = {};
-  meta.main = (await build({ ...node, entryPoints: [join(appDir, "main", "main.ts")], outfile: join(out, "main.cjs") })).metafile;
+  meta.main = (await build({ ...node, entryPoints: [join(appDir, "main", "entry.ts")], outfile: join(out, "main.cjs") })).metafile;
   meta.preload = (await build({ ...node, entryPoints: [join(appDir, "preload", "preload.ts")], outfile: join(out, "preload.cjs") })).metafile;
   meta.renderer = (
     await build({
