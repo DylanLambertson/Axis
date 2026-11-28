@@ -85,7 +85,7 @@ function finish(deps: GitHandlerDeps, workspaceId: string, result: { readonly co
   const r = result.indexRefresh;
   if (r !== undefined) {
     // DC-0 review 2 S2: a skipped refresh is never silent. It is audited (a closed reason, no path) and carried in the reply,
-    // so the UI can say the committed paths show as staged reversions and offer the reset. A failed audit write is bookkeeping.
+    // so the UI can say the index was not refreshed and ask for an inspection (never a blanket reset). A failed audit write is bookkeeping.
     try {
       deps.audit?.append({
         actor,
