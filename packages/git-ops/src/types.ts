@@ -106,15 +106,15 @@ export interface GitOpsDeps {
   readonly emptyHooksDir?: string;
   readonly platform?: NodeJS.Platform;
   /**
-   * Where the post-commit index refresh records the lock it holds (DC-0b): right after it created the lock, again after git
-   * rewrote it (a new inode), and cleared when the lock is gone. A crash then leaves a lock the startup sweep can prove was
-   * Axis's. Absent: no record, and a crash leaves the stale lock for the user (RR-98).
+   * Where the post-commit index refresh records the lock it holds (DC-0b): once, right after it created the lock (held open
+   * and never written, so its `dev`, `ino` and `ctimeNs` never change), and cleared when the lock is gone. A crash then
+   * leaves a lock the startup sweep can prove was Axis's. Absent: no record, and a crash leaves the stale lock for the user (RR-98).
    */
   readonly indexLockLedger?: IndexLockLedger;
 }
 
 /** The record of an index lock Axis holds: its path and the identity of the file at it. */
 export interface IndexLockLedger {
-  record(lock: { readonly path: string; readonly dev: bigint; readonly ino: bigint; readonly mtimeNs: bigint }): void | Promise<void>;
+  record(lock: { readonly path: string; readonly dev: bigint; readonly ino: bigint; readonly ctimeNs: bigint }): void | Promise<void>;
   clear(path: string): void | Promise<void>;
 }

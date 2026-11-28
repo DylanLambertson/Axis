@@ -3,10 +3,10 @@ import { mkdirSync, rmSync } from "node:fs";
 import { access } from "node:fs/promises";
 import { join } from "node:path";
 import { AxisError } from "@axis/audit";
-import type { GitRunner } from "@axis/git-ops";
+import type { GitRunner, IndexLockLedger, WorktreeRef } from "@axis/git-ops";
 import { APPROVALS_CONTRACT, APPROVALS_VERSION, PROVIDERS_CONTRACT, PROVIDERS_VERSION, REVIEW_CONTRACT, REVIEW_VERSION, WORKTREES_CONTRACT, WORKTREES_VERSION } from "@axis/protocol";
 import type { SecretScanner } from "@axis/secret-scan";
-import { createGitOperations, createGitPort } from "./bindings/git.js";
+import { createGitOperations, createGitPort, type GitBindingDeps } from "./bindings/git.js";
 import { registerForgeServing } from "./compose-forge.js";
 import { registerAttentionServing } from "./handlers/attention.js";
 import { registerUsageServing } from "./handlers/usage.js";
@@ -104,25 +104,33 @@ export interface ServingContext {
   readonly integrations: { readonly sender: IntegrationsSender; readonly backend: SecretBackend | undefined };
 }
 
+/**
+ * The serving git port's dependencies. DC-0b: the post-commit index refresh records its lock in the journal's `indexLocks`,
+ * which is what the startup sweep reads; without it a crash leaves a lock the sweep cannot prove is Axis's.
+ */
+export function servingGitPortDeps(services: Pick<HostServices, "gitPath" | "excludeDirs">, ctx: Pick<ServingContext, "config" | "ports" | "scanner" | "ptyGitRunnerFor" | "runHooks">, journal: { readonly indexLocks: IndexLockLedger }, worktrees: { assertNoDrift(w: WorktreeRef): Promise<void> }): GitBindingDeps {
+  return {
+    gitPath: services.gitPath,
+    env: { daemon: ctx.ports.env, pty: ctx.ports.env },
+    platform: ctx.config.platform,
+    runHooks: ctx.runHooks ?? false,
+    scanner: ctx.scanner,
+    ptyRunner: ctx.ptyGitRunnerFor(services.gitPath),
+    assertNoDrift: (w) => worktrees.assertNoDrift(w),
+    excludeDirs: services.excludeDirs,
+    indexLockLedger: journal.indexLocks,
+  };
+}
+
 /** The services of a healthy host, each registered through the registrar and nothing else. */
 export function registerServing(registrar: HandlerRegistrar, services: HostServices, ctx: ServingContext): void {
-  const { built, config, control, ports, pty, scanner, ptyGitRunnerFor, logger } = ctx;
+  const { built, config, control, ports, pty, logger } = ctx;
   const options = { runHooks: ctx.runHooks, sshSpawn: ctx.sshSpawn };
   const { worktrees, runs, approvals, composer, agent, providers } = built;
   const journal = services.journal;
   const audit = services.audit;
   if (worktrees === undefined || runs === undefined || approvals === undefined || composer === undefined || agent === undefined || providers === undefined || journal === undefined || audit === undefined) throw new AxisError("E_INTERNAL", "The host composition is incomplete", { reason: "not_built" });
-  const git = createGitPort({
-    gitPath: services.gitPath,
-    env: { daemon: ports.env, pty: ports.env },
-    platform: config.platform,
-    runHooks: options.runHooks ?? false,
-    scanner,
-    ptyRunner: ptyGitRunnerFor(services.gitPath),
-    assertNoDrift: (w) => worktrees.assertNoDrift(w),
-    excludeDirs: services.excludeDirs,
-    indexLockLedger: journal.indexLocks, // DC-0b: the startup sweep removes only a lock recorded here
-  });
+  const git = createGitPort(servingGitPortDeps(services, ctx, journal, worktrees));
   const basesPath = join(config.dataDir, "push-bases.v1.json");
   const reviewDir = join(config.dataDir, "review-index");
   rmSync(reviewDir, { recursive: true, force: true }); // stale temporary indexes of an earlier process (this one holds the lock)

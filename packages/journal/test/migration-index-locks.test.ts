@@ -6,7 +6,7 @@ import { INDEX_LOCKS_MIGRATION, JOURNAL_MIGRATIONS, JOURNAL_SCHEMA_VERSION, Jour
 
 // The index locks Axis holds (DC-0b, RR-98; `docs/design/own-shell-plan.md` DC-0b): schema version 21. One row per lock
 // path while the post-commit index refresh holds it, so a startup sweep removes only a lock Axis made. Each table rule has a
-// refusing case next to the closest accepted value; the store records, re-records, clears and lists.
+// refusing case next to the closest accepted value; the store records, replaces, clears and lists.
 
 const T = "2026-11-27T00:00:00.000Z";
 const LOCK = "/repo/.git/index.lock";
@@ -17,7 +17,7 @@ const open = (): { db: DatabaseSync; journal: Journal } => {
   return { db, journal: Journal.open(db, { audit: new AuditLog(db), now: () => new Date(T) }) };
 };
 const put = (db: DatabaseSync, over: Record<string, Val> = {}, verb = "INSERT"): void => {
-  const row: Record<string, Val> = { path: LOCK, dev: "2049", ino: "39289545", mtime_ns: "1795812251102264600", recorded_at: T, ...over };
+  const row: Record<string, Val> = { path: LOCK, dev: "2049", ino: "39289545", ctime_ns: "1795812251102264600", recorded_at: T, ...over };
   const cols = Object.keys(row);
   db.prepare(`${verb} INTO index_locks (${cols.join(", ")}) VALUES (${cols.map(() => "?").join(", ")})`).run(...Object.values(row));
 };
@@ -40,23 +40,23 @@ test("the table: an absolute path ending in index.lock without NUL, decimal ids 
   for (const verb of ["INSERT", "INSERT OR REPLACE", "REPLACE", "INSERT OR IGNORE"]) assert.throws(() => put(db, {}, verb), Error, verb);
   for (const [col, bad] of [
     ["path", "relative/index.lock"], ["path", "/repo/.git/index"], ["path", "/repo/.git/index.lock\0x"], ["path", `/${"a".repeat(4096)}/index.lock`],
-    ["dev", "-1"], ["dev", "12a"], ["dev", ""], ["ino", "1e5"], ["mtime_ns", " 1"], ["recorded_at", "yesterday"],
+    ["dev", "-1"], ["dev", "12a"], ["dev", ""], ["ino", "1e5"], ["ctime_ns", " 1"], ["recorded_at", "yesterday"],
   ] as const) {
     assert.throws(() => put(db, { path: "/other/.git/index.lock", [col]: bad }), Error, `${col} ${JSON.stringify(bad)}`);
   }
   put(db, { path: "C:\\repo\\.git\\index.lock" });
-  put(db, { path: "/repo/.git/worktrees/w/index.lock", dev: "0", ino: "0", mtime_ns: "0" });
+  put(db, { path: "/repo/.git/worktrees/w/index.lock", dev: "0", ino: "0", ctime_ns: "0" });
   assert.equal(one(db, "SELECT count(*) FROM index_locks"), 3);
 });
 
-test("the store: record, record again for the same path (the new inode after git rewrote the lock), clear, list", () => {
+test("the store: record, a later record for the same path replaces the row left by an earlier run, clear, list", () => {
   const { journal } = open();
-  journal.indexLocks.record({ path: LOCK, dev: 2049n, ino: 39289545n, mtimeNs: 1795812251102264600n });
-  journal.indexLocks.record({ path: LOCK, dev: 2049n, ino: 39289546n, mtimeNs: 1795812251202264600n });
-  assert.deepEqual(journal.indexLocks.list(), [{ path: LOCK, dev: 2049n, ino: 39289546n, mtimeNs: 1795812251202264600n }], "kills a second row or a kept first inode");
+  journal.indexLocks.record({ path: LOCK, dev: 2049n, ino: 39289545n, ctimeNs: 1795812251102264600n });
+  journal.indexLocks.record({ path: LOCK, dev: 2049n, ino: 39289546n, ctimeNs: 1795812251202264600n });
+  assert.deepEqual(journal.indexLocks.list(), [{ path: LOCK, dev: 2049n, ino: 39289546n, ctimeNs: 1795812251202264600n }], "kills a second row or a kept first inode");
   journal.indexLocks.clear(LOCK);
   journal.indexLocks.clear(LOCK);
   assert.deepEqual(journal.indexLocks.list(), [], "clearing twice is fine");
-  assert.throws(() => journal.indexLocks.record({ path: "relative", dev: 1n, ino: 1n, mtimeNs: 1n }));
-  assert.throws(() => journal.indexLocks.record({ path: LOCK, dev: -1n, ino: 1n, mtimeNs: 1n }));
+  assert.throws(() => journal.indexLocks.record({ path: "relative", dev: 1n, ino: 1n, ctimeNs: 1n }));
+  assert.throws(() => journal.indexLocks.record({ path: LOCK, dev: -1n, ino: 1n, ctimeNs: 1n }));
 });

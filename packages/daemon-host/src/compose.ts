@@ -333,7 +333,7 @@ export function composeDaemonHost(options: ComposeOptions): ComposedHost {
       built.runs?.recover(lock); // DMN-7 for CLI runs: QUEUED never reached a process; nothing starts before this
       built.composer?.recover(); // after Journal.recover: a QUEUED composer run never reached its loop
       built.messaging?.delivery.releaseLeases(); // no run survives a restart: a delivery whose ack never landed goes to a later run
-      await sweepIndexLocksAtStart(journal.indexLocks, logger); // DC-0b (RR-98): a provably Axis-made stale index lock goes
+      await sweepIndexLocksAtStart(journal, logger); // DC-0b (RR-98): a provably Axis-made stale index lock goes
     }
     // Contracts: identity, policy, the daemon.
     const verifier = createAttestationVerifier({ key: config.attestationKey, clock: ports.clock });

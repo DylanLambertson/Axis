@@ -29,5 +29,5 @@ test("the shipped journal migration is pinned by hash (add a new migration inste
   assert.equal(createHash("sha256").update(JOURNAL_MIGRATIONS[17]?.sql ?? "").digest("hex"), "d1c712fd13537e242e0b6cb7bb04c9f8471d90da8091612f497fef5b9524099c");
   assert.equal(createHash("sha256").update(JOURNAL_MIGRATIONS[18]?.sql ?? "").digest("hex"), "6d54210294c99a1b7d5dc167162b1f65f9e411d5147f7b0b6cd07b0bbbb95a16");
   assert.equal(createHash("sha256").update(JOURNAL_MIGRATIONS[19]?.sql ?? "").digest("hex"), "5e16e1c14187b473483a60fa6762b741bdcc01f06ddd6492474cdc94b7ec7b1d");
-  assert.equal(createHash("sha256").update(JOURNAL_MIGRATIONS[20]?.sql ?? "").digest("hex"), "5af27a9e57fe8f03964e7e7cd5fb7e101f7d098206a36710367ee4f4e4ab85bc");
+  assert.equal(createHash("sha256").update(JOURNAL_MIGRATIONS[20]?.sql ?? "").digest("hex"), "d2fe051225c20e8b603f5e423ade018a2151cc40178a713b16086fff4cf91a9c");
 });

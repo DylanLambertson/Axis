@@ -6,7 +6,7 @@ export interface IndexLockRecord {
   readonly path: string;
   readonly dev: bigint;
   readonly ino: bigint;
-  readonly mtimeNs: bigint;
+  readonly ctimeNs: bigint;
 }
 
 const MAX = 10n ** 20n;
@@ -22,13 +22,13 @@ export class IndexLockRecords {
     this.#ts = ts;
   }
 
-  /** Records the lock at `path`, or records it again (git rewrote it: a new inode and time). */
+  /** Records the lock at `path`, replacing a row left for that path by an earlier run. */
   record(lock: IndexLockRecord): void {
-    if (typeof lock.path !== "string" || !ok(lock.dev) || !ok(lock.ino) || !ok(lock.mtimeNs)) throw new AxisError("E_INVALID_ARGUMENT", "An index lock record is a path and three non-negative integers");
+    if (typeof lock.path !== "string" || !ok(lock.dev) || !ok(lock.ino) || !ok(lock.ctimeNs)) throw new AxisError("E_INVALID_ARGUMENT", "An index lock record is a path and three non-negative integers");
     withTransaction(this.#db, () => {
-      const args = [String(lock.dev), String(lock.ino), String(lock.mtimeNs), this.#ts(), lock.path] as const;
-      const changed = Number(this.#db.prepare("UPDATE index_locks SET dev = ?, ino = ?, mtime_ns = ?, recorded_at = ? WHERE path = ?").run(...args).changes);
-      if (changed === 0) this.#db.prepare("INSERT INTO index_locks (dev, ino, mtime_ns, recorded_at, path) VALUES (?, ?, ?, ?, ?)").run(...args);
+      const args = [String(lock.dev), String(lock.ino), String(lock.ctimeNs), this.#ts(), lock.path] as const;
+      const changed = Number(this.#db.prepare("UPDATE index_locks SET dev = ?, ino = ?, ctime_ns = ?, recorded_at = ? WHERE path = ?").run(...args).changes);
+      if (changed === 0) this.#db.prepare("INSERT INTO index_locks (dev, ino, ctime_ns, recorded_at, path) VALUES (?, ?, ?, ?, ?)").run(...args);
     });
   }
 
@@ -37,11 +37,11 @@ export class IndexLockRecords {
   }
 
   list(): IndexLockRecord[] {
-    return (this.#db.prepare("SELECT path, dev, ino, mtime_ns FROM index_locks ORDER BY path").all() as Record<string, string>[]).map((r) => ({
+    return (this.#db.prepare("SELECT path, dev, ino, ctime_ns FROM index_locks ORDER BY path").all() as Record<string, string>[]).map((r) => ({
       path: String(r["path"]),
       dev: BigInt(String(r["dev"])),
       ino: BigInt(String(r["ino"])),
-      mtimeNs: BigInt(String(r["mtime_ns"])),
+      ctimeNs: BigInt(String(r["ctime_ns"])),
     }));
   }
 }

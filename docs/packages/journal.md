@@ -15,4 +15,4 @@ Journal migration 4 (ticket J1, `docs/design/daemon-host.md` 7.5 and Q7) makes t
 
 ## Index locks (schema v21, DC-0b)
 
-- `journal.indexLocks` (`IndexLockRecords`): `record({ path, dev, ino, mtimeNs })` (insert, or update for the same path), `clear(path)` and `list()`. One row per `index.lock` path while the post-commit index refresh holds it; the daemon's startup sweep removes a lock only when it is still the very file recorded, then deletes the row. Ids and times only: never a file's content.
+- `journal.indexLocks` (`IndexLockRecords`): `record({ path, dev, ino, ctimeNs })` (insert, or update a row an earlier run left for the same path), `clear(path)` and `list()`. One row per `index.lock` path while the post-commit index refresh holds it, recorded once right after the open; the daemon's startup sweep removes a lock only at a registered repository's index path and only when it is still exactly the file recorded (same dev, inode and ctime), then deletes the row. Ids and times only: never a file's content.
