@@ -5,6 +5,7 @@
 // project's pending opens and closes its live plain terminals.
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { MAX_PLAIN_TERMINALS } from "@axis/protocol";
 import { TerminalRegistry, type TerminalOp } from "../../src/terminals/registry.js";
 import { FakeHandle, FakeTerminalPort, spawnError } from "./fakes.js";
 
@@ -204,4 +205,22 @@ test("review N3: an answer that repeats a recorded terminal id is refused withou
   assert.deepEqual(r.port.revokes, [], "the live terminal's grant is untouched");
   assert.deepEqual([live.h.kills, dup.kills], [[], []]);
   assert.equal(r.reg.attachable(live.rec.terminalId)?.state, "open");
+});
+
+test("a host-wide cap of 16 plain terminals, under the pty process's 64, so a flood across workspaces never starves runs and pushes", () => {
+  const port = new FakeTerminalPort();
+  const reg = new TerminalRegistry({ port });
+  let n = 0;
+  for (const ws of ["ws1", "ws2", "ws3"]) {
+    for (let i = 0; i < 8; i++) {
+      const op = reg.reserve(ws, "p1");
+      if (op === undefined) continue;
+      assert.ok(reg.publish(op, new FakeHandle()) !== undefined);
+      n++;
+    }
+  }
+  assert.equal(n, 16, "ws1 and ws2 fill 16; ws3's first, the 17th, is refused");
+  assert.equal(reg.reserve("ws3", "p1"), undefined);
+  assert.equal(MAX_PLAIN_TERMINALS, 16);
+  assert.ok(MAX_PLAIN_TERMINALS < 64, "well under the pty process's own bound (DEFAULT_MAX_TERMINALS)");
 });

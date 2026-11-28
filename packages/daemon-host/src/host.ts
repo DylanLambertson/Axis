@@ -41,6 +41,9 @@ import { createUptimeClock } from "./storage/uptime-clock.js";
  */
 
 /** The part of `ControlClient` startup uses. A real `ControlClient` over a `ChannelMux` satisfies it. */
+/** Every writer's audit payload allow-list, merged: the one the host's `AuditLog` is built with (tests read this same object). */
+export const HOST_PAYLOAD_ALLOWLIST: Readonly<Record<string, readonly string[]>> = Object.freeze({ ...CHALLENGE_PAYLOAD_ALLOWLIST, ...ANCHOR_PAYLOAD_ALLOWLIST, ...REVIEW_PAYLOAD_ALLOWLIST, ...GIT_PAYLOAD_ALLOWLIST, ...RUN_PAYLOAD_ALLOWLIST, ...AGENT_PAYLOAD_ALLOWLIST, ...PROVIDERS_PAYLOAD_ALLOWLIST, ...TAINT_PAYLOAD_ALLOWLIST, ...MESSAGES_PAYLOAD_ALLOWLIST, ...FORGE_PAYLOAD_ALLOWLIST, ...PAGES_PAYLOAD_ALLOWLIST, ...TASKS_PAYLOAD_ALLOWLIST, ...INTEGRATIONS_PAYLOAD_ALLOWLIST, ...TERMINALS_PAYLOAD_ALLOWLIST });
+
 export type HostControl = Pick<ControlClient, "send" | "anchorGet" | "anchorPut" | "onAnchorAck">;
 
 /** Dependencies of the startup sequence. Everything that touches the operating system comes in here. */
@@ -244,7 +247,7 @@ export function createDaemonHost(config: HostConfig, ports: StartupPorts, option
       redactor: ports.redactor,
       now: () => new Date(ports.clock.now()),
       // The challenge rows keep their `method`; the anchor rows keep their one fixed field (a literal, never caller text); the review acknowledgement keeps its file id.
-      payloadAllowlist: { ...CHALLENGE_PAYLOAD_ALLOWLIST, ...ANCHOR_PAYLOAD_ALLOWLIST, ...REVIEW_PAYLOAD_ALLOWLIST, ...GIT_PAYLOAD_ALLOWLIST, ...RUN_PAYLOAD_ALLOWLIST, ...AGENT_PAYLOAD_ALLOWLIST, ...PROVIDERS_PAYLOAD_ALLOWLIST, ...TAINT_PAYLOAD_ALLOWLIST, ...MESSAGES_PAYLOAD_ALLOWLIST, ...FORGE_PAYLOAD_ALLOWLIST, ...PAGES_PAYLOAD_ALLOWLIST, ...TASKS_PAYLOAD_ALLOWLIST, ...INTEGRATIONS_PAYLOAD_ALLOWLIST, ...TERMINALS_PAYLOAD_ALLOWLIST },
+      payloadAllowlist: HOST_PAYLOAD_ALLOWLIST,
     });
     const check = await checkAnchor(audit, () => ports.control.anchorGet({ timeoutMs: options.anchorTimeoutMs ?? 5_000, signal: startup.signal }));
     alive();

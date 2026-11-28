@@ -5,6 +5,7 @@ import { projectGated } from "../gate/project-trust.js";
 import type { HandlerRegistrar } from "../handlers/anchor-guard.js";
 import { WEB_WINDOW_ID } from "../policy/rule-table-policy.js";
 import type { PtyTerminalPort } from "../ports/pty.js";
+import { isTerminalDataBroker } from "../ports/terminal-broker.js";
 import { terminalFailure } from "./errors.js";
 import type { TerminalRecord } from "./registry.js";
 import { attachTerminal, closeTerminal, openTerminal, type TerminalServiceDeps } from "./service.js";
@@ -25,11 +26,12 @@ export function terminalPortOf(pty: unknown): PtyTerminalPort | undefined {
 }
 
 /**
- * The one predicate (section 8; terminal-trust-revocation.md section 6.1): every part of the terminal port AND an installed, active
- * routing. Production and every test composition use this function; nothing else lets the handlers register.
+ * The one predicate (section 8; terminal-trust-revocation.md section 6.1), five parts: the terminal port's four AND an installed,
+ * active routing AND DC-3b's data-port broker attestation (no terminal can be viewed without one). Production and every test
+ * composition use this function; nothing else lets the handlers register.
  */
-export function terminalsServable(pty: unknown, routing: TerminalRevocationRouting | undefined): boolean {
-  if (terminalPortOf(pty) === undefined || routing === undefined) return false;
+export function terminalsServable(pty: unknown, routing: TerminalRevocationRouting | undefined, broker: unknown): boolean {
+  if (terminalPortOf(pty) === undefined || routing === undefined || !isTerminalDataBroker(broker)) return false;
   try {
     return routing.active() === true;
   } catch {
@@ -45,14 +47,14 @@ function wire(r: TerminalRecord): Terminal {
  * `axis.terminals/1`. Every method refuses, again behind the policy row, any caller but the user's own desktop connection, and
  * any call once the routing is no longer active, with the same `not_found`.
  */
-export function createTerminalsHandlers(deps: TerminalServiceDeps, routing: TerminalRevocationRouting): Readonly<Record<TerminalsMethod, Handler>> {
+export function createTerminalsHandlers(deps: TerminalServiceDeps, routing: TerminalRevocationRouting, broker: unknown): Readonly<Record<TerminalsMethod, Handler>> {
   const guarded =
     <M extends TerminalsMethod>(call: (payload: TerminalsRequest<M>, context: HandlerContext) => Promise<unknown> | unknown): Handler =>
     async (context: HandlerContext, payload: never): Promise<unknown> => {
       if (context.signal.aborted) throw terminalFailure("cancelled");
       const id = context.identity;
       if (id.actor !== "user" || id.clientKind !== "desktop" || id.windowId === WEB_WINDOW_ID) throw terminalFailure("not_found");
-      if (!terminalsServable(deps.port, routing)) throw terminalFailure("not_found");
+      if (!terminalsServable(deps.port, routing, broker)) throw terminalFailure("not_found");
       return call(payload as TerminalsRequest<M>, context);
     };
   return {
@@ -64,9 +66,9 @@ export function createTerminalsHandlers(deps: TerminalServiceDeps, routing: Term
 }
 
 /** Registers `axis.terminals/1` only when `terminalsServable` holds; returns whether it did. */
-export function registerTerminalsServing(registrar: HandlerRegistrar, pty: unknown, routing: TerminalRevocationRouting | undefined, deps: (port: PtyTerminalPort) => TerminalServiceDeps): boolean {
+export function registerTerminalsServing(registrar: HandlerRegistrar, pty: unknown, routing: TerminalRevocationRouting | undefined, broker: unknown, deps: (port: PtyTerminalPort) => TerminalServiceDeps): boolean {
   const port = terminalPortOf(pty);
-  if (port === undefined || routing === undefined || !terminalsServable(pty, routing)) return false;
-  registrar.register(TERMINALS_CONTRACT, TERMINALS_VERSION, createTerminalsHandlers(deps(port), routing));
+  if (port === undefined || routing === undefined || !terminalsServable(pty, routing, broker)) return false;
+  registrar.register(TERMINALS_CONTRACT, TERMINALS_VERSION, createTerminalsHandlers(deps(port), routing, broker));
   return true;
 }
