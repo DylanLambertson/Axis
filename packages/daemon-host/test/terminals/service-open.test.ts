@@ -84,6 +84,8 @@ test("each change landing inside the gate's await is refused by the final admiss
     ["a project revoke", (r) => r.trust.set({ windowId: "w9", workspaceId: "p1" }, false)],
     ["the workspace leaving READY", (r) => setW(r, { state: "FINALISED" })],
     ["the workspace locked", (r) => setW(r, { lockState: "locked", lockedAt: "t2" })],
+    ["the lock state alone", (r) => setW(r, { lockState: "locked" })],
+    ["the lock identity alone (re-taken)", (r) => setW(r, { lockedAt: "t3" })],
   ];
   for (const [label, change] of cases) {
     const r = serviceRig();
@@ -105,6 +107,13 @@ test("a cancellation inside the gate refuses before any spawn", async () => {
   const r = serviceRig();
   r.hooks.inGate = () => r.ctl.abort();
   await assert.rejects(openTerminal(r.deps, REQ, r.context()));
+  assert.equal(r.port.spawns.length, 0);
+});
+
+test("a cancellation after the gate (inside the binding check) is refused by the final admission, before any spawn", async () => {
+  const r = serviceRig();
+  r.hooks.inBelongs = () => r.ctl.abort();
+  await assert.rejects(openTerminal(r.deps, REQ, r.context()), code("E_CANCELLED"));
   assert.equal(r.port.spawns.length, 0);
 });
 

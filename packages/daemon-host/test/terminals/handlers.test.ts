@@ -51,6 +51,8 @@ test("a web, plugin or worker caller is refused not_found by the handler, before
   const base = r.context();
   for (const [label, identity] of [
     ["web", { ...base.identity, clientKind: "web", windowId: "web" }],
+    ["a web client on another window id", { ...base.identity, clientKind: "web", windowId: "w5" }],
+    ["a plugin client claiming the user actor", { ...base.identity, clientKind: "plugin", hostWindowId: "w1" }],
     ["a desktop identity on the web window", { ...base.identity, windowId: "web" }],
     ["plugin", { ...base.identity, clientKind: "plugin", actor: "plugin:x", hostWindowId: "w1" }],
     ["worker", { ...base.identity, actor: "agent:w1" }],

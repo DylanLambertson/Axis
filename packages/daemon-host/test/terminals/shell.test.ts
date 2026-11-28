@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import { test, type TestContext } from "node:test";
 import { pickShell, type ShellDeps } from "../../src/terminals/shell.js";
 
@@ -44,7 +44,8 @@ test("each failing $SHELL falls back to /bin/sh when that passes the same rule",
   const dir = join(b.root, "adir");
   mkdirSync(dir);
   for (const [label, shell, listed] of [
-    ["a relative path", "zsh", ["zsh", sh]],
+    // A relative path that resolves from this process's directory to a real, listed, executable file is still refused.
+    ["a relative path", relative(process.cwd(), b.file("rel-zsh")), [relative(process.cwd(), join(b.root, "rel-zsh")), sh]],
     ["a missing file", join(b.root, "missing"), [join(b.root, "missing"), sh]],
     ["a file that is not executable", notExec, [notExec, sh]],
     ["a path not in /etc/shells", unlisted, [sh]],
