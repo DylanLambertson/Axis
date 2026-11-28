@@ -128,7 +128,11 @@ export function createPtyProcessPort(options: PtyProcessPortOptions): PtyProcess
   const maxPending = options.maxPending ?? 64;
   const pending = new Map<string, Pending>();
   const terms = new Map<string, Term>();
-  /** Timed-out requests, by `req`, and who hears their late answer. Insertion order is age. */
+  /**
+   * Timed-out requests, by `req`, and who hears their late answer. Insertion order is age. An entry whose answer never comes stays
+   * until the channel closes or it is evicted as the oldest past `MAX_LATE_SPAWNS` (1024): stale entries cost memory only, within
+   * that bound, and an evicted request's late group is still killed (only its tracking and its report are lost).
+   */
   const late = new Map<string, ((l: LateSpawn) => void) | undefined>();
   let seq = 0;
   let closed = false;
@@ -168,7 +172,10 @@ export function createPtyProcessPort(options: PtyProcessPortOptions): PtyProcess
     if (m.t === "spawned") {
       const p = pending.get(m.req);
       if (p === undefined) {
-        send({ t: "kill", term: m.term, signal: "SIGKILL" }); // timed out or unknown: nobody owns this group
+        // Timed out or unknown: nobody owns this group. Its access is revoked first (defence in depth: no data connection can have
+        // been granted it, and none can be after this), then the group is killed.
+        send({ t: "revoke", term: m.term });
+        send({ t: "kill", term: m.term, signal: "SIGKILL" });
         if (!late.has(m.req)) return;
         // Timed out: the group is still ours to watch until it is gone, and its spawn's owner is told (DC-3a).
         const listener = late.get(m.req);
@@ -291,6 +298,7 @@ export function createPtyProcessPort(options: PtyProcessPortOptions): PtyProcess
       const timer = clock.setTimeout(() => {
         if (!pending.delete(req)) return;
         late.set(req, onLate);
+        // Evict the oldest past the bound (see `late`): the map never grows past MAX_LATE_SPAWNS however many answers never come.
         for (const old of late.keys()) {
           if (late.size <= MAX_LATE_SPAWNS) break;
           late.delete(old);
