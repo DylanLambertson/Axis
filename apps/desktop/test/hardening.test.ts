@@ -185,14 +185,14 @@ test("openExternal: only an app window's main frame is answered, and only throug
 test("fork: the fixed options, and an absolute entry only", () => {
   const forks: Array<[string, unknown[], Record<string, unknown>]> = [];
   const up = { fork: (e: string, a: unknown[], o: object) => (forks.push([e, a, o as Record<string, unknown>]), { pid: 1 }) };
-  forkUtility(up, "/app/daemon.cjs", "axis-daemon", { PATH: "/bin" }, "/app");
+  forkUtility(up, "/app/daemon.cjs", "axis-daemon", { PATH: "/bin" }, "/app", "linux");
   assert.deepEqual(forks[0]?.[1], []);
   assert.deepEqual(forks[0]?.[2]?.["execArgv"], UTILITY_EXEC_ARGV, "H9");
   assert.equal(forks[0]?.[2]?.["serviceName"], "axis-daemon");
   assert.equal(forks[0]?.[2]?.["stdio"], "pipe");
   assert.equal(forks[0]?.[2]?.["cwd"], "/app", "H9");
-  assert.throws(() => forkUtility(up, "daemon.cjs", "axis-daemon", {}, "/app"), /absolute/, "H9");
-  assert.throws(() => forkUtility(up, "/app/daemon.cjs", "axis-daemon", { NODE_OPTIONS: "--inspect" }, "/app"), /NODE_/, "H9: the fork options' refusals hold");
+  assert.throws(() => forkUtility(up, "daemon.cjs", "axis-daemon", {}, "/app", "linux"), /absolute/, "H9");
+  assert.throws(() => forkUtility(up, "/app/daemon.cjs", "axis-daemon", { NODE_OPTIONS: "--inspect" }, "/app", "linux"), /NODE_/, "H9: the fork options' refusals hold");
   assert.equal(forks.length, 1);
 });
 

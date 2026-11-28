@@ -203,7 +203,8 @@ export function forkUtility<C>(
   serviceName: UtilityServiceName,
   env: Readonly<Record<string, string | undefined>>,
   cwd: string,
+  platform: DesktopPlatform,
 ): C {
   if (!isAbsolute(entry)) throw new Error("the utility entry must be an absolute path");
-  return utilityProcess.fork(entry, [], utilityForkOptions(serviceName, env, cwd));
+  return utilityProcess.fork(entry, [], utilityForkOptions(serviceName, env, cwd, platform));
 }
