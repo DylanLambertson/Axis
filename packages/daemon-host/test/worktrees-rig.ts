@@ -118,6 +118,8 @@ export interface RigOptions {
   failAudit?: (e: { action: string; payload?: unknown }) => boolean;
   /** Replaces the binding's view of active runs (the runs rig points it at the real run binding, built after this rig). */
   hasActiveRun?: (workspaceId: string) => boolean;
+  /** DC-3a: the plain terminals finalise and remove close first. */
+  terminals?: { closeWorkspace(workspaceId: string): boolean };
 }
 
 export async function worktreesRig(options: RigOptions = {}): Promise<Rig> {
@@ -185,6 +187,7 @@ export async function worktreesRig(options: RigOptions = {}): Promise<Rig> {
     audit: { append: (e) => (options.failAudit?.(e) === true ? ((): never => { throw new Error("audit down"); })() : audit.append(e)) },
     transact: (fn) => withTransaction(db, fn),
     random: { bytes: (n) => (options.fixedSuffix === true ? Uint8Array.from({ length: n }, (_, i) => i + 1) : randomBytes(n)), uuid: () => randomUUID() },
+    ...(options.terminals === undefined ? {} : { terminals: options.terminals }),
     runs: { hasActiveRun: (id) => (options.hasActiveRun !== undefined ? options.hasActiveRun(id) : script.length > 0 ? (script.shift() as boolean) : active.has(id)) },
     now: () => clock.monotonic(),
     gitPath,

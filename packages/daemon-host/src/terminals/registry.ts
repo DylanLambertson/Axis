@@ -178,6 +178,18 @@ export class TerminalRegistry {
     for (const r of [...this.#recs.values()]) if (r.projectId === projectId && r.kind === "plain") this.#end(r);
   }
 
+  /**
+   * A workspace is about to be finalised or removed: its pending opens are abandoned and its live plain terminals closed (closing,
+   * revoked, killed). True while any of its slots is still charged (a group alive or an outcome unknown): the caller refuses then.
+   */
+  closeWorkspace(workspaceId: string): boolean {
+    for (const c of this.#charges) if (c.workspaceId === workspaceId && !c.settled) c.abandoned = true;
+    for (const r of [...this.#recs.values()]) if (r.workspaceId === workspaceId && r.kind === "plain") this.#end(r);
+    this.sweep();
+    for (const c of this.#charges) if (c.workspaceId === workspaceId) return true;
+    return false;
+  }
+
   /** Frees the slots whose group is known gone, and forgets ended terminals whose group is gone. */
   sweep(): void {
     for (const r of [...this.#recs.values()]) {

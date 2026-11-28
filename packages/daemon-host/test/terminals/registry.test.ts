@@ -177,3 +177,21 @@ test("list filters by workspace and never shows a pending open", () => {
   assert.equal(r.reg.list().length, 2);
   assert.deepEqual(r.reg.list("ws2").map((t) => t.workspaceId), ["ws2"]);
 });
+
+test("closing a workspace's terminals (finalise, remove): pending abandoned, live plain closed; busy while any group or slot remains", () => {
+  const r = rig();
+  const a = r.open("ws1");
+  const other = r.open("ws2");
+  const pending = r.op("ws1");
+  const run = new FakeHandle();
+  r.reg.addCliRun(run, { runId: "run1", workspaceId: "ws1", projectId: "p1" });
+  a.h.survives = true;
+  assert.equal(r.reg.closeWorkspace("ws1"), true, "busy: a surviving group and a pending open");
+  assert.equal(r.reg.get(a.rec.terminalId)?.state, "closed");
+  assert.equal(r.reg.get(other.rec.terminalId)?.state, "open", "another workspace is untouched");
+  assert.equal(r.reg.get(run.terminalId)?.state, "open", "a run's terminal is the run's guard's");
+  r.reg.failed(pending, spawnError("spawn_failed", true));
+  a.h.alive = false;
+  assert.equal(r.reg.closeWorkspace("ws1"), false, "nothing left");
+  assert.equal(r.reg.closeWorkspace("ws9"), false);
+});

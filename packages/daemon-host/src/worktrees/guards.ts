@@ -29,3 +29,24 @@ export function assertNoActiveRun(journal: GuardJournal, runs: Pick<RunsService,
   }
   if (active || journal.listRuns({ workspaceId, states: OPEN_RUN_STATES }).length > 0) throw worktreeFailure("E_CONFLICT", "active_run");
 }
+
+/** The plain terminals of a workspace, as finalise and remove see them (DC-3a; terminal-trust-revocation.md section 7). */
+export interface WorkspaceTerminals {
+  /** Abandons the workspace's pending opens and closes its live plain terminals; true while any of its slots is still charged. */
+  closeWorkspace(workspaceId: string): boolean;
+}
+
+/**
+ * Before finalise or remove: the workspace's plain terminals are closed first, and the call is refused (`active_run`, as for a run)
+ * while any of their groups may still live. Fails closed: a throw counts as busy.
+ */
+export function closeWorkspaceTerminals(terminals: WorkspaceTerminals | undefined, workspaceId: string): void {
+  if (terminals === undefined) return;
+  let busy = true;
+  try {
+    busy = terminals.closeWorkspace(workspaceId);
+  } catch {
+    busy = true;
+  }
+  if (busy) throw worktreeFailure("E_CONFLICT", "active_run");
+}
