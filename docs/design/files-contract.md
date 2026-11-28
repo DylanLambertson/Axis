@@ -32,16 +32,31 @@ own registry for each call instead:
 - **Target.** A strict, exclusive union: `{ workspaceId }` or `{ projectId }`, with no other key.
   - `{ workspaceId }`: the root is the workspace locator's journal-managed linked worktree, the canonical path the journal
     recorded at creation.
-  - `{ projectId }`: the root is the DC-7 main-worktree row of `git worktree list` for the registered project (the hardened
-    DC-7 reader, never checkout status or content filters). This is also the answer when the project was registered at a
-    linked tree. A bare repository has no row: `E_NOT_FOUND` `not_found`.
+  - `{ projectId }`: the root is the project's registered path, admitted only by the recorded repository identity (next
+    bullet). It is not rediscovered from `git worktree list`: a different repository initialised at the same path has the
+    same path strings but is not the repository the user registered.
 - **The per-call registry** holds exactly that one root, under a fixed internal id, with `repositoryRoots()` empty. It is
   built inside the files handler for one call and is never shared, exported or reused. This is the documented
   user-read exception to DMN-2: DMN-2 keeps AGENT writes out of the user's checkout, and these are user reads.
-- **No silent re-authorisation.** `resolveRoot` still requires the root to equal its own `realpath` at use. A workspace
-  root that was replaced by a symlink, or whose parent was, is refused (`root-moved`, sent as `E_NOT_FOUND`). The checkout's
-  authority is the project's registration: each call derives the main worktree again from git's common directory for that
-  registered repository. A different repository at the same place is a different common directory and gives no row.
+- **Checkout admission: the recorded repository identity.** The host's root admission (not the broker) reads
+  `readRepositoryBinding(row.path)` (`projects/binding.ts`) and requires `bindingMatches(row, binding)`: the stored
+  `commonDir` AND the stored `gitDirId` (`dev:ino` of the `.git` directory) both equal what is on disk now. That is the
+  check the run-trust gate makes (`gate/project-trust-gate.ts`), but files calls it WITHOUT the trust flag: a bound,
+  unchanged, untrusted project stays readable. Files never changes the row (it does not clear trust on a mismatch; the
+  trust gate does that on its own calls).
+  - It runs before the root is admitted and again after the call's last file-system step and before the reply is sent. A
+    mismatch either time is `E_NOT_FOUND` `not_found`, so a repository swapped in mid-call sends nothing.
+  - **Fail closed** with `E_NOT_FOUND` `not_found`: a legacy row without a binding (`commonDir` or `gitDirId` null, from
+    before schema v11); a binding that reads `not_a_repository` (the path's `.git` is gone, is a symlink, is not owned by
+    this user, or is a FILE: a project registered at a linked worktree has no binding); a bare repository.
+  - `E_UNAVAILABLE`: the binding could not be read in time (2 s), or the platform has none (Windows in v1). Workspace
+    targets are unaffected.
+  - A project registered at a linked worktree is therefore not readable as `{ projectId }` in v1. Its files are readable
+    through a workspace target, or by registering the main checkout itself.
+- **No silent re-authorisation.** `resolveRoot` still requires the root to equal its own `realpath` at use, and
+  `readRepositoryBinding` requires the registered path to be its own `realpath`. A workspace root that was replaced by a
+  symlink, or whose parent was, is refused (`root-moved`, sent as `E_NOT_FOUND`). Path containment stays in the shared
+  broker only; repository identity is the host's admission step above.
 - **Root spelling.** The wire's `""` (only in `list`) becomes the broker's internal root form before the broker sees it.
   The request schema still refuses `.` and every other spelling of the root.
 
@@ -161,15 +176,32 @@ opened descriptor itself:
   - At most 8 child `lstat` calls run at once.
   - Cancellation is checked between entries. The handle is closed in `finally`, and the request keeps its in-flight slot
     until the work has stopped.
-- **Pages.** Each page enumerates again (at most 20,000 names), then sorts by raw name in UTF-16 code-unit order and
-  returns at most 500 entries after the cursor. So one call costs at most one bounded directory read.
-- **The cursor** is base64url text, at most 512 characters, of `{ v: 1, dir, after }`:
-  - `dir` is 16 hex of a digest over the target id, the path and the directory's `dev:ino`;
-  - `after` is the last raw name returned, so an entry with `name: null` still pages correctly.
+- **Raw names.** On POSIX, entries are read as bytes (`encoding: "buffer"`); a name that is not valid UTF-8 cannot be sent
+  back as a path, so it is `name: null`, with a display name decoded with U+FFFD and then escaped. On Windows a name is
+  UTF-16 code units. The **sort key** is the raw name: its bytes in byte order on POSIX (at most 255 bytes, `NAME_MAX`), its
+  code units in order on Windows (at most 255 units, encoded UTF-16LE: at most 510 bytes).
+- **Pages.** Each page enumerates again (at most 20,000 names), sorts by the key, and returns at most 500 entries whose key
+  is greater than the cursor's. So one call costs at most one bounded directory read.
+- **The cursor** is a compact ASCII string, with no JSON inside, so no name can expand it:
 
-  A cursor that does not decode, or whose `dir` does not match, is `E_INVALID_ARGUMENT` `bad_cursor`. A directory replaced
-  between pages refuses `E_CONFLICT` `changed`. Names added or removed between pages are seen or missed by their sort
-  position: there is no snapshot.
+  ```text
+  f1.<binding: 32 hex>.<incarnation: 16 hex>.<key: base64url, no padding>
+  ```
+
+  - `binding` is a digest over the target (kind and id) and the request path. It names WHICH listing this is.
+  - `incarnation` is a digest of the directory's `dev:ino` as opened. It names which directory object was listed.
+  - `key` is the last returned sort key, exact and never truncated. At most 510 bytes encode to at most 680 characters.
+
+  The whole cursor is at most 3 + 32 + 1 + 16 + 1 + 680 = 733 characters, and the schema bound is 768. The schema
+  matches the strict shape `^f1\.[0-9a-f]{32}\.[0-9a-f]{16}\.[A-Za-z0-9_-]{0,680}$`. The handler then decodes the key,
+  and a key of more than 510 bytes, or one that does not decode, is refused.
+  - A cursor that fails the shape or decoding, or whose `binding` names another target or path (a replay across
+    listings), is `E_INVALID_ARGUMENT` `bad_cursor`.
+  - A cursor whose `binding` matches but whose `incarnation` does not (this path is now another directory) is `E_CONFLICT`
+    `changed`. The two cases never share a refusal.
+  - Every cursor the server makes passes this request validation and advances: the next page starts strictly after the
+    key, so no entry repeats, and the key is the entry's own, so none is skipped. Names added or removed between pages are
+    seen or missed by their sort position: there is no snapshot.
 - **Inherited limits:** 16 requests in flight and 100 messages per second (burst 200) per connection, and 64 connections.
   Files adds no shared file-system work limit in v1: the per-call bounds above cap each request.
 - **MethodSpecs**, all three: `sideEffect: "read"`, tier 0 (`list`, `stat`) or 1 (`read`), `idempotency: "none"` (so the
@@ -265,14 +297,23 @@ Real files throughout, with the swap seams `@axis/broker` already has for interl
   - path rules on both platforms' spellings, 4,096 bytes and 256 segments;
   - the closed reasons;
   - `reveal` only `true`;
-  - bounds: 500 entries, a forged and an oversized cursor, and labels.
+  - bounds: 500 entries, a forged and an oversized cursor, and labels;
+  - cursors: maximum-length names heavy in quotes, backslashes and control bytes (and invalid UTF-8 on POSIX) at non-final
+    page boundaries; complete pages of unaddressable names; a cursor replayed on another target or path (`bad_cursor`);
+    the directory replaced at the same path (`changed`); and every server cursor validated by the request schema, with
+    the pages together listing every entry exactly once.
 - Round trip, daemon to client through the real envelope and reader:
   - a text reply of 262,144 bytes is complete, and 262,145 is cut with `complete: false`;
   - each refusal of section 5, with the code and reason the client sees;
   - a hostile file system error (a message with a path, a `cause`, a throwing getter) never reaches the reply.
 - Roots:
   - the root listing (`""`);
-  - a checkout registered through a linked tree;
+  - a checkout registered through a linked tree is refused `not_found`;
+  - the registered repository moved aside and a DIFFERENT plain repository initialised at the same path (same path strings,
+    another inode) is refused, before the root is admitted and when swapped in mid-call;
+  - `.git` retargeted (replaced by a gitdir file or a symlink, or another `commondir`) is refused;
+  - an untrusted, unchanged, bound project is readable, and its trust row is not touched;
+  - a legacy unbound row is refused;
   - a workspace root reached through a symlinked parent at registration, then that root or parent replaced;
   - the composer's and the CLI's registries still refuse the checkout;
   - a bare repository gives `not_found`.
@@ -332,3 +373,6 @@ Real files throughout, with the swap seams `@axis/broker` already has for interl
   - collect all entries then refuse, instead of stopping early;
   - replacement decoding instead of the fatal streaming decoder;
   - a metadata-only token used as the save base (the content-CAS test fails).
+  - checkout admission by path or common-directory string only, without `gitDirId`;
+  - admission tied to the trust flag (the untrusted-unchanged test fails);
+  - a cursor key truncated to fit, or one refusal for both cursor mismatches.
