@@ -60,7 +60,12 @@ const okPut = z.strictObject({ op: z.literal("put"), landedOn: where });
 const okGet = z.strictObject({ op: z.literal("get"), secret: secretValueSchema, meta: secretMetaSchema });
 const okMeta = z.strictObject({ op: z.literal("meta"), meta: secretMetaSchema });
 const okRemove = z.strictObject({ op: z.literal("remove"), removed: z.boolean() });
-const okList = z.strictObject({ op: z.literal("list"), entries: z.array(z.strictObject({ name: secretNameSchema, meta: secretMetaSchema })).max(MAX_SECRET_ENTRIES) });
+/**
+ * A listed name is any string up to the cap here, not the name rule: the daemon's backend drops each name the vault's rule
+ * refuses and reports it, so one bad file never fails the whole startup list (§3.5). Metadata, the cap and the count stay strict.
+ */
+const listedNameSchema = z.string().min(1).max(SECRET_NAME_MAX);
+const okList = z.strictObject({ op: z.literal("list"), entries: z.array(z.strictObject({ name: listedNameSchema, meta: secretMetaSchema })).max(MAX_SECRET_ENTRIES) });
 
 /**
  * Main's answer (inbound): one value of the request's kind, or one closed error, never both. One object (not a union) so it
