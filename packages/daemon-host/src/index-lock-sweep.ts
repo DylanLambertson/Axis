@@ -142,6 +142,8 @@ export async function sweepIndexLocksAtStart(
   logger: Pick<Logger, "warn"> | undefined,
 ): Promise<void> {
   try {
+    // A project with no bound common directory whose `.git` is a FILE (the project is itself a linked worktree) gives a path
+    // that is no directory: its rows are refused (nothing touched) and its stale lock stays for the user (RR-98).
     const repos = journal.listProjects().map((p) => p.commonDir ?? join(p.path, ".git"));
     const swept = await sweepIndexLocks({ records: journal.indexLocks, repos });
     for (const reason of ["removed", "kept", "refused", "copies"] as const) {

@@ -12,9 +12,10 @@ import { sweepIndexLocks, type SweepFs } from "../src/index-lock-sweep.js";
 // is still exactly the file recorded (a regular file, same dev, inode AND ctime), and the path is the index lock of a
 // registered repository (its common git directory, or one of its linked worktrees' directories). Then leftover private copies
 // (`index.axis-<16 hex>` and their `.lock`) are removed by name. Real files.
-// Mutants: no record needed, no inode, dev, ctime or regular-file check, a ctime compared with `<=` or `>=`, mtime compared
-// instead of ctime, a record cleared after a failed unlink (no retry), no registered-directory check, no platform-absolute
-// check, a copy sweep by prefix only, one that ignores a held index.lock, one outside registered directories.
+// Mutants: no record needed, no inode check (same dev and ctime), no dev, ctime or regular-file check, a ctime compared with
+// `<=` or `>=`, mtime compared instead of ctime, a record cleared after a failed unlink (no retry), no registered-directory
+// check, no platform-absolute check, a copy sweep by prefix only, one that ignores a held index.lock, one outside registered
+// directories.
 
 const HEX = "0123456789abcdef";
 const copyName = (seed: number, lock = false): string => `index.axis-${Array.from({ length: 16 }, (_, i) => HEX[(seed + i * 7) % 16]).join("")}${lock ? ".lock" : ""}`;
@@ -100,6 +101,15 @@ test("the ctime must be exactly the recorded one: one nanosecond earlier or late
   }
   assert.deepEqual(await r.sweep(), { removed: [], kept: paths.sort(), refused: [], copies: [] });
   for (const p of paths) assert.equal(existsSync(p), true);
+});
+
+test("review 2 nit 1: the same dev and ctime on another inode is kept (a coarse clock gives two files one ctime; kills dropping the inode check)", async (t) => {
+  const r = rig(t);
+  const path = r.lock(join(r.repo("q"), "index.lock"), false);
+  const st = lstatSync(path, { bigint: true });
+  r.journal.indexLocks.record({ path, dev: st.dev, ino: st.ino + 1n, ctimeNs: st.ctimeNs });
+  assert.deepEqual(await r.sweep(), { removed: [], kept: [path], refused: [], copies: [] });
+  assert.equal(existsSync(path), true);
 });
 
 test("the same inode on another device, and a recorded path that is a symlink, are kept (kills dropping the dev or the regular-file check)", async (t) => {
