@@ -31,8 +31,8 @@ export interface SliceHost {
 }
 
 /** Start the composed host as a child process on `fx`'s environment. `agents` is what `axis.cliAgents` answers. */
-export async function startHost(fx: GitFixture, over: Partial<TestSupervisorOptions> & { endpointRuntime?: string; scanMode?: "refuse" | "warn"; agents?: unknown; probeMutex?: boolean; breakPutFile?: string; finalWaitMs?: number; composerConfig?: string; integrationsConfig?: string } = {}): Promise<SliceHost> {
-  const { endpointRuntime, scanMode, agents, probeMutex, breakPutFile, finalWaitMs, composerConfig, integrationsConfig, ...rest } = over;
+export async function startHost(fx: GitFixture, over: Partial<TestSupervisorOptions> & { endpointRuntime?: string; scanMode?: "refuse" | "warn"; agents?: unknown; probeMutex?: boolean; breakPutFile?: string; finalWaitMs?: number; composerConfig?: string; integrationsConfig?: string; secretBroker?: string } = {}): Promise<SliceHost> {
+  const { endpointRuntime, scanMode, agents, probeMutex, breakPutFile, finalWaitMs, composerConfig, integrationsConfig, secretBroker, ...rest } = over;
   // The host's git environment is checked by git-ops: the pty one must not set GIT_CONFIG_NOSYSTEM (the fixture's own git calls do).
   const { GIT_CONFIG_NOSYSTEM: _fixtureOnly, ...hostBase } = fx.env;
   const env: Record<string, string> = { ...hostBase, AXIS_SLICE_SCAN_MODE: scanMode ?? "refuse" };
@@ -42,6 +42,7 @@ export async function startHost(fx: GitFixture, over: Partial<TestSupervisorOpti
   if (endpointRuntime !== undefined) env["AXIS_SLICE_ENDPOINT_RUNTIME"] = endpointRuntime; // the pty port that hosts CLI endpoints (slice-pty.ts)
   if (composerConfig !== undefined) env["AXIS_SLICE_COMPOSER"] = composerConfig; // a `SliceComposerConfig` file (slice-composer.ts)
   if (integrationsConfig !== undefined) env["AXIS_SLICE_INTEGRATIONS"] = integrationsConfig; // a `SliceIntegrationsConfig` file
+  if (secretBroker !== undefined) env["AXIS_SLICE_SECRET_BROKER"] = secretBroker; // the broker wiring on, for that connection
   for (const n of DENIED_SEEDS) env[n] = "placeholder";
   const sup = await TestSupervisor.start({ entry: SLICE_HOST, env, ...rest });
   started.push(sup);
