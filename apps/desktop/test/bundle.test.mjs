@@ -52,7 +52,10 @@ export const MAIN_BUNDLE_BUDGET = 1_185_000;
 test("main reaches the daemon host only through its main-side modules, and stays within its size budget", () => {
   const inputs = Object.keys(meta.main.inputs).filter((i) => i.includes("packages/daemon-host/"));
   assert.ok(inputs.length > 0, "main uses the daemon host");
-  for (const i of inputs) assert.match(i, /packages\/daemon-host\/dist\/src\/(main\/[^/]+|supervisor|control\/[^/]+)\.js$/, i);
+  for (const i of inputs) assert.match(i, /packages\/daemon-host\/dist\/src\/(main\/[^/]+|supervisor|control\/messages|control\/secrets-messages)\.js$/, i);
+  for (const needed of ["src/supervisor.js", "src/main/answers.js", "src/control/messages.js"]) {
+    assert.ok(inputs.some((i) => i.endsWith(`packages/daemon-host/dist/${needed}`)), `main really includes ${needed}`);
+  }
   const all = Object.keys(meta.main.inputs);
   assert.ok(!all.some((i) => /daemon-host\/dist\/src\/(handlers|storage|compose|host|entry)|packages\/(audit|journal|worktrees|runs|review|broker|git-ops|git-snapshot|vault)\//.test(i)), "no composition root, handlers, storage or the daemon's own packages");
   const imports = Object.values(meta.main.outputs).flatMap((o) => o.imports);

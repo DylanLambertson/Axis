@@ -18,7 +18,7 @@
  (axis-app://shell,    │  entry.ts ── G-28 check ── import() ──▶ main.ts                                   │
   partition axis-shell)│                                          │                                         │
       │  preload       │   slice 2: ipcMain axis:connect ─▶ checkAppSender ─▶ ConnectBroker ─┐               │
-      │  (4 functions) │   slice 2: ipcMain axis:terminalPort ─▶ checkAppSender ─▶ pty hand-over ┐          │
+      │  (4 functions) │   DC-3b:   ipcMain axis:terminalPort ─▶ checkAppSender ─▶ data broker   ┐          │
       └───────────────▶│                                                                       │  │          │
                        │   DaemonSupervisor ── control channel (parentPort) ── answers:        │  │          │
                        │     anchor.get/put, settings.get (slice 1)                            │  │          │
@@ -27,14 +27,17 @@
                        └──────┬──────────────────────────────────────────┬────────────────────┼─────────────┘
                               │ utilityProcess.fork (fixed file)         │ utilityProcess.fork (fixed file)
                               ▼                                          ▼                    │ MessageChannelMain
-                    daemon.cjs: signal guard ── import() ── entry   pty.cjs: guard ── import() ── entry
+                    daemon.cjs: guard ── import() ── daemon-entry   pty.cjs: guard ── import() ── pty-entry
                               │                                          ▲                    │ (slice 2: one port end
                               └──────── control hand-over (a fresh channel per (re)start) ────┘   to the renderer,
                                                                                                   the other signed to
                                                                                                   the daemon or pty)
 ```
 
-- The renderer never reaches a process directly. It gets one end of a `MessageChannelMain` that main created, after main's sender checks; the other end goes to the daemon with a signed `connect` (slice 2).
+- The renderer never reaches a process directly. Three trust edges, each with its own port and its own minting:
+  - **Daemon connect** (slice 3.2). Main checks the sender, mints a fresh identity, and signs a `connect` to the daemon carrying one end of a new `MessageChannelMain`. The renderer gets the other end. The daemon verifies the signature, the age and the replay before it serves anything.
+  - **Terminal data** (DC-3b, after OS-3). Main checks the sender and mints a fresh data `conn`. The daemon, over its control channel, decides whether to grant that `conn` a terminal. Main sends only the data end to the renderer, as `pty-data`, and tears it down on refusal or when its lifetime ends. The pty process verifies no daemon signature on a data end: the grant decides, and only the daemon-owned control channel can grant. Until DC-3b lands, `axis:terminalPort` answers a closed refusal. DC-3c's capability refusal holds on its own: an installed terminal backend and an available data port do not enable a terminal open before revocation routing exists.
+  - **PTY control** (slice 3.1). Main makes a channel between the daemon and the pty process (§3a). It never reaches a renderer, and a renderer or data port can never become a control port.
 - Main forks exactly two files, both from the bundle, and nothing else. No path, argument or environment comes from a renderer.
 - The daemon and the pty process are joined by a control hand-over that main brokers: when either (re)starts, both get a fresh channel.
 
@@ -53,19 +56,37 @@ Each slice is its own PR with its own security review. **OS-3p** (the terminal b
 1. **The narrow subpath.** `@axis/daemon-host` gains a `./main` export. It holds the supervisor (`DaemonSupervisor`, `axisDataRoots`, `daemonEnvironment`, `shouldStartDaemon`) and the main-side modules slice 1 uses: `pty-supervisor`, `pty-launch`, `pty-handover`, `anchor-file`, `anchor-store`, `settings-scope` and `answers`. Their imports are the control messages, `attest-sign`, `@axis/pty-policy` and `@axis/pty-process/config` only. If one of them drags in the composition root, it is split. Main imports only `@axis/daemon-host/main`, never the package root. The OS-2 import of `axisDataRoots` moves there.
 2. **The forked files.** `apps/desktop` holds two files that `scripts/bundle.mjs` builds as `dist/app/daemon.cjs` and `dist/app/pty.cjs`. Each file's ONE static import is its package's signal guard (`@axis/daemon-host/signal-guard`, `@axis/pty-process/signal-guard`). The guard installs its `SIGUSR1` listener with `on`, never `once`. Main forks nothing else.
    - **The forked file is tiny** (about 1.4 KB). V8 parses a whole script before its first statement runs, so a 2.8 MB bundle widens the window before the listener by its whole parse. The entry is therefore a separate bundle beside it (`daemon-entry.cjs`, `pty-entry.cjs`), which the forked file loads by `import()` after the guard.
-   - A size pin (under 4 KB) and a `Module._load` trace of the built files keep it so. The trace shows the listener first, then exactly the entry bundle.
+   - **Each forked artifact must stay under 4 KiB**, pinned on the built files and independent of `main.cjs`'s budget. A `Module._load` trace of the built files shows the listener first, then exactly the entry bundle. The fork targets are pinned too (the seam's unit tests).
+   - A tiny file shortens the window before the listener; it does not remove Node's or Electron's own bootstrap before any script runs. The packaging fuses and the launch test (OS-21, RR-83) stay the control for packaged builds, including Windows, whose debugger attach does not depend on a signal.
    - Once the guard is first, the trace cannot tell a static entry import from `import()`. The source text pin is what catches that.
 3. **The forks** go through OS-2's `forkUtility`:
    - The entry is the fixed absolute bundle path, joined from `app.getAppPath()`. It never comes from a renderer, argv or the environment.
    - The service names are `axis-daemon` and `axis-pty`.
    - The environment is `daemonEnvironment()` for the daemon and the pty launch environment for the pty process. The fork options' refusals hold: no `NODE_*`, `ELECTRON_*`, `LD_*` or `DYLD_*` name reaches a child.
-   - The `cwd` is the bundle directory: the read-only install directory, never the data roots or a worktree. Both children must run with a read-only `cwd` (no relative-path writes anywhere). Every shell the pty process spawns gets its own explicit `cwd`, never the bundle directory.
+   - The `cwd` is the bundle directory, **in an unpackaged build**: a real directory, read-only, never the data roots or a worktree. Both children must run with a read-only `cwd` (no relative-path writes anywhere). Every shell the pty process spawns gets its own explicit `cwd`, never the bundle directory.
+   - **A packaged build cannot use it.** An `app.asar` archive is virtual, and Electron cannot set a working directory inside one. Today the packaged start gate starts neither child. OS-21 chooses a physical, absolute, read-only directory outside the archive (the resources directory) and proves it with packaged-layout launch tests. The script path's check stays separate from the `cwd` choice, and there is no fallback to the inherited `cwd`, a worktree or the data roots.
    - stdio is piped and drained, and never echoed raw.
    - **The pty file's spawn refuses** in slice 3.1. It is the entry's existing refusal path ("no terminal backend"), so it fails closed and is tested. The terminal backend is OS-3p. The daemon needs only the pty process's control hand-over to reach ready, not a terminal backend.
 4. **Order and lifetime.** The anchor store is read before the first spawn, so a keychain prompt cannot use up the daemon's 5 s anchor wait. The pty process starts first, then the daemon, under the start gate. `shouldStartDaemon` starts both only in a development build until the owner's packaging ADR. The own shell's equivalent of Code OSS's `isBuilt` is `app.isPackaged`, so a packaged build starts neither process, with a test. Each daemon child is reported to the pty hand-over, so both get a fresh control channel when either restarts. Restarts follow the supervisor's bounded policy. Shutdown runs on `before-quit`, bounded: the daemon first, then the pty process. `app.exit` comes only after both settled or timed out.
-5. **One instance per profile.** Main takes `app.requestSingleInstanceLock()` before it forks anything. A second launch on the same profile asks the first to show its window and quits at once (measured: exit 0 in about 0.4 s, one closed line). A second main with another profile but the same data roots is stopped by the daemon's own instance lock: its daemon exits 75 and its supervisor ends `failed` with reason `lock_held`, without a restart loop (measured). That main's pty process keeps running until it quits; slice 3.2 shows the state to the renderer.
-6. **Orphans.** Measured on Linux under WSLg: after `kill -9` of main, both utility processes were gone within 1 s (they end when their connection to main closes). Not verified on macOS or Windows; OS-21 measures it on the packaged builds.
-7. **The answers in slice 1.** `anchor.get` and `anchor.put` are answered from the anchor store; `settings.get` from main's settings source. No app window can be named yet, so `native.confirm` is refused at once with the native queue's closed reason, and `trust.check` answers `false` (fail closed). Neither can hang. No renderer IPC is added, so no tier-4 operation is reachable from a page in slice 1. **Tier 4 is refused until slice 2**, and the PR says so.
+5. **The control hand-over: acceptance and recovery** (§3a).
+6. **One instance per profile.** Main takes `app.requestSingleInstanceLock()` before it forks anything. A second launch on the same profile asks the first to show its window and quits at once (measured: exit 0 in about 0.4 s, one closed line). A second main with another profile but the same data roots is stopped by the daemon's own instance lock: its daemon exits 75 and its supervisor ends `failed` with reason `lock_held`, without a restart loop (measured). That main's pty process keeps running until it quits; slice 3.2 shows the state to the renderer.
+7. **Orphans.** Measured on Linux under WSLg: after `kill -9` of main, both utility processes were gone within 1 s (they end when their connection to main closes). Not verified on macOS or Windows; OS-21 measures it on the packaged builds.
+8. **The answers in slice 1.** `anchor.get` and `anchor.put` are answered from the anchor store; `settings.get` from main's settings source. No app window can be named yet, so `native.confirm` is refused at once with the native queue's closed reason, and `trust.check` answers `false` (fail closed). Neither can hang. No renderer IPC is added, so no tier-4 operation is reachable from a page in slice 1. **Tier 4 is refused until slice 2**, and the PR says so.
+
+## 3a. The control hand-over: posting a port is not a completed hand-over
+
+The inherited hand-over posts a new channel to both children and counts that as done. It is not done. The pty service serves one control channel at a time and closes a second one while the first is still registered. So if the replacement arrives before the pty process has seen its old channel close, the replacement is closed, the hand-over still counts success, and the old close then clears the old channel. Neither end is left with a working channel, and nothing retries. The design review reproduced this with the real modules.
+
+Slice 3.1 makes acceptance explicit:
+
+- **Generations.** Main numbers every channel it makes. Each `pty-control` message carries its generation.
+- **Latest wins, at both ends.** A child that receives a `pty-control` adopts it and closes the channel it held. Only main can post on a child's parent port, so the newest port is always main's own, and a renderer or data port can never become a control port. This matches the daemon entry, which already replaces its port after ready. The pty service's old rule, refusing a second channel while one is open, is what loses the replacement.
+- **Acknowledgement.** Each child answers its adoption on its parent port: `{ type: "pty-control-adopted", generation }`. A hand-over is complete only when both children acknowledged the same generation.
+- **Timeout and retry.** Without both acknowledgements within 5 s, main closes that channel, makes a new one with the next generation and posts again, at most 3 times per (re)start. It then records `handover_failed` and waits for the next (re)start of either child. It never leaves a half-open channel in place.
+- **A late exit, or one restart while the other holds a stale channel.** An exit makes main post the next generation to the survivor once its peer is back. An acknowledgement for an older generation is ignored.
+- **The daemon's own wait.** The daemon refuses to run without a control port (exit 78, `pty_required`, after its 10 s initial wait). The pty process's restart backoff can exceed that wait, and the supervisor treats exit 78 as a configuration failure and does not restart it. So main does not spawn the daemon while the pty process is not running. If the daemon ended `pty_required`, main starts it again once the pty process is alive, once per pty generation. Infrastructure delay therefore never leaves the daemon permanently stopped.
+- **Tests:** a replacement delivered before the old close; simultaneous restarts of both children; a late exit; a post that fails on one side; a child that never acknowledges (the bounded retries, then `handover_failed`); a pty backoff longer than the daemon's wait (the daemon is not stranded). Every case ends in a working channel or a defined failed state, never a silent one.
+- This changes `@axis/pty-process` (the service's adoption and the acknowledgement) and `@axis/daemon-host` (the entry's acknowledgement, the hand-over's generations and retries, the supervisor's start gate on the pty process).
 
 ## 4. Slice 3.1: the test plan
 
@@ -73,13 +94,14 @@ Each slice is its own PR with its own security review. **OS-3p** (the terminal b
   - A `Module._load` trace, as in `apps/desktop/test/entry-order.test.mjs`. Only the guard's modules load before the listener exists, and the entry's graph only after it.
   - A text pin of each source file: one static import (the guard); the entry by `import()`; no other code before it.
   - The guard's listener is `on`: `once` is refused by the pin and by a mutant.
-- **Real-child tests.**
-  - The built file under plain Node: `SIGUSR1` sent at its start marker and then repeatedly opens no inspector, and the child keeps running.
-  - A smoke-style Electron test (display needed, not in the gate): main forks the real `daemon.cjs` through `utilityProcess.fork`. `SIGUSR1` during start leaves no inspector on `127.0.0.1:9229`, and the child alive.
+- **Real-child tests**, saying what each can prove:
+  - The built files under plain Node have no Electron parent port, so each entry reaches its own refusal (the daemon exits 78) instead of running. Those runs prove the load order, not survival, and they do not rely on Node honouring `--disable-sigusr1`.
+  - A smoke-style Electron test, separate (display needed, not in the gate): main forks the real `daemon.cjs` and `pty.cjs` through `utilityProcess.fork`. `SIGUSR1` sent to both from 300 ms after each appears (past the band before any statement runs) until the daemon is ready leaves no inspector on `127.0.0.1:9229`, and both children alive.
 - **Read-only `cwd`.** Both children start, reach ready and answer with their `cwd` set to a read-only directory: the smoke test runs the app from a read-only copy of its bundle. Every spawn the pty process accepts needs an absolute `cwd` of its own (`@axis/pty-process`'s tests). The terminal backend refuses in slice 3.1, so a real shell's `cwd` is proven by OS-3p's smoke test.
-- **The interim tier-4 state.** The daemon started by slice 1 answers a tier-4 operation with its closed refusal within its bound, not a hang.
+- **The interim tier-4 state, as far as slice 3.1 can prove it:** main's answers refuse `native.confirm` in the same tick and answer `trust.check` false. Daemon-host's own test proves that a native refusal is a refusal. The end-to-end proof, with a real client connection and a tier-4 operation that actually reaches `native.confirm` (so the trust-false path cannot make it pass vacuously), is slice 3.2's.
+- **The no-backend refusal.** The pty process's spawn refuses with "no terminal backend"; a real shell and its explicit `cwd` are OS-3p's smoke test.
 - **Bundle checks** (`apps/desktop/test/bundle.test.mjs`):
-  - `main.cjs`'s inputs from `@axis/daemon-host` are only `src/main/*` and `src/supervisor.ts`: never handlers, storage or `node:sqlite`.
+  - `main.cjs`'s inputs from `@axis/daemon-host` are only `src/main/*`, `src/supervisor.ts` and the two control-schema files main parses with (`src/control/messages.ts` and `src/control/secrets-messages.ts`, by name: not the whole `control/` directory). The test asserts that the supervisor, the answers and the control parser are actually included, so an empty graph cannot pass, and that handlers, storage, the composition root and `node:sqlite` are not.
   - A size budget for `main.cjs`, set from a measurement and enforced (the test fails when it is exceeded). It was measured at 1,127,211 bytes; the budget is 1,185,000. Zod is about 751 KB of it, and main needs zod for the control messages, so the narrow subpath shrinks main only a little: from 1.22 MB in OS-2. Minifying `main.cjs` and `zod/mini` are out of scope for slice 3.1.
 - **Unit tests with fakes**, in the style of `apps/desktop/test/hardening.test.ts`:
   - start order (pty, then daemon) and the anchor read before the spawn;
