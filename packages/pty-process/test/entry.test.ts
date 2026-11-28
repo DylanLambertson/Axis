@@ -69,7 +69,7 @@ test("a real child runs behind real MessagePorts: grant, attach, output arrives,
   const { host, data, replies } = await wire(h);
   try {
     const t = await host.spawn({ ...SPEC, argv: ["/bin/sh", "-c", 'read line; echo "got:$line"; sleep 30'], cwd: "/", env: { PATH: "/usr/bin:/bin" } });
-    host.grant(t.terminalId, "c1");
+    host.grantTerminal(t.terminalId, "c1");
     await settle();
     data.send({ t: "attach", term: t.terminalId });
     await until(() => replies.some((r) => r.t === "attached"));
@@ -88,7 +88,7 @@ test("G-2 over real ports: a connection named c2 cannot attach to a terminal gra
   const { host, data, replies } = await wire(h, "c2");
   try {
     const t = await host.spawn({ ...SPEC, argv: ["/bin/sh", "-c", "sleep 30"], cwd: "/", env: { PATH: "/usr/bin:/bin" } });
-    host.grant(t.terminalId, "c1");
+    host.grantTerminal(t.terminalId, "c1");
     await settle();
     data.send({ t: "attach", term: t.terminalId });
     await until(() => replies.length > 0);
@@ -124,7 +124,7 @@ test("S2: a late grant for a closed view is useless: a later port with the same 
     const t = await host.spawn({ ...SPEC, argv: ["/bin/sh", "-c", "echo secret-output; sleep 30"], cwd: "/", env: { PATH: "/usr/bin:/bin" } });
     data.close(); // the view's window reloads before the daemon's grant lands
     await settle();
-    host.grant(t.terminalId, "view-1"); // the late grant
+    host.grantTerminal(t.terminalId, "view-1"); // the late grant
     await settle();
     let closed = false;
     second.a.on("close", () => void (closed = true));

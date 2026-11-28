@@ -59,7 +59,7 @@ test("a spawned answer after the timeout is killed, tracked, and handed to onLat
   s.procs.unkillable.add(4242); // the kill does not end the group
   s.pair.b.send({ t: "spawned", req, term: "pty_late", group: { kind: "pgid", pgid: 4242 } });
   await settle();
-  assert.deepEqual(s.pair.sent.a.at(-1), { t: "kill", term: "pty_late", signal: "SIGKILL" });
+  assert.deepEqual(s.pair.sent.a.slice(-2), [{ t: "revoke", term: "pty_late" }, { t: "kill", term: "pty_late", signal: "SIGKILL" }], "revoked, then killed");
   assert.equal(lates.length, 1);
   const late = lates[0];
   assert.ok(late?.kind === "spawned");
@@ -97,7 +97,7 @@ test("each late answer is handed over once; an answer to a request never made is
   s.pair.b.send({ t: "spawned", req: "r999", term: "pty_unknown", group: { kind: "pgid", pgid: 4244 } });
   await settle();
   assert.equal(lates.length, 1);
-  assert.deepEqual(s.pair.sent.a.slice(-2), [{ t: "kill", term: "pty_again", signal: "SIGKILL" }, { t: "kill", term: "pty_unknown", signal: "SIGKILL" }]);
+  assert.deepEqual(s.pair.sent.a.slice(-4), [{ t: "revoke", term: "pty_again" }, { t: "kill", term: "pty_again", signal: "SIGKILL" }, { t: "revoke", term: "pty_unknown" }, { t: "kill", term: "pty_unknown", signal: "SIGKILL" }]);
   assert.equal(s.port.trackedTerminals(), 1);
 });
 
@@ -131,6 +131,14 @@ test("with the real service: a spawned answer delayed past the timeout, whose gr
   assert.ok(late?.kind === "spawned", JSON.stringify(lates));
   assert.ok(r.procs.calls.some(([pid, sig]) => pid === -child.pid && sig === "SIGKILL"), "killed");
   assert.equal(late.handle.groupAlive(), true, "the group survived and is still charged");
+  // Review nit 1: the service revoked it before the kill, so a grant to it (a stale or a mistaken one) gives no data connection access.
+  const data = channelPair();
+  r.service.serveData(data.b, "c1");
+  r.port.grantTerminal(late.handle.terminalId, "c1");
+  await settle();
+  data.a.send({ t: "attach", term: late.handle.terminalId });
+  await settle();
+  assert.deepEqual(data.sent.b.at(-1), { t: "refused", term: null, code: "foreign_terminal" });
 });
 
 test("the port can revoke a terminal; a closed port sends nothing", () => {
@@ -139,4 +147,15 @@ test("the port can revoke a terminal; a closed port sends nothing", () => {
   assert.deepEqual(s.pair.sent.a.at(-1), { t: "revoke", term: "pty_1" });
   s.port.dispose();
   assert.equal(s.port.revoke("pty_1"), false);
+});
+
+test("review S1: dispose settles every tracked terminal's exit (unknown), as a channel close does, so its owner can end it", async () => {
+  const r = rig();
+  const h = await r.port.spawn(SPEC);
+  const exits: unknown[] = [];
+  h.onExit((e) => exits.push(e));
+  r.port.dispose();
+  await settle();
+  assert.deepEqual(exits, [{ exitCode: null, signal: null }]);
+  assert.equal(r.port.trackedTerminals(), 0);
 });
