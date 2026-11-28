@@ -19,8 +19,8 @@ async function twoAttached(opts: Parameters<typeof rig>[0] = {}) {
   const b = await r.port.spawn({ ...SPEC, runId: "run2" });
   const data = channelPair();
   r.service.serveData(data.b, "c1");
-  r.port.grant(a.terminalId, "c1");
-  r.port.grant(b.terminalId, "c1");
+  r.port.grantTerminal(a.terminalId, "c1");
+  r.port.grantTerminal(b.terminalId, "c1");
   await settle();
   data.a.send({ t: "attach", term: a.terminalId });
   data.a.send({ t: "attach", term: b.terminalId });
@@ -99,13 +99,13 @@ test("revoke holds when the kill after it throws (the signal is refused)", async
 test("a grant after a revoke (a stale one in flight) cannot reactivate the terminal", async () => {
   const h = await twoAttached();
   h.r.port.revoke(h.a.terminalId);
-  h.r.port.grant(h.a.terminalId, "c1");
+  h.r.port.grantTerminal(h.a.terminalId, "c1");
   await settle();
   await locked(h, h.a.terminalId, h.ca);
   // a fresh data connection named in a later grant gets nothing either
   const other = channelPair();
   h.r.service.serveData(other.b, "c2");
-  h.r.port.grant(h.a.terminalId, "c2");
+  h.r.port.grantTerminal(h.a.terminalId, "c2");
   await settle();
   other.a.send({ t: "attach", term: h.a.terminalId });
   await settle();
@@ -120,7 +120,7 @@ test("a leader's exit revokes inside the service while a child of its group surv
   assert.deepEqual(h.data.sent.b.at(-1), { t: "exit", term: h.a.terminalId });
   await locked(h, h.a.terminalId, h.ca);
   // and a re-grant after the exit is refused as well
-  h.r.port.grant(h.a.terminalId, "c1");
+  h.r.port.grantTerminal(h.a.terminalId, "c1");
   await settle();
   h.data.a.send({ t: "attach", term: h.a.terminalId });
   await settle();
@@ -144,7 +144,7 @@ test("while a terminal is open, moving it to another data connection still works
   const h = await twoAttached();
   const other = channelPair();
   h.r.service.serveData(other.b, "c2");
-  h.r.port.grant(h.a.terminalId, "c2");
+  h.r.port.grantTerminal(h.a.terminalId, "c2");
   await settle();
   other.a.send({ t: "attach", term: h.a.terminalId });
   await settle();

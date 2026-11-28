@@ -223,3 +223,31 @@ test("entry: a control port held before init starts the host; a second one befor
     box.cleanup();
   }
 });
+
+test("DC-3a: the slot carries the terminal port: spawn forwards onLate, grant and revoke reach the pty process, a closed slot is definitive", async () => {
+  const slot = createPtyControlSlot({ spawnTimeoutMs: 50 });
+  try {
+    assert.equal(slot.port.lateSpawnReports, true);
+    assert.equal(slot.port.revoke("pty_0123456789abcdef0123456789abcdef"), false, "no port: nothing sent");
+    await assert.rejects(slot.port.spawn(SPEC, () => undefined), (e: unknown) => (e as { code?: unknown; definitive?: unknown }).code === "channel_closed" && (e as { definitive?: unknown }).definitive === true);
+    const a = controlPair();
+    const got = peer(a.peer); // holds the spawn past the client's bound
+    slot.attach(a.mine);
+    const lates: Array<{ kind: string; handle?: { terminalId: string } }> = [];
+    const spawned = slot.port.spawn(SPEC, (l) => lates.push(l));
+    await assert.rejects(within(spawned, "the spawn timing out"), (e: unknown) => (e as { code?: unknown }).code === "timeout" && (e as { definitive?: unknown }).definitive === false);
+    const req = got.find((m) => m["t"] === "spawn")?.["req"];
+    a.peer.postMessage({ t: "spawned", req, term: "pty_0123456789abcdef0123456789abcdef", group: { kind: "pgid", pgid: 999_999_9 } });
+    await until(() => lates.length === 1, "the late spawn reaching onLate");
+    assert.equal(lates[0]?.kind, "spawned");
+    assert.equal(lates[0]?.handle?.terminalId, "pty_0123456789abcdef0123456789abcdef");
+    await until(() => got.some((m) => m["t"] === "kill"), "the late group's kill");
+    slot.port.grantTerminal("pty_0123456789abcdef0123456789abcdef", "c1");
+    assert.equal(slot.port.revoke("pty_0123456789abcdef0123456789abcdef"), true);
+    await until(() => got.filter((m) => m["t"] === "revoke").length === 2, "the grant and the revoke");
+    assert.deepEqual(got.filter((m) => m["t"] === "grant" || m["t"] === "revoke").map((m) => m["t"]), ["revoke", "grant", "revoke"], "the late revoke, then the forwarded grant and revoke");
+    a.peer.close();
+  } finally {
+    slot.dispose();
+  }
+});

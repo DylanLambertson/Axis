@@ -53,7 +53,7 @@ test("PTY-7 end to end: a CLI run's forged Cwd= never reaches the attached termi
   const term = (await r.port.spawn(SPEC)).terminalId;
   const data = channelPair();
   r.service.serveData(data.b, "c1");
-  r.port.grant(term, "c1");
+  r.port.grantTerminal(term, "c1");
   await settle();
   data.a.send({ t: "attach", term });
   await settle();
