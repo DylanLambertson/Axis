@@ -11,6 +11,10 @@
     ".": {
       "types": "./dist/src/index.d.ts",
       "default": "./dist/src/index.js"
+    },
+    "./signal-guard": {
+      "types": "./dist/src/signal-guard.d.ts",
+      "default": "./dist/src/signal-guard.js"
     }
   },
   "scripts": {

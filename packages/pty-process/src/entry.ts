@@ -77,14 +77,18 @@ const closeAll = (ports: readonly MessagePortLike[]): void => {
 
 /** The one closed line the entry writes when SIGUSR1 arrives (the inspector stays closed). */
 export const DEBUG_SIGNAL_LINE = "axis.pty ignored SIGUSR1: the inspector stays closed";
-/** The one `execArgv` the pty process may be forked with: the flag that stops SIGUSR1 from opening the inspector. */
+/**
+ * The one `execArgv` the pty process may be forked with: the flag that stops SIGUSR1 from opening the inspector under plain Node.
+ * Electron's utility process ignores it, so there the guard in `signal-guard.ts` is the control.
+ */
 export const EXEC_ARGV_ALLOWED = "--disable-sigusr1";
 
 export function runPtyEntry(deps: PtyEntryDeps): PtyEntryHandle {
   // Audit C M1: SIGUSR1 would open Node's unauthenticated inspector on 127.0.0.1:9229, from which any local user could read
-  // this process's heap. The complete fix is `--disable-sigusr1` (EXEC_ARGV_ALLOWED), which holds from the first instruction;
-  // this listener is the second line, for a fork without it, and holds only once this file runs. Installed first, on every
-  // path, and never removed, not even by `dispose`: with no listener the signal's default applies again.
+  // this process's heap. Under Electron's utility process `--disable-sigusr1` is not honoured, so a listener is the control:
+  // the file the shell forks installs a silent one through `signal-guard.ts`, its one static import, before this graph loads.
+  // This one writes the closed line. Installed first, on every path, and never removed, not even by `dispose`: with no
+  // listener the signal's default applies again.
   let signalled = false;
   deps.process.on("SIGUSR1", () => {
     if (signalled) return;
