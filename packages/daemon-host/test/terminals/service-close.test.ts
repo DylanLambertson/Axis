@@ -23,10 +23,10 @@ async function opened() {
 
 test("attach grants an open terminal to the named conn only, audited with the terminal id and the conn", async () => {
   const { r, id } = await opened();
-  attachTerminal(r.deps, id, "conn-1");
+  attachTerminal(r.deps, id, "conn-1", r.context());
   assert.deepEqual(r.port.grants, [[id, "conn-1"]]);
   assert.deepEqual(r.audits.map((a) => [a.action, a.payload]), [["terminal.attach", { terminalId: id, conn: "conn-1" }]]);
-  assert.throws(() => attachTerminal(r.deps, "pty_ffffffffffffffffffffffffffffffff", "conn-1"), notFound, "an id the daemon did not open");
+  assert.throws(() => attachTerminal(r.deps, "pty_ffffffffffffffffffffffffffffffff", "conn-1", r.context()), notFound, "an id the daemon did not open");
 });
 
 test("close: revoked then killed, closed, audited; repeated close is fine; attach afterwards is not_found with no grant", async () => {
@@ -38,7 +38,7 @@ test("close: revoked then killed, closed, audited; repeated close is fine; attac
   closeTerminal(r.deps, id);
   assert.deepEqual(r.audits.map((a) => a.action), ["terminal.close", "terminal.close"]);
   assert.deepEqual(r.audits[0]?.payload, { terminalId: id, workspaceId: "ws1", projectId: "p1" });
-  assert.throws(() => attachTerminal(r.deps, id, "conn-1"), notFound);
+  assert.throws(() => attachTerminal(r.deps, id, "conn-1", r.context()), notFound);
   assert.deepEqual(r.port.grants, []);
 });
 
@@ -47,17 +47,17 @@ test("a close whose kill throws: closing, then daemon attach refused; the leader
   h.killThrows = true;
   closeTerminal(r.deps, id);
   assert.equal(r.registry.get(id)?.state, "closing");
-  assert.throws(() => attachTerminal(r.deps, id, "c"), notFound);
+  assert.throws(() => attachTerminal(r.deps, id, "c", r.context()), notFound);
   h.exit();
-  assert.throws(() => attachTerminal(r.deps, id, "c"), notFound);
+  assert.throws(() => attachTerminal(r.deps, id, "c", r.context()), notFound);
   assert.deepEqual(r.port.grants, []);
 });
 
 test("a natural exit: a re-grant is refused", async () => {
   const { r, h, id } = await opened();
-  attachTerminal(r.deps, id, "c1");
+  attachTerminal(r.deps, id, "c1", r.context());
   h.exit();
-  assert.throws(() => attachTerminal(r.deps, id, "c2"), notFound);
+  assert.throws(() => attachTerminal(r.deps, id, "c2", r.context()), notFound);
   assert.deepEqual(r.port.grants, [[id, "c1"]]);
 });
 
@@ -89,4 +89,17 @@ test("the environment is exactly the plain-terminal builder with secret names st
   const env = plainTerminalEnv(daemonEnv, "linux");
   for (const kept of ["PATH", "HOME", "SSH_AUTH_SOCK", "GPG_AGENT_INFO", "DOCKER_HOST", "NPM_CONFIG_USERCONFIG"]) assert.equal(env[kept], daemonEnv[kept as keyof typeof daemonEnv], `${kept} kept`);
   for (const gone of ["AXIS_MESSAGES_ENDPOINT", "AXIS_MESSAGES_TOKEN", "PLUGIN_TOKEN", "SERVICE_API_KEY", "GH_TOKEN", "AWS_SECRET_ACCESS_KEY"]) assert.equal(env[gone], undefined, `${gone} removed`);
+});
+
+test("attach is refused after a revoke of the caller's window, or of the terminal's workspace or project, through any window", async () => {
+  for (const [label, subject] of [
+    ["the caller's window", { windowId: "w1" }],
+    ["the workspace, through another window", { windowId: "w9", workspaceId: "ws1" }],
+    ["the project, through another window", { windowId: "w9", workspaceId: "p1" }],
+  ] as const) {
+    const { r, id } = await opened();
+    r.trust.set(subject, false);
+    assert.throws(() => attachTerminal(r.deps, id, "c1", r.context()), notFound, label);
+    assert.deepEqual(r.port.grants, [], `${label}: no grant`);
+  }
 });

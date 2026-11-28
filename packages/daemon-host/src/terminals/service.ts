@@ -64,10 +64,7 @@ function finalAdmission(deps: TerminalServiceDeps, context: HandlerContext, proj
   if (context.signal.aborted) throw terminalFailure("cancelled");
   const p = deps.journal.getProject(project.id);
   if (p === undefined || !p.trusted || p.path !== project.path || p.commonDir !== project.commonDir || p.gitDirId !== project.gitDirId) throw notFound();
-  const { windowId, hostWindowId } = context.identity;
-  for (const w of hostWindowId === undefined ? [windowId] : [windowId, hostWindowId]) {
-    for (const subject of [start.id, project.id]) if (deps.trust.isRevoked({ windowId: w, workspaceId: subject })) throw notFound();
-  }
+  if (revokedFor(deps.trust, context, start.id, project.id)) throw notFound();
   const ws = deps.journal.getWorkspace(start.id);
   if (!usable(ws) || ws.projectId !== project.id || ws.worktreePath !== workTree || ws.lockState !== start.lockState || ws.lockedAt !== start.lockedAt) throw notFound();
 }
@@ -145,9 +142,22 @@ export function closeTerminal(deps: Pick<TerminalServiceDeps, "registry" | "audi
   deps.audit({ actor: "user", action: "terminal.close", target: `terminal:${terminalId}`, outcome: "success", payload: { terminalId, workspaceId: rec.workspaceId, projectId: rec.projectId } });
 }
 
-/** `attach` (section 5): only an `open` terminal is granted, read immediately before the grant with no await between. */
-export function attachTerminal(deps: Pick<TerminalServiceDeps, "registry" | "port" | "audit">, terminalId: string, conn: string): void {
-  if (deps.registry.attachable(terminalId) === undefined) throw notFound();
+/** True when a registry revoke covers the caller's windows for the workspace or the project (terminal-trust-revocation.md 4.2). */
+function revokedFor(trust: Pick<TrustRegistry, "isRevoked">, context: HandlerContext, workspaceId: string, projectId: string): boolean {
+  const { windowId, hostWindowId } = context.identity;
+  for (const w of hostWindowId === undefined ? [windowId] : [windowId, hostWindowId]) {
+    for (const subject of [workspaceId, projectId]) if (trust.isRevoked({ windowId: w, workspaceId: subject })) return true;
+  }
+  return false;
+}
+
+/**
+ * `attach` (section 5): only an `open` terminal is granted, and not under a registry revoke of the caller's windows for its workspace
+ * or project. Both are read immediately before the grant, with no await between.
+ */
+export function attachTerminal(deps: Pick<TerminalServiceDeps, "registry" | "port" | "audit" | "trust">, terminalId: string, conn: string, context: HandlerContext): void {
+  const rec = deps.registry.attachable(terminalId);
+  if (rec === undefined || revokedFor(deps.trust, context, rec.workspaceId, rec.projectId)) throw notFound();
   deps.port.grant(terminalId, conn);
   deps.audit({ actor: "user", action: "terminal.attach", target: `terminal:${terminalId}`, outcome: "success", payload: { terminalId, conn } });
 }
