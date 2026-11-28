@@ -1,0 +1,28 @@
+{
+  "name": "@axis/desktop-main",
+  "version": "0.0.0",
+  "private": true,
+  "license": "UNLICENSED",
+  "type": "module",
+  "engines": {
+    "node": "24.22.1"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/src/index.d.ts",
+      "default": "./dist/src/index.js"
+    },
+    "./debug-flags": {
+      "types": "./dist/src/debug-flags.d.ts",
+      "default": "./dist/src/debug-flags.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc --noEmit -p .",
+    "test": "tsc -b && node --test \"dist/test/**/*.test.js\""
+  },
+  "dependencies": {
+    "@axis/protocol": "0.0.0"
+  }
+}

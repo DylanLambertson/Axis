@@ -3,8 +3,8 @@
 // host's src imports nothing of @axis/pty-process, so if either side drifts, `tsc` fails here.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import type { PtyExecCall as RealCall, PtyExecOutcome as RealOutcome, PtyProcessPort, PtyPushCall as RealPush } from "@axis/pty-process";
-import type { PtyExecCall, PtyExecOutcome, PtyExecPort, PtyForgePort, PtyPushCall, PtyPushPort } from "../../src/ports/pty.js";
+import type { LateSpawn as RealLate, PtyExecCall as RealCall, PtyExecOutcome as RealOutcome, PtyProcessPort, PtyPushCall as RealPush, PtySpawnFailure } from "@axis/pty-process";
+import type { PtyExecCall, PtyExecOutcome, PtyExecPort, PtyForgePort, PtyLateSpawn, PtyPushCall, PtyPushPort, PtySpawnFailureCode, PtyTerminalPort } from "../../src/ports/pty.js";
 
 type Equal<A, B> = (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false;
 const yes = <T extends true>(): T | undefined => undefined;
@@ -17,10 +17,17 @@ yes<Equal<PtyPushCall, RealPush>>();
 yes<Equal<Parameters<PtyPushPort["push"]>, Parameters<PtyProcessPort["push"]>>>();
 yes<Equal<Parameters<PtyForgePort["forgeList"]>, Parameters<PtyProcessPort["forgeList"]>>>();
 yes<Equal<ReturnType<PtyForgePort["forgeList"]>, ReturnType<PtyProcessPort["forgeList"]>>>();
+// DC-3a: the terminal port's failure codes and late outcomes are the client's.
+yes<Equal<PtySpawnFailureCode, PtySpawnFailure>>();
+yes<Equal<PtyLateSpawn["kind"], RealLate["kind"]>>();
+yes<Equal<Parameters<PtyTerminalPort["grantTerminal"]>, Parameters<PtyProcessPort["grantTerminal"]>>>();
+yes<Equal<Parameters<PtyTerminalPort["revoke"]>, Parameters<PtyProcessPort["revoke"]>>>();
 
 test("the host's exec port matches the pty process client (checked by the compiler)", () => {
   const port: PtyExecPort = {} as PtyProcessPort;
   const push: PtyPushPort = {} as PtyProcessPort;
   const forge: PtyForgePort = {} as PtyProcessPort;
+  const terminal: Omit<PtyTerminalPort, "lateSpawnReports"> = {} as PtyProcessPort;
+  assert.ok(terminal !== undefined);
   assert.ok(port !== undefined && push !== undefined && forge !== undefined);
 });

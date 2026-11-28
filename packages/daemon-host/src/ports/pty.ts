@@ -45,6 +45,42 @@ export interface PtyPort {
   spawn(spec: PtySpawn): Promise<PtyHandle>;
 }
 
+/** DC-3a: a handle that names its terminal in the pty process (`pty_` and 32 hex characters), so it can be granted and revoked. */
+export interface PtyTerminalHandle extends PtyHandle {
+  readonly terminalId: string;
+}
+
+/** The closed spawn failure codes of `@axis/pty-process` (`PtySpawnFailure`), repeated here. */
+export type PtySpawnFailureCode = "timeout" | "channel_closed" | "capacity" | "env_denied" | "bad_group" | "spawn_failed" | "no_control" | "bad_bind" | "hook_changed" | "bad_argv" | "remote_refused" | "endpoint_unavailable";
+
+/**
+ * What became of a spawn after it rejected with `timeout` (`LateSpawn` of `@axis/pty-process`): `spawned`, the group exists, already
+ * killed by the port and tracked (its handle answers `groupAlive` until it is gone); `failed`, the pty process's definitive no-spawn.
+ */
+export type PtyLateSpawn = { readonly kind: "spawned"; readonly handle: PtyTerminalHandle } | { readonly kind: "failed"; readonly code: PtySpawnFailureCode };
+
+/**
+ * DC-3a's terminal port (`terminals-contract.md` section 8), all four parts or none:
+ * - `spawn`, giving a handle that carries its `terminalId`, and hearing the late outcome of a spawn that timed out (`onLate`);
+ * - `grantTerminal(terminalId, conn)` (the pty process's `grant` message): only data connection `conn` may attach. Never named
+ *   `grant`: that name is the plugin grant store's, fenced by the static writer rule;
+ * - `revoke(terminalId)`: no data connection may reach it again (false when the port is closed);
+ * - definitive outcomes: a rejection's `definitive` is true only when no process can appear for it (`isDefinitiveSpawnFailure`).
+ * `lateSpawnReports` marks a port whose rejections carry `definitive` and whose `onLate` is honoured.
+ */
+export interface PtyTerminalPort {
+  /** `onLate` is optional on the port (the runs call `spawn(spec)` on the same port); the terminal service always passes it. */
+  spawn(spec: PtySpawn, onLate?: (late: PtyLateSpawn) => void): Promise<PtyTerminalHandle>;
+  grantTerminal(terminalId: string, conn: string): void;
+  revoke(terminalId: string): boolean;
+  readonly lateSpawnReports: true;
+}
+
+/** True only for a spawn rejection that says no process can appear (`PtySpawnError.definitive`); anything else is unknown. */
+export function isDefinitiveSpawnFailure(e: unknown): boolean {
+  return typeof e === "object" && e !== null && (e as { definitive?: unknown }).definitive === true;
+}
+
 /**
  * The messaging endpoint relay over the pty control channel (PV-M6, ADR 0007 decision 7.1): the relayed messages in, the
  * daemon's answers out. The envelopes are `@axis/pty-process`'s `relayInbound` / `relayOutbound`, parsed by the port.

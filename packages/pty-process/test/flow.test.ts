@@ -40,7 +40,7 @@ async function attached(limits = LIMITS, child?: FakeChild): Promise<{ svc: Retu
   const h = await port.spawn(SPEC);
   const data = channelPair();
   svc.serveData(data.b, "c1");
-  port.grant(h.terminalId, "c1");
+  port.grantTerminal(h.terminalId, "c1");
   await settle();
   const replies: DataReply[] = [];
   data.a.onMessage((m) => void replies.push(m as DataReply));

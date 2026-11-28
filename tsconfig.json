@@ -8,6 +8,7 @@
     { "path": "packages/challenge" },
     { "path": "packages/daemon" },
     { "path": "packages/daemon-host" },
+    { "path": "packages/desktop-main" },
     { "path": "packages/git-ops" },
     { "path": "packages/git-snapshot" },
     { "path": "packages/journal" },

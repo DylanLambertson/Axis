@@ -15,7 +15,7 @@ async function viewer(spawn: SpawnFn, opts: { real?: boolean; input?: { terminal
   const h = await port.spawn({ ...SPEC, argv: ["/bin/sh", "-c", "sleep 30"], cwd: "/", env: { PATH: "/usr/bin:/bin" } });
   const data = channelPair();
   svc.serveData(data.b, "c1");
-  port.grant(h.terminalId, "c1");
+  port.grantTerminal(h.terminalId, "c1");
   await settle();
   const got: DataReply[] = [];
   data.a.onMessage((m) => void got.push(m as DataReply));
@@ -265,13 +265,13 @@ test("S1: switching viewers mid-sequence gives the returning viewer a CAN and a 
   await settle(1);
   const b = channelPair();
   v.svc.serveData(b.b, "c2");
-  v.port.grant(v.term, "c2");
+  v.port.grantTerminal(v.term, "c2");
   await settle();
   b.a.send({ t: "attach", term: v.term });
   await settle();
   child.emit("junk-for-b");
   await settle(1);
-  v.port.grant(v.term, "c1b");
+  v.port.grantTerminal(v.term, "c1b");
   const a2 = channelPair();
   v.svc.serveData(a2.b, "c1b");
   await settle();

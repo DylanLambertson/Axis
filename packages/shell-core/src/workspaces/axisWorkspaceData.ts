@@ -20,7 +20,8 @@ export type AxisWorkspaceState = 'READY' | 'FINALISED' | 'CLEANED';
 export interface IAxisWorktreeInfo {
 	/** Journal id; absent for worktrees Axis did not create. */
 	readonly id?: string;
-	readonly origin: 'axis' | 'external';
+	/** `local`: the repository's own checkout (DC-7), only in a list that asked for it; it has no id and no counts. */
+	readonly origin: 'axis' | 'external' | 'local';
 	readonly projectId: string;
 	readonly state?: AxisWorkspaceState;
 	readonly branch: string | null;

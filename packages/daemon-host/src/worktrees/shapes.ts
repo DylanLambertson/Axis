@@ -18,6 +18,8 @@ export interface ListedWorktree {
   readonly locked: boolean;
   readonly prunable: boolean;
   readonly isMain: boolean;
+  /** The main entry of a bare repository (no working tree). */
+  readonly bare: boolean;
   readonly managed: boolean;
   readonly external: boolean;
   readonly id: string | null;
