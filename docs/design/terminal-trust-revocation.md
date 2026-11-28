@@ -1,13 +1,13 @@
 # Trust-registry revocations reach terminals (DC-3c)
 
-- **Status:** Proposed. Security review. Follows DC-3a (`terminals-contract.md`). Until this lands, DC-3a's `open` is refused by a capability check (that contract, section 2 step 5).
+- **Status:** Proposed. Security review. Review 1 folded. Follows DC-3a (`terminals-contract.md`). Until this lands, DC-3a's `open` is refused by a capability check (that contract, section 2 step 5).
 - **Builds on:**
   - the trust registry (`packages/daemon-host/src/policy/trust-registry.ts`), fed only by the supervisor's `trust.set`;
-  - DC-3a's terminal registry, its monotonic lifecycle, the per-terminal revoke in the pty process, and the definitive-outcome and late-spawn reporting of the pty client;
+  - DC-3a's terminal registry, its monotonic lifecycle, the per-terminal revoke in the pty process, and the definitive-outcome and late-spawn reporting of the pty client (section 6 names them);
   - DC-3a's fan-out of project untrust and binding loss (section 2 step 4), whose abandonment, never-publish and kill-and-track rules are reused here unchanged.
 - **Not here:**
-  - whether a registry revoke stops a running CLI run (Q6 in `daemon-host.md`, still open; section 5 below says what this note does to a run's terminal);
-  - main's side of the data port (DC-3b).
+  - main's side of the data port (DC-3b);
+  - sending `window.gone` (OS-3).
 
 ## 1. The gap
 
@@ -22,21 +22,29 @@ The registry has no project identity and no event. This note adds both, as far a
 
 - **`InMemoryTrustRegistry` gains `onRevoked(listener)`.** It returns a disposer.
 - **When it fires:** synchronously inside `set`, after a revoke (`trusted: false`) is recorded, with the level that was revoked: `{ kind: "window", windowId }` or `{ kind: "subject", id }`. It fires on every recorded revoke, including a repeated one. Listeners are idempotent.
-- **Saturation:** a revoke that latches the registry saturated fires `{ kind: "all" }`. Every subject is then revoked (the registry's existing rule), so every terminal is affected.
+- **Saturation:** a revoke that latches the registry saturated sets the latch, then notifies `{ kind: "all" }`, then throws its `RangeError` as today. Every subject is then revoked (the registry's existing rule), so every terminal is affected.
 - **Grants do not fire.** A grant never ends anything.
-- **Order and failure:**
-  - the registry's state is changed first, so a listener that reads `isRevoked` sees the revoke;
-  - a throwing listener does not stop the others, and does not undo the record or turn `set` into a throw;
-  - listeners run in registration order. The terminal registry registers when the host composes the terminal service; until then nothing is open.
+- **The registry's state is changed first,** so a listener that reads `isRevoked` sees the revoke.
+- **Re-entrancy (review 1 S1): refused.**
+  - A `set` called while listeners are being notified throws (`RangeError`), records nothing, and notifies nothing.
+  - So a grant cannot overtake the revoke being delivered, and a listener that revokes again cannot recurse.
+  - No daemon listener calls `set`. The supervisor's `trust.set` arrives from the event loop, never inside a dispatch, so this refusal is reachable only by a bug.
+- **The listener list:**
+  - dispatch takes a snapshot of the listeners when it starts, in registration order;
+  - a listener added during a dispatch first hears the next event;
+  - a listener disposed during a dispatch, and not yet called, is skipped;
+  - a disposer is idempotent.
+- **Failure:** each listener call is caught on its own. A throw is logged (a fixed reason, never the error's text) and the dispatch continues with the next listener. It does not undo the record and does not turn `set` into a throw.
+- **Latency is bounded by what a listener does, not by the catch.** A listener here may only make bounded synchronous authority changes: flags, a revoke message, a kill signal. Anything else, including the audit, is deferred (section 4). A `try/catch` cannot isolate a slow listener, so no listener may block.
 - **Who may set:** unchanged. Only supervisor control messages (`trust.set`) reach `set`.
 
 ## 3. The mapping: which terminals a revoke reaches
 
-A terminal's record (DC-3a section 4) gains the trust subjects it was reached through:
+A terminal's record (DC-3a section 4) gains the trust subjects it was reached through, set before the dispatch for a pending open:
 - `workspaceId` and `projectId`, fixed at open (a CLI run's terminal: its run's);
 - **windows:** the window of the connection that opened it, and the window of every connection that attached it.
 
-The registry's subject ids are not typed: the gate checks `s:<workspaceId>`, and a plugin's rule checks `s:<projectId>`. So:
+The registry's subject ids are not typed: the gate checks `s:<workspaceId>`, and a plugin's rule checks `s:<projectId>`. A subject revoke is global: one recorded through window B reaches window A's terminal in the same workspace.
 
 | Revoked level | Reaches |
 |---|---|
@@ -50,49 +58,129 @@ The registry's subject ids are not typed: the gate checks `s:<workspaceId>`, and
 
 **What is never a reason to skip:** an unknown terminal kind, a record missing from one index, or a listener that threw earlier. The routing scans the registry itself (at most 8 plain terminals per workspace, and the runs' terminals), so no secondary index can disagree with it.
 
-## 4. What a revoke does to a reached terminal
+## 4. What a revoke does
 
-These are the same rules as DC-3a section 2 step 4. All of them are synchronous inside the listener, before any queued work.
+### 4.1 To the terminals it reaches
 
-- **A pending open** (dispatched, no answer yet) is marked abandoned. Its operation identity and slot stay charged until the spawn is definitively settled. A handle reported later, on time or late, is never published or granted: it is killed and tracked, and the slot is freed only when its group is gone.
-- **An open that has not reached its final admission** needs nothing new. The final admission re-reads `isRevoked` synchronously (DC-3a section 2 step 3) and refuses.
-- **A live plain terminal** is closed: it goes to `closing`, its grant is revoked in the pty process, then its group is killed. A kill that throws leaves it `closing`, and the slot waits for the group to be gone.
-- **`attach` after a revoke.** `attach` is trust `none` in DC-3a's policy table, so DC-3c adds a handler check: `isRevoked({ windowId: caller, workspaceId })` or `isRevoked({ windowId: caller, workspaceId: projectId })` refuses with `not_found`. The same check runs again synchronously immediately before the grant is sent.
+All of it happens in the listener, synchronously, and in three passes over every reached record. Each step for each record is caught on its own, so a failure on one record never stops another.
 
-## 5. A CLI run's terminal
+1. **Lower authority, for every reached record, first:**
+   - a pending open (dispatched, no answer yet) is marked abandoned. Its operation identity and slot stay charged until the spawn is definitively settled. A handle reported later, on time or late, is never published or granted: it is revoked, killed and tracked, and its slot is freed only when its group is gone;
+   - a live plain terminal goes to `closing`;
+   - every reached live terminal (plain or a CLI run's) is revoked in the pty process.
+2. **Then kill** each reached plain terminal's group. Revoke always comes before kill (DC-3a section 4). A kill that throws leaves the terminal `closing`, never granted again, and its slot waits for the group to be gone.
+3. **Then the audit,** deferred to a microtask after the scan. An audit write that fails is logged with a fixed reason and does not change any state.
 
-Q6 is not decided here: a registry revoke does not stop a run. Its terminal, when reached:
+**Separate from project stop.** The project untrust and binding-loss fan-out (DC-3a step 4, which also stops CLI and composer runs under the project mutex) is a different event and is not routed through this listener. A failure in either path never prevents the other.
+
+### 4.2 Admission: open and attach check both subjects (review 1 B1)
+
+The routing above reaches existing and pending terminals only. A revoke recorded before a new `open` or `attach` must refuse that call too. The project trust gate's T4 checks `{ window, workspace }` only, and a project-subject revoke does not change the project's journal `trusted` flag. So DC-3c owns this terminal admission rule:
+
+- **`open`:** the synchronous final admission (DC-3a section 2 step 3) reads `isRevoked` for each caller window (the connection's window, and its host window if any), with BOTH subjects: `{ window, workspaceId }` and `{ window, projectId }`. This happens after the last await, immediately before the ticket is consumed and the spawn dispatched.
+- **`attach`:** the same four reads, synchronously, immediately before the grant is sent. `attach` is trust `none` in DC-3a's policy table, so this is a handler check.
+- **A refusal is `not_found`.**
+
+The gate itself is unchanged. Its other callers' scope is not this note's to widen.
+
+## 5. A CLI run's terminal (Q6: decided)
+
+**Accepted:** a registry revoke does not stop a run. A CLI run's terminal that a revoke reaches:
 - **is revoked in the pty process.** Every data connection loses it, and the revoke is permanent there (DC-3a's monotonic rule), so no later attach reaches it;
-- **leaves the run running.** It ends as before: its own exit, `axis.cli-runs/1.stop`, or a project untrust (DC-3a step 4).
+- **leaves the run running.** The run is governed by its own gates. It ends as before: its own exit, `axis.cli-runs/1.stop`, or a project untrust (DC-3a step 4), which already stops the project's runs through the existing stop path.
 
-**Decision for review:** the alternative is to revoke only the grants of the reached windows and let another, unrevoked window attach later. That needs a non-permanent revoke in the pty process, which DC-3a deliberately does not have. The note proposes the permanent revoke: it is simpler, it fails closed, and the run's state is still visible through the runs view.
+**UI requirement (OS-16 and OS-8):** such a run is shown as "viewer detached", with its Stop action.
 
-## 6. Composition: the capability
+**No residual is added.** The run's process keeps the authority it was started with, under the gate that admitted it. The revoke takes nothing from it that a revoke takes from a run today, and the user keeps the Stop action.
 
-DC-3a registers `axis.terminals/1` only when the terminal port's four parts AND this routing are present (DC-3a section 8). The routing is present when the composed trust registry offers `onRevoked`, and the terminal service has registered its listener before the handlers are registered. A test drops each condition and must see `open` refused before a spawn. A mutant that registers the handlers without the listener must fail.
+## 6. Composition: the capability, and the pty handoff (review 1 S3)
 
-## 7. Audit
+### 6.1 The routing capability
+
+- **`installTerminalRevocationRouting(trust, registry)`** registers the listener on the composed registry's `onRevoked`. It returns an owned **`TerminalRevocationRouting`** with `active(): boolean` and `dispose()`.
+- **`active()` attests to the installed subscription itself:** it is true only between a successful registration and `dispose()`, and `dispose()` removes the listener. It is not an enable flag. A registry without `onRevoked` gives no routing object at all.
+- **One predicate, `terminalsServable(port, routing)`,** used by production, by the default composition and by every injected test composition. It requires:
+  - the terminal port's four parts: `spawn` with `onLate`, `grant`, `revoke`, and `lateSpawnReports`;
+  - `routing?.active() === true`.
+
+  The host advertises `axis.terminals/1`, holds its policy rows, and registers its handlers only when the predicate holds. Each handler checks `routing.active()` again per call, and answers `not_found` once the routing is disposed.
+- **Tested distinctly:**
+  - a registry without `onRevoked`;
+  - a registry with it but no installed routing;
+  - a disposed routing;
+  - each missing port part.
+
+  Each must refuse `open` before a spawn. A weakened predicate must fail its test.
+- **The contract moves from planned to served in the change that lands this.** DC-3a's daemon slice keeps `axis.terminals/1` in `plannedContracts`.
+
+### 6.2 The pty handoff
+
+These are merged in `@axis/pty-process`; DC-3a adapts them, and DC-3c only consumes them:
+- `spawn(spec, onLate?)`;
+- `PtySpawnError.definitive`: true for a refusal before sending, or `spawn-failed`; false for a timeout or an in-flight channel loss;
+- `LateSpawn`: `{ kind: "spawned", handle }` or `{ kind: "failed", code }`;
+- a handle's `terminalId`;
+- `grant` and `revoke(terminalId): boolean`.
+
+DC-3a's daemon slice forwards all of them through the control slot (`bindings/pty-control.ts`) and declares them in the daemon's port (`ports/pty.ts`, `PtyTerminalPort`).
+
+**Accounting rules:**
+- a late `failed` releases the pending slot;
+- a late `spawned` group is already revoked, killed and tracked by the client, and also reaches the daemon's accounting, never publication;
+- a lost channel, or an evicted late callback with no authoritative outcome, keeps the slot charged.
+
+## 7. Every authority-loss event (review 1 S2)
+
+| Event | Owner | Pending open | Live plain terminal | A CLI run's terminal | Slots and late answers |
+|---|---|---|---|---|---|
+| Registry revoke (window, subject, all) | DC-3c | abandoned (section 4) | closing, revoked, killed | revoked; run continues (section 5) | kept until definitive or gone |
+| Project untrust, binding loss | DC-3a step 4 | abandoned | closing, revoked, killed | the run is stopped by the existing stop path | kept until definitive or gone |
+| `window.gone` (close, crash, navigation). OS-3 sends it; DC-3c consumes it for terminals | DC-3c | that window's pending opens are abandoned (the caller is gone) | stays running: a terminal outlives a window and is re-attached by another (OS-16). Its data owner ends when main closes the window's ports (DC-3b), and the pty process then clears the grant and owner | unchanged | kept until definitive or gone |
+| Data connection closes | pty process (merged) | none | the grant and owner are cleared; the terminal stays `open` and needs a new `attach` | same | none |
+| Pty control channel closes (pty process restart) | DC-3a | the spawn rejects non-definitively: kept charged | the pty process ends every terminal; the daemon sees the unknown exit, so `exited`, and probes the group until gone | same | kept until the group probe answers gone |
+| Workspace finalise or remove | DC-3a daemon slice | refused while the workspace has a charged slot (`active_run`, as for a run) | the workspace's plain terminals are closed first (closing, revoked, killed); the operation stays refused while any group lives | the run's own guard applies | released as groups go |
+| Messaging pause of a project | none (explicit) | unaffected | unaffected: a pause is about messages, not the user's shells | unaffected | none |
+| Daemon shutdown | DC-3a and DC-3c | the routing is disposed first (handlers answer `not_found`), then pending opens are abandoned | closed (revoked, killed); the pty process also kills every group when its control channel closes | ends with its run's shutdown | memory ends with the process |
+
+**DC-3b deferral, stated:** if main cannot guarantee a window's data ports close with it, the remaining gap is a stale data owner until the port closes. It is DC-3b's, and DC-3c does not claim it closed.
+
+## 8. Audit
 
 - `terminal.revoked`: the terminal id, the workspace and project ids, the revoked level's kind (`window`, `subject`, `all`), and the outcome (`closed`, `abandoned`, `grant_revoked`).
 - No window id. The window id is a connection identity, and the audit's subject is the terminal.
-- One row per reached terminal. A repeated revoke of an already ended terminal writes nothing.
+- One row per reached terminal, written after the scan (section 4.1). A repeated revoke of an already ended terminal writes nothing.
 
-## 8. Tests (each with a mutant)
+## 9. Tests (each with a mutant)
 
 - **Registry event:**
   - fires after the record, for window and subject;
-  - fires on saturation as `all`;
+  - fires on saturation as `all`, before the throw, filling the real 4096-entry registry through control;
   - grants do not fire;
-  - a throwing listener changes neither the record nor the other listeners.
+  - a throwing listener changes neither the record nor the other listeners;
+  - a nested `set` (grant or revoke) during dispatch is refused and records nothing;
+  - a listener added during dispatch hears only the next event, and one disposed during dispatch is skipped.
 - **Mapping:**
   - opener window, attaching window and a ninth attach (`anyWindow`);
   - subject as workspace and as project;
+  - a workspace revoke through another window reaches the terminal;
+  - a bare window revoke from a window that never attached reaches nothing;
   - `all`.
+- **Passes and isolation:**
+  - T1's revoke or kill throwing while T2 is pending and T3 live: T2 is abandoned and T3 closed;
+  - authority is lowered for all records before any kill;
+  - the project stop path still stops CLI and composer runs when terminal processing throws.
 - **With real control and composition** (supervisor `trust.set` over the control client), for a window revoke and a workspace revoke, each:
   - during the final lookup: no spawn;
   - during a pending reply: the late handle is never published, and is killed and tracked, with the slot charged until the group is gone;
   - during live use: the viewer loses output and input, the group is killed, and a kill that throws leaves the terminal `closing`, never granted again.
-- **Removing each routing** (the event, the window mapping, the subject mapping, `all`) must let a late handle publish or a live terminal survive, and so fail.
+- **Admission (B1):** a project-subject revoke before a new `open`, and one during its final lookup, each from the caller's window and from a different window, refuses with no spawn. `attach` is refused the same way. Deleting only the project-subject read must let a spawn through and fail the test.
+- **Removing each routing** (the event, the window mapping, the subject mapping, `all`, the abandonment pass) must let a late handle publish or a live terminal survive, and so fail.
 - **CLI run terminal:** reached, it is revoked in the pty process, and the run stays RUNNING.
-- **`attach`:** refused after a revoke of the caller's window or of the terminal's workspace or project, including one recorded between the handler's check and the grant.
-- **Capability:** as section 6.
+- **Lifecycle (section 7):**
+  - `window.gone` with a pending open: never published;
+  - a pty control channel loss with a pending open: the slot stays charged;
+  - a workspace remove with a live terminal: closed first, refused while its group lives;
+  - shutdown with a pending reply: never published;
+  - routing disposed before the handlers answer.
+- **Capability:** as section 6.1.
+- **The pty handoff:** through the real control slot, a timeout keeps the slot charged and a late spawned or failed outcome reaches the daemon; dropping `onLate` while spawn still works must fail.
