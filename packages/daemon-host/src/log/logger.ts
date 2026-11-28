@@ -34,6 +34,10 @@ export const LOG_EVENTS = [
   "forge.list",
   // DC-0b: the startup sweep of stale index locks, by count (`reason` removed, kept, refused, copies or sweep_failed); never a path.
   "host.index_locks",
+  // PV-N0c-1: the secret broker's closed events (`reason`: put_landed_late, put_absent, put_unknown, list_name_dropped) and the
+  // startup reveal (`reason` validated, failed or list_failed, with a `count`); never a name, a key or its length.
+  "secrets.broker",
+  "secrets.startup",
 ] as const;
 export type LogEvent = (typeof LOG_EVENTS)[number];
 

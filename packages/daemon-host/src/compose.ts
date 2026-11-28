@@ -7,7 +7,8 @@ import { EVENTS_CONTRACT, EVENTS_VERSION, MAX_PROMPT_CHARS, PROJECTS_CONTRACT, P
 import { createSecretScanner, type ScanMode } from "@axis/secret-scan";
 import { anchorPreflight } from "./anchor/preflight.js";
 import { createAgentBinding, type AgentBinding } from "./bindings/agent.js";
-import { createProvidersBinding, productionConnection, type AnthropicConnectionOptions, type ProvidersBinding } from "./bindings/providers.js";
+import { asVaultBackend, createProvidersBinding, productionConnection, type AnthropicConnectionOptions, type ProvidersBinding } from "./bindings/providers.js";
+import { secretBrokerWiring, type SecretBrokerOption } from "./compose-secrets.js";
 import { selectPtyGitRunner } from "./bindings/pty-git.js";
 import { createRunsBinding, type RunsBinding } from "./bindings/runs.js";
 import { composerGuardDeps, createRunRepositoryGuard, type RunSnapshotterFactory } from "./bindings/snapshot.js";
@@ -142,6 +143,8 @@ export interface ComposeOptions {
    * the client is then the production one, and with no backend (production until PV-N0c) nothing is revealed or sent.
    */
   readonly integrations?: { readonly client?: EgressClient; readonly vaultBackend?: SecretBackend };
+  /** TEST ONLY until PV-N0c-2: the secret broker wiring (`compose-secrets.ts`); the daemon entry never sets it (a pinned test). */
+  readonly secretBroker?: SecretBrokerOption;
 }
 
 export interface ComposedHost {
@@ -167,6 +170,8 @@ export function composeDaemonHost(options: ComposeOptions): ComposedHost {
   const snapshotterFactory = options.snapshotter;
   const logger: Logger | undefined = ports.logger;
   const scanner = createSecretScanner({ mode: options.scanMode ?? "refuse" });
+  if (options.secretBroker !== undefined && (options.composer?.anthropic !== undefined || options.integrations?.vaultBackend !== undefined)) refuseComposition("secret_broker_conflict");
+  const broker = secretBrokerWiring(options.secretBroker, control, logger); // undefined unless the option is set: no backend, no send
   // Closed when the final anchor is taken: no composer or challenge row may land after it (review r1 S1).
   const auditSeal = createAuditSeal();
   // The host windows' lifetimes (PV-K2 K2-g4b, plugin-grant-contract.md section 8.4): fed by the daemon's session lifecycle and
@@ -263,7 +268,8 @@ export function composeDaemonHost(options: ComposeOptions): ComposedHost {
         forwarder.bind(runs.service);
         const projectPaths = (): string[] => parts.journal.listProjects().map((p) => p.path);
         // Composer runs: the broker's audit rows mark the anchor batch dirty like every other writer.
-        const providers = createProvidersBinding({ redactor: ports.redactor, audit: composerWriter, ...productionConnection(options.composer?.anthropic) });
+        const providers = createProvidersBinding({ redactor: ports.redactor, audit: composerWriter, ...productionConnection(broker === undefined ? options.composer?.anthropic : { connectionId: broker.connectionId, backend: asVaultBackend(broker.backend), vault: broker.vault }) });
+        if (broker !== undefined) void broker.startup(() => providers.validateStored()); // the startup reveal, under the option only
         // axis.messages/1 (PV-M3): service, settings and delivery into runs; its rows go through the sealed composer writer.
         const messagingDeps = hostMessagingDeps({ journal: parts.journal, audit: composerWriter, monotonic: () => ports.clock.monotonic(), scan: (text) => scanner.scan(text, { part: "message" }), logger, holdsSecret: messageSecretCheck(ports.redactor), enabled: options.messaging?.enabled === true });
         const messaging = createMessagingBinding(messagingDeps);
@@ -370,7 +376,7 @@ export function composeDaemonHost(options: ComposeOptions): ComposedHost {
     if (writable) {
       const egress = options.integrations?.client ?? createEgressClient();
       cleanups.push(() => egress.close());
-      const integrations = { sender: egress, backend: options.integrations?.vaultBackend };
+      const integrations = { sender: egress, backend: broker === undefined ? options.integrations?.vaultBackend : asVaultBackend(broker.backend) };
       registerServing(registrar, services, { built, config, control, ports, pty, scanner, ptyGitRunnerFor, logger, runHooks: options.runHooks ?? false, sshSpawn: options.sshSpawn, pluginGrants: options.pluginGrants === true, stopProjectRuns, minter: createRunTrustMinter(ports.clock), hostWindows: windowLifetimes, integrations, terminals });
     }
     if (events !== undefined) {

@@ -4,7 +4,8 @@
 // served; an unknown project is not_found; read goes through the project trust gate before anything is revealed; and the daemon
 // entry passes no integrations option.
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { test, type TestContext } from "node:test";
 import { fileURLToPath } from "node:url";
 import { AxisError } from "@axis/audit";
@@ -122,4 +123,19 @@ test("the daemon entry passes no integrations option: production has no test cli
   const call = entry.slice(entry.indexOf("composeDaemonHost({"));
   assert.ok(call.length > 0 && call.includes("snapshotter: gitSnapshotRunSnapshotter"), "the scan reads the composition call");
   assert.equal(/integrations|vaultBackend|egress/i.test(entry), false);
+});
+
+test("the daemon entry never turns the secret broker wiring on (secret-broker.md §6.1: off until PV-N0c-2's flip)", () => {
+  const entry = readFileSync(fileURLToPath(new URL("../../../src/entry.ts", import.meta.url)), "utf8");
+  assert.ok(entry.includes("composeDaemonHost({"), "the scan reads the composition call");
+  assert.equal(/secretBroker|compose-secrets|secrets-backend|BrokerSecretBackend/.test(entry), false);
+  // The one place a broker backend is built is the wiring behind the option.
+  const src = fileURLToPath(new URL("../../../src/", import.meta.url));
+  const builders = readdirSync(src, { recursive: true, encoding: "utf8" })
+    .filter((f) => f.endsWith(".ts") && f !== "secrets-backend.ts")
+    .filter((f) => readFileSync(join(src, f), "utf8").includes("createBrokerSecretBackend("));
+  assert.deepEqual(builders, ["compose-secrets.ts"]);
+  const wiring = readFileSync(join(src, "compose-secrets.ts"), "utf8");
+  assert.equal(wiring.split("createBrokerSecretBackend(").length - 1, 1, "ONE backend, handed to both bindings");
+  assert.equal(/ForTest/.test(wiring), false, "the composition never takes the test-only timeouts");
 });

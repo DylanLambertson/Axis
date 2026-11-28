@@ -101,6 +101,9 @@ client.onInit((raw) => {
         const integrations = sliceIntegrations(process.env);
         return integrations === undefined ? {} : { integrations };
       })(),
+      // `AXIS_SLICE_SECRET_BROKER=<connection id>` turns the secret broker wiring on (compose-secrets.ts; PV-N0c-1); unset, off,
+      // as the daemon entry leaves it.
+      ...(/^[a-z0-9][a-z0-9._-]{0,63}$/.test(process.env["AXIS_SLICE_SECRET_BROKER"] ?? "") ? { secretBroker: { connectionId: process.env["AXIS_SLICE_SECRET_BROKER"] as string } } : {}),
       process,
       exit: (code, info) => {
         process.exitCode = code;
