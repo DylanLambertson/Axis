@@ -21,8 +21,10 @@ export class AxisDaemonApi {
 		return readProjects(await this.client.request('axis.projects', 'list', {}, this.token));
 	}
 
-	async listWorktrees(projectId: string): Promise<IAxisWorktreeInfo[]> {
-		const reply = readWorktrees(await this.client.request('axis.worktrees', 'list', { projectId: checkedId(projectId) }, this.token));
+	/** With `includeLocal`, the reply starts with the repository's own checkout (origin `local`, DC-7). */
+	async listWorktrees(projectId: string, options: { readonly includeLocal?: true } = {}): Promise<IAxisWorktreeInfo[]> {
+		const params = { projectId: checkedId(projectId), ...(options.includeLocal === true && { includeLocal: true as const }) };
+		const reply = readWorktrees(await this.client.request('axis.worktrees', 'list', params, this.token), undefined, { local: options.includeLocal === true });
 		return reply.filter(w => w.projectId === projectId); // another project's worktree is not this project's row
 	}
 
