@@ -25,6 +25,8 @@ export interface IndexRefreshHooks {
   readonly beforeLock?: () => void | Promise<void>;
   readonly afterLock?: () => void | Promise<void>;
   readonly rename?: (from: string, to: string) => Promise<void>;
+  /** The copy of the index to the private file (`copyFile` with `COPYFILE_EXCL`). */
+  readonly copy?: (from: string, to: string) => Promise<void>;
   readonly wait?: (ms: number) => Promise<void>;
   /** Run once the index was copied to the private copy git reads and edits; it gets that copy's path. */
   readonly afterCopy?: (copy: string) => void | Promise<void>;
@@ -137,8 +139,9 @@ function asText(latin1: string): string | undefined {
  *   extension, so the user's next `git status` rebuilds that state once (slower once, nothing else).
  * - **A skip is reported**, never silent: the caller carries the outcome to the user, because the committed paths then show
  *   as staged reversions, and a plain `git commit` would undo the Axis commit until they reset those paths.
- * - **Residual (RR-98):** a crash while the lock is held (one copy and rewrite of the index, longer for a large index)
- *   leaves a stale `index.lock` that blocks the user's git until it is removed; follow-up DC-0b.
+ * - **A crash** while the lock is held (one copy and rewrite of the index, longer for a large index) leaves a stale
+ *   `index.lock` that blocks the user's git. With `deps.indexLockLedger` (DC-0b) the lock's dev, inode and ctime are recorded
+ *   right after the open, and the host's startup sweep removes it only when it is still exactly that file (RR-98).
  */
 export async function refreshIndex(deps: GitOpsDeps, w: WorktreeRef, oldHead: string, newHead: string, hooks: IndexRefreshHooks = {}): Promise<IndexRefreshOutcome> {
   const first = await refreshOnce(deps, w, oldHead, newHead, hooks);
@@ -162,11 +165,26 @@ async function stillOurs(path: string, mine: { readonly dev: bigint; readonly in
   }
 }
 
+/** Whether the index file at `path` ends in an all-zero checksum (the `index.skipHash` form). */
+async function zeroTrailer(path: string, n: number): Promise<boolean> {
+  const fh = await open(path, "r");
+  try {
+    const { size } = await fh.stat();
+    if (size <= 12 + n) return false;
+    const tail = Buffer.alloc(n);
+    const { bytesRead } = await fh.read(tail, 0, n, size - n);
+    return bytesRead === n && tail.every((b) => b === 0);
+  } finally {
+    await fh.close();
+  }
+}
+
 /**
  * Whether `path` is a complete index of `expected` entries: its header count, git's own parse of it, and its trailing checksum
- * (unless git wrote a zero one, `index.skipHash`) all agree. A file cut short fails all three.
+ * all agree. A file cut short fails all three. An all-zero checksum (git's `index.skipHash` form) passes only when `zeroOk`:
+ * the original index had one too, or `index.skipHash` is set (lock guard review 2 N3).
  */
-async function complete(path: string, expected: number, hash: "sha1" | "sha256", git: (sub: readonly string[], stdin?: string, opts?: { readonly raw?: boolean }) => Promise<{ readonly code: number; readonly stdout: string }>): Promise<boolean> {
+async function complete(path: string, expected: number, hash: "sha1" | "sha256", zeroOk: boolean, git: (sub: readonly string[], stdin?: string, opts?: { readonly raw?: boolean }) => Promise<{ readonly code: number; readonly stdout: string }>): Promise<boolean> {
   if ((await headerCount(path)) !== expected) return false;
   const listed = await git(["ls-files", "--stage", "-z"], undefined, { raw: true });
   if (listed.code !== 0 || listed.stdout.split("\0").filter((r) => r !== "").length !== expected) return false;
@@ -174,7 +192,7 @@ async function complete(path: string, expected: number, hash: "sha1" | "sha256",
   const n = hash === "sha256" ? 32 : 20;
   if (bytes.length <= 12 + n) return false;
   const trailer = bytes.subarray(bytes.length - n);
-  return trailer.every((b) => b === 0) || createHash(hash).update(bytes.subarray(0, bytes.length - n)).digest().equals(trailer);
+  return (zeroOk && trailer.every((b) => b === 0)) || createHash(hash).update(bytes.subarray(0, bytes.length - n)).digest().equals(trailer);
 }
 
 /** The entry count of an index file's header (`DIRC`, version, count), or undefined when it is not an index. */
@@ -195,6 +213,7 @@ async function refreshOnce(deps: GitOpsDeps, w: WorktreeRef, oldHead: string, ne
   let mine: { readonly dev: bigint; readonly ino: bigint } | undefined;
   let scratch: string | undefined;
   let renamed = false;
+  let recorded = false;
   try {
     if (!OBJECT_ID.test(oldHead) || !OBJECT_ID.test(newHead)) return { skipped: "failed" };
     const git = await daemonGitFor(w, deps);
@@ -220,6 +239,14 @@ async function refreshOnce(deps: GitOpsDeps, w: WorktreeRef, oldHead: string, ne
     lock = `${index}.lock`;
     const own = await held.stat({ bigint: true });
     mine = { dev: own.dev, ino: own.ino };
+    // DC-0b: recorded once, right away, so a crash from here on leaves a lock the startup sweep can prove is Axis's. The lock is
+    // held open and never written, so its dev, inode and ctime stay as recorded (the kernel alone sets the ctime: a later file
+    // at this path, even on a reused inode number, has a newer one). A record that cannot be written stops the refresh (the
+    // lock is removed below): an unrecorded lock left by a crash would be the user's to remove.
+    if (deps.indexLockLedger !== undefined) {
+      await deps.indexLockLedger.record({ path: lock, dev: own.dev, ino: own.ino, ctimeNs: own.ctimeNs });
+      recorded = true;
+    }
     await hooks.afterLock?.();
     // DC-0b review 1 B1(a) and lock guard review 1: git never reads or writes the lock path, and Axis never writes index bytes
     // itself. git edits a PRIVATE copy beside the index (same file system: no copy in a shared temp directory, no disk-full
@@ -232,8 +259,17 @@ async function refreshOnce(deps: GitOpsDeps, w: WorktreeRef, oldHead: string, ne
     const counted = await headerCount(index);
     if (counted === undefined) return { skipped: "unreadable" };
     const copyPath = `${index}.axis-${randomBytes(8).toString("hex")}`;
-    await copyFile(index, copyPath, constants.COPYFILE_EXCL);
+    // Named before the copy, so a copy that fails half-way (a full disk) is removed below by Axis itself; a name that already
+    // existed (EEXIST) is not Axis's file and is left alone.
     scratch = copyPath;
+    try {
+      await (hooks.copy ?? ((from: string, to: string) => copyFile(from, to, constants.COPYFILE_EXCL)))(index, copyPath);
+    } catch (e) {
+      if ((e as { code?: unknown }).code === "EEXIST") scratch = undefined;
+      return { skipped: "failed" };
+    }
+    const hashLength = newHead.length === 64 ? 32 : 20;
+    const zeroOk = (await zeroTrailer(copyPath, hashLength)) || (await on("index.skipHash"));
     await utimes(copyPath, st.atime, st.mtime);
     await hooks.afterCopy?.(copyPath);
     // No `core.splitIndex` pin here: a pin of `false` would hide a split index from the check below (git drops it on read).
@@ -308,7 +344,7 @@ async function refreshOnce(deps: GitOpsDeps, w: WorktreeRef, oldHead: string, ne
     await hooks.afterUpdate?.(copyPath);
     // The result must be a COMPLETE index before anything is renamed (lock guard review 1 B1: a short write would otherwise
     // replace the user's index with a truncated one, and git does not verify the checksum by default).
-    if (!(await complete(copyPath, expected, newHead.length === 64 ? "sha256" : "sha1", copy))) return { skipped: "failed" };
+    if (!(await complete(copyPath, expected, hashLength === 32 ? "sha256" : "sha1", zeroOk, copy))) return { skipped: "failed" };
     const fh = await open(copyPath, "r+");
     try {
       await fh.chmod(st.mode & 0o7777);
@@ -332,5 +368,9 @@ async function refreshOnce(deps: GitOpsDeps, w: WorktreeRef, oldHead: string, ne
     // Only Axis's own lock is ever removed (after the rename too): one another git created after the user removed ours stays.
     if (lock !== undefined && mine !== undefined && (await stillOurs(lock, mine))) await rm(lock, { force: true }).catch(() => undefined);
     if (scratch !== undefined && !renamed) await rm(scratch, { force: true }).catch(() => undefined);
+    // git's own lock of the private copy, left when its child was killed mid-write (a random name only this refresh uses).
+    if (scratch !== undefined) await rm(`${scratch}.lock`, { force: true }).catch(() => undefined);
+    // Last, once the lock is gone (or is no longer ours): a crash before this leaves a record the sweep only deletes.
+    if (recorded && lock !== undefined) await Promise.resolve(deps.indexLockLedger?.clear(lock)).catch(() => undefined);
   }
 }
