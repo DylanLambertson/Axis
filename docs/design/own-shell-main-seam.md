@@ -129,19 +129,73 @@ OS-3h makes acceptance explicit:
 - **Mutants.** `scripts/mutation/desktop-wiring.mjs` grows over the new main modules: start order, `cwd`, environment, the guard first, `on` not `once`, shutdown order and the refusals. Each test file lists its mutants.
 - **Smoke.** The existing window and boundary tests stay green. A smoke check shows the daemon reaches ready, answers over its control channel, and exits cleanly on quit.
 
-## 5. Slice 3.2 in outline
+## 5. Slice 3.2: renderer connect and window lifetime (contract)
 
-- The `axis:connect` handler runs `checkAppSender` before it parses its payload, as `registerOpenExternal` does. `axis:terminalPort` gets the same check and then a closed refusal: the terminal data broker is DC-3b's.
-- `ConnectBroker`'s rate limit and identity, and the `MessageChannelMain` hand-over.
-- `window.gone`, sent through `daemon-host/src/main`, when a window is destroyed, when its renderer dies, and when its main frame starts a navigation (a reload included), before the new document can connect. A test proves that once `window.gone` is sent, the old document's `axis:connect` is refused, so nothing from it joins the new lifetime. This is a precondition of PV-K2 condition 6.
-- Per-window state pruned on `closed`: rate buckets, in-flight actions, a waiting dialog, the binding slot and the status.
-- `native.confirm` with the acceptance rules:
-  - Cancel is the default on every OS, and focus returns to the window afterwards.
-  - One dialog per window, and closing the window cancels it.
-  - Main never destroys a GTK dialog's window from outside. Linux tests without a window manager close dialogs with `WM_DELETE_WINDOW`.
-  - On macOS a dialog is a sheet per window.
-- The orphaned openExternal confirmation is aborted when its window closes.
-- `trust.check` answered as "the window is live" AND the daemon's own trust record agrees: liveness alone never grants (the daemon's gate keeps T1, the repository and worktree binding, and T4).
+Built test-first on `feat/os-3-2-connect`. If it grows large it is reviewed in two slices: **3.2a** (the handlers, the epochs, the pruning and the answers) and **3.2b** (the native dialog queue).
+
+**Sender first, on every channel.** Every `ipcMain` handler (`axis:connect`, `axis:projectAction`, `axis:terminalPort`, and `axis:openExternal` as already) runs the registry's sender check before it parses anything. A sender that fails gets **nothing back**: no reply at all.
+
+**The document, not just the window** (the plan review's condition 1).
+- The registry records, for each app window, the identity of its CURRENT main-frame document: the frame's process id and routing id, taken at `did-navigate` of the main frame.
+- A request whose `senderFrame` is not that document's frame is refused as `stale_document` before parsing. Its window's epoch is not read for it.
+- So a connect from an old document that is still in flight after a reload began can never be attributed to the new epoch.
+
+**Epochs**, as agreed with DC-3b:
+- Each window has an epoch, a safe integer from 1. `registry.epochOf(windowId)` reads it, and is undefined for an unknown or gone window.
+- On `destroyed`, `render-process-gone`, or a main-frame `did-start-navigation` that is not same-document (reloads included), main ends the epoch: it bumps it, forgets the current document, and sends the daemon `window.gone { windowId, epoch }` with the epoch that just ENDED. A same-document navigation keeps the document, which then fails the exact-URL check anyway.
+- The connect identity main signs (`MainWindowIdentity`) carries the current epoch. The daemon binds what it hands out to `{ windowId, epoch }` and refuses an epoch at or below the last `window.gone` it saw for that window.
+- `window.gone` and the identity schema gain the field strictly: the old shapes are refused.
+
+**The connect.**
+- `ConnectBroker` is adapted, not pasted: a `connectApp(windowId, nonce)` path skips the Code OSS sender check and workbench URLs (the registry did that), and keeps the nonce check, the per-window rate limit, the window bound and the identity minting.
+- `windowTrusted` goes: the identity carries `trusted: false`, as OS-3b decides.
+- One `MessageChannelMain` per connect. The daemon end goes in the signed `connect`; the renderer end goes to that sender only, as `axis:connectResult { nonce, pty }` with the port.
+- A refusal answers `{ nonce, error }` with a closed reason. A supervisor that stopped for good maps to `stopped_lock_held` and the like.
+- `pty` is `"ok"`, `"handover_failed"` or `"unavailable"`: **informational, display only.** No daemon code and no authority decision reads it.
+
+**Per-window pruning on `closed`:** the registry entry and its document, the epoch, the rate bucket, the openExternal opener's slot, and the native queue's waiting dialog (aborted).
+
+**`native.confirm`** (3.2b).
+- `dialog.showMessageBox(win, { type: "warning", message: <fixed>, detail, buttons: ["Cancel", "Confirm"], defaultId: 0, cancelId: 0, noLink: true, signal })`.
+- `detail` is the daemon's summary, **re-sanitised by main** whatever the daemon claims (condition 2): control, bidirectional and format characters removed, whitespace collapsed, and truncated to 192 characters.
+- The signal aborts on the challenge's expiry and on the window's close. Main never destroys a dialog's window from outside (GTK).
+- One dialog per window; it is modal on that window, a sheet on macOS.
+- The orphaned openExternal confirmation is aborted the same way on close.
+
+**`trust.check` is "the window is live"** (condition 3): true only for a registered, live app window. **It is not an authorization.** The daemon's own gate still requires T1, the repository and worktree binding, and T4. The window the daemon trusts is the one in the identity main signs, never a value a renderer sends.
+
+**Closed refusals until their tickets:**
+- `axis:terminalPort` answers `{ nonce, error: "not_available" }` until DC-3b;
+- `axis:projectAction` does the same until OS-3b.
+
+Both run the sender check first: a bad sender gets nothing, and a good sender gets the refusal (condition 5).
+
+**When the daemon cannot run** (its supervisor ended `lock_held`, or any other final failure), main stops its own pty process, which has nobody to serve.
+
+**Tests**
+- Unit tests with fakes:
+  - each handler's sender check comes before any parse (a spy on the parser);
+  - a bad sender gets no reply;
+  - the refusals' exact shape;
+  - `connectApp`'s nonce, rate limit and identity, the epoch included;
+  - the epoch bump on each of the three events, and none on a same-document navigation;
+  - the stale-document refusal with fake frames that differ in routing id, dispatched after the navigation started;
+  - the pruning, each item;
+  - the dialog options exactly (Cancel the default and the cancel answer, the button order, no link);
+  - a hostile summary (bidirectional, control, over-long) re-sanitised;
+  - the abort on expiry and on close, and never a window destroy;
+  - `trust.check` true only for a live window;
+  - the `pty` field.
+- Schema tests: `window.gone` with its epoch and the identity's epoch, both strict, and the daemon's verifier.
+- Real Electron (smoke style, no window manager on CI):
+  - a real renderer connects and speaks over its port;
+  - after a reload the old document's connect is refused and the new one is served;
+  - `forcefullyCrashRenderer()` sends `window.gone`;
+  - `terminalPort` and `projectAction` are refused;
+  - a `native.confirm` dialog is open when main closes the window, which cancels it ("closing the window cancels it").
+- **The tier-4 end-to-end:** before launch, a seeding tool under `testing/` runs daemon-host's own composition offline to register and trust a fixture repository in a fresh data directory. It uses a throwaway key, never a real attestation key, and is never imported by main. The bundle test proves no `testing/` path reaches `main.cjs`. Then a real renderer starts a tier-4 operation that reaches `native.confirm`, so a false trust answer cannot make it pass.
+- **Mutants** for every handler order, epoch step, pruning item and dialog option, run by the CI mutation job.
+- macOS and Windows dialog behaviour (the sheet, focus return) stays unverified until OS-21's jobs.
 
 **Slice 3.2 and OS-3p must also prove**, from the OS-3h review: a real shell survives a confirmed hand-over and ends on a replacement; a SIGKILL teardown ends the shell's process group; a hand-over retry during a live terminal behaves as §3a says; and the hand-over state, the `handover_failed` and `pty_unavailable` end states included, is shown to the renderer.
 

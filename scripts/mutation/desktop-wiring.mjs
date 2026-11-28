@@ -65,6 +65,6 @@ const M = [
   ["s", "S19 the hold never released", "            if (ptyHeld) {\n                ptyHeld = false;\n                queueMicrotask(() => pty.resume());\n            }", ""],
   ["s", "S19 a failed pty process leaves the daemon waiting", "            if (pty.state() === \"failed\") {", "            if (false) {"],
   ["s", "S20 the window always open", "firstMessage[side] ||", "true ||"],
-  ["s", "S20 the pty instance unchecked", "if (from !== ptyFork)", "if (false)", "defence in depth: an old pty instance's listener is removed on its exit, and the hand-over also checks the instance (A9)"],
+  ["s", "S20 the pty instance unchecked", "if (from !== ptyFork)", "if (false)", "defence in depth: the real defence is that an old pty instance's answer listener is removed on its exit, so it can never deliver an answer"],
 ];
 runMutants({ root, files: F, tests: T, mutants: M });
