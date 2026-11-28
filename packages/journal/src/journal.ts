@@ -1,4 +1,5 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
+import { IndexLockRecords } from "./index-lock-store.js";
 import { randomUUID } from "node:crypto";
 import { AuditLog, AxisError, InstanceLock, type AuditActor, runMigrations, withTransaction, type DatabaseSync } from "@axis/audit";
 import { z } from "zod";
@@ -82,6 +83,7 @@ export class Journal {
   readonly plugins: PluginGrantRecords; // plugin enablement and grants (schema v16, PV-K1b)
   readonly cliEndpoint: CliEndpointSwitchRecords; // the CLI messaging endpoint switch (schema v20, PV-M7 slice 2)
   readonly pluginIssues: PluginIssueRecords; // the plugin challenge counter (schema v17, PV-K1e-a2)
+  readonly indexLocks: IndexLockRecords; // the index locks Axis holds, for the startup sweep (schema v21, DC-0b)
 
   private constructor(db: DatabaseSync, options: JournalOptions) {
     this.#db = db;
@@ -98,6 +100,7 @@ export class Journal {
     this.plugins = new PluginGrantRecords(db, this.#audit, () => this.#ts());
     this.cliEndpoint = new CliEndpointSwitchRecords(db, this.#audit, () => this.#ts());
     this.pluginIssues = new PluginIssueRecords(db);
+    this.indexLocks = new IndexLockRecords(db, () => this.#ts());
   }
 
   /** Migrate the schema and return a journal. On daemon start take the instance lock, then call `recover(lock)`. */

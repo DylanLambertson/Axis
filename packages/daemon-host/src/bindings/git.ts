@@ -15,6 +15,7 @@ import {
   type GitRunner,
   type GitRunRequest,
   type GitRunResult,
+  type IndexLockLedger,
   type WorktreeRef,
 } from "@axis/git-ops";
 import { SecretScanError, type SecretScanner } from "@axis/secret-scan";
@@ -60,6 +61,8 @@ export interface GitBindingDeps {
   readonly emptyHooksDir?: string;
   readonly fileExists?: (path: string) => boolean | Promise<boolean>;
   readonly timeoutMs?: number;
+  /** Where the post-commit index refresh records the lock it holds (DC-0b): the journal's `indexLocks`. */
+  readonly indexLockLedger?: IndexLockLedger;
 }
 
 function unavailable(): Promise<GitRunResult> {
@@ -128,6 +131,7 @@ export function createGitPort(deps: GitBindingDeps): GitPort {
     platform: deps.platform,
     ...(deps.emptyHooksDir === undefined ? {} : { emptyHooksDir: deps.emptyHooksDir }),
     ...(deps.fileExists === undefined ? {} : { fileExists: deps.fileExists }),
+    ...(deps.indexLockLedger === undefined ? {} : { indexLockLedger: deps.indexLockLedger }),
   };
   return port;
 }

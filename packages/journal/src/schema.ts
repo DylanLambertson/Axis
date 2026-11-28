@@ -12,6 +12,7 @@ import { PLUGIN_ISSUES_MIGRATION } from "./schema-plugin-issues.js";
 import { CLI_ACK_MIGRATION } from "./schema-cli-ack.js";
 import { TASKS_KEEP_USER_MIGRATION } from "./schema-tasks-keep.js";
 import { CLI_ENDPOINT_SWITCH_MIGRATION } from "./schema-cli-endpoint.js";
+import { INDEX_LOCKS_MIGRATION } from "./schema-index-locks.js";
 
 /**
  * Journal schema, versioned in `axis_schema` under component `journal`.
@@ -31,6 +32,7 @@ export const JOURNAL_MIGRATIONS: readonly Migration[] = [
   CLI_ACK_MIGRATION,
   TASKS_KEEP_USER_MIGRATION,
   CLI_ENDPOINT_SWITCH_MIGRATION,
+  INDEX_LOCKS_MIGRATION,
 ];
 
 export const JOURNAL_SCHEMA_VERSION = JOURNAL_MIGRATIONS.length;
