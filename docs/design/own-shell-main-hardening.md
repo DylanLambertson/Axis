@@ -59,6 +59,18 @@ Measured on Linux (WSLg, X11), with probe apps on the pinned runtime in developm
 - Feed real `protocol.handle` request URLs through the handler (Chromium canonicalises the standard scheme before main sees it).
 - For OS-3: each forked file imports the signal guard (`@axis/daemon-host/signal-guard`, `@axis/pty-process/signal-guard`, audit C follow-up) as its one static import and loads the entry with `import()`; each package's `testing/process-main-child.ts` shows the shape. Measured under load, the guard still leaves a narrow band right after spawn in which a `SIGUSR1` can open the inspector, so the `EnableNodeCliInspectArguments` fuse (OS-21) stays the control for packaged builds.
 - For OS-3: `window.gone` on navigation uses `did-start-navigation` (`will-navigate` does not fire on a reload or an in-page change); the fork's working directory is main's choice.
+- Done in the second PR: `smoke/boundary.test.mjs` (display needed, not in the gate, like the window smoke test) runs the unpackaged app with `AXIS_DESKTOP_SMOKE=boundary` and checks:
+  - no network: `fetch` to https, loopback and the app itself, WebSocket and a remote image;
+  - CSP: no `data:` image, no inline script, no `eval`;
+  - no app subframe, and no `axis` global reachable through one;
+  - `window.open` denied;
+  - a copy works, while paste and geolocation are refused;
+  - the frozen `axis` global with its four functions, and no Node in the page;
+  - EL-5 refusals over IPC;
+  - navigation away (https, another app page, `file:`) leaves the window on `APP_URL`;
+  - an unregistered second window on the same session, preload and URL gets `no_window`.
+  The smoke hooks run only in an unpackaged build.
+- Bundle size: `main.cjs` is about 1.2 MB, because main imports `axisDataRoots` from the `@axis/daemon-host` entry, which pulls in the whole package. OS-3 needs the package in main anyway (the supervisor and the `src/main/` answers). It then adds a narrow subpath export for main's modules, rather than relying on tree-shaking of the package entry, and checks main's bundle inputs in `test/bundle.test.mjs`. No lazy `import()`: main needs the data roots before `ready`.
 - Later: an openExternal rate limit per window (dialog fatigue), and refusing or flagging loopback and private-address `http(s)` hosts.
 
 **Not verified yet:** macOS and Windows (the G-28 timing and the fuses above all), and a real copy in Monaco and xterm.js inside the shell. They are checked with the packaged builds (OS-21) and the editor and terminal tickets.

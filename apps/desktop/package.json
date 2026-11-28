@@ -14,7 +14,7 @@
     "bundle": "node scripts/bundle.mjs",
     "notices": "node scripts/notices.mjs --write",
     "test": "tsc -b && node --test \"dist/tsc/test/**/*.test.js\" \"test/**/*.test.mjs\"",
-    "smoke": "node scripts/bundle.mjs && node --test \"smoke/*.test.mjs\""
+    "smoke": "node scripts/bundle.mjs && node --test --test-concurrency=1 \"smoke/*.test.mjs\""
   },
   "dependencies": {
     "@axis/daemon-host": "0.0.0",

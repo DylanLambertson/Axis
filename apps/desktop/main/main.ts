@@ -5,14 +5,16 @@ import { app, BrowserWindow, dialog, ipcMain, nativeTheme, protocol, session, sh
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { axisDataRoots } from "@axis/daemon-host";
-import { APP_PARTITION, WindowRegistry, createExternalOpener, hardenWebContents, type DesktopPlatform } from "@axis/desktop-main";
+import { APP_PARTITION, APP_URL, WindowRegistry, createExternalOpener, hardenWebContents, type DesktopPlatform } from "@axis/desktop-main";
 import { hardenAppSession, openAppWindow, prepareBeforeReady, refuseDebugging, registerOpenExternal, type AppSessionLike, type HardeningEvent } from "./hardening.js";
 import { mainWindowOptions } from "./window.js";
 import { PAGE_PROBE, smokeLine, smokeReport } from "./smoke.js";
+import { BOUNDARY_MARKER, runBoundaryProbe } from "./boundary-probe.js";
 
 const PLATFORM = process.platform as DesktopPlatform;
 const PACKAGED = app.isPackaged;
-const SMOKE = process.env.AXIS_DESKTOP_SMOKE === "1";
+/** The smoke hooks ("1": mount report; "boundary": the boundary probe) run in an unpackaged build only. */
+const SMOKE = PACKAGED ? "" : (process.env.AXIS_DESKTOP_SMOKE ?? "");
 
 /** Closed events only (no URL, path or value); written in development builds. */
 function log(event: HardeningEvent): void {
@@ -74,13 +76,23 @@ async function ready(): Promise<void> {
     onEvent: log,
   });
   windows.set(id, win);
-  if (!SMOKE) return;
-  const report = await smokeReport({
-    title: () => win.getTitle(),
-    probe: () => win.webContents.executeJavaScript(PAGE_PROBE, false) as Promise<unknown>,
-    wait: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
-  });
+  if (SMOKE !== "1" && SMOKE !== "boundary") return;
+  const wait = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+  const report = await smokeReport({ title: () => win.getTitle(), probe: () => win.webContents.executeJavaScript(PAGE_PROBE, false) as Promise<unknown>, wait });
   process.stdout.write(`${smokeLine(report)}\n`);
+  if (SMOKE === "boundary") {
+    win.focus(); // the clipboard write needs a focused document
+    const result = await runBoundaryProbe({
+      app: win,
+      unregistered: async () => {
+        const second = new BrowserWindow({ ...mainWindowOptions(dir, "dark", PACKAGED), show: false });
+        await second.loadURL(APP_URL);
+        return second;
+      },
+      wait,
+    });
+    process.stdout.write(`${BOUNDARY_MARKER} ${JSON.stringify(result)}\n`);
+  }
   app.exit(report.mounted && !report.nodeInPage ? 0 : 1);
 }
 
