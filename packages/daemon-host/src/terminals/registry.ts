@@ -1,5 +1,5 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
-import { MAX_TERMINALS_PER_WORKSPACE, terminalIdSchema, type Terminal } from "@axis/protocol";
+import { MAX_PLAIN_TERMINALS, MAX_TERMINALS_PER_WORKSPACE, terminalIdSchema, type Terminal } from "@axis/protocol";
 import { isDefinitiveSpawnFailure, type PtyLateSpawn, type PtyTerminalHandle, type PtyTerminalPort } from "../ports/pty.js";
 import type { TrustRevocation } from "../ports/trust.js";
 
@@ -68,6 +68,8 @@ export interface TerminalRegistryDeps {
   /** Only `revoke` is used here: the grant is the service's, after `attachable`. */
   readonly port: Pick<PtyTerminalPort, "revoke">;
   readonly maxPerWorkspace?: number;
+  /** Plain terminals in the whole host (default `MAX_PLAIN_TERMINALS`, 16). */
+  readonly maxTotal?: number;
 }
 
 /** True while the group may have a process: a throw counts as alive (fail closed). */
@@ -79,6 +81,9 @@ function alive(h: PtyTerminalHandle | undefined): boolean {
     return true;
   }
 }
+
+/** A subject id as the journal and the protocol give them; anything else cannot be mapped. */
+const readable = (id: unknown): boolean => typeof id === "string" && /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(id);
 
 function validHandle(h: unknown): h is PtyTerminalHandle {
   if (typeof h !== "object" || h === null) return false;
@@ -102,12 +107,14 @@ function validHandle(h: unknown): h is PtyTerminalHandle {
 export class TerminalRegistry {
   readonly #port: Pick<PtyTerminalPort, "revoke">;
   readonly #max: number;
+  readonly #maxTotal: number;
   readonly #charges = new Set<Charge>();
   readonly #recs = new Map<string, Rec>();
 
   constructor(deps: TerminalRegistryDeps) {
     this.#port = deps.port;
     this.#max = deps.maxPerWorkspace ?? MAX_TERMINALS_PER_WORKSPACE;
+    this.#maxTotal = deps.maxTotal ?? MAX_PLAIN_TERMINALS;
   }
 
   /** Reserves a plain-terminal slot in `workspaceId`, or `undefined` when its slots are all charged. */
@@ -115,7 +122,7 @@ export class TerminalRegistry {
     this.sweep();
     let used = 0;
     for (const c of this.#charges) if (c.workspaceId === workspaceId) used++;
-    if (used >= this.#max) return undefined;
+    if (used >= this.#max || this.#charges.size >= this.#maxTotal) return undefined; // per workspace, then host-wide
     const c: Charge = { workspaceId, projectId, handle: undefined, abandoned: false, unknown: false, settled: false, windows: { ids: new Set(windowId === undefined ? [] : [windowId]), any: false } };
     this.#charges.add(c);
     return c;
@@ -265,6 +272,8 @@ export class TerminalRegistry {
   revoked(event: TrustRevocation): RevokeOutcome[] {
     const reached = (x: { readonly workspaceId: string; readonly projectId: string; readonly windows: Windows }): boolean => {
       if (event.kind === "all") return true;
+      // Review nit 4: a record whose subjects cannot be read counts as reached by every revoke (fail closed).
+      if (!readable(x.workspaceId) || !readable(x.projectId)) return true;
       if (event.kind === "subject") return x.workspaceId === event.id || x.projectId === event.id;
       return x.windows.any || x.windows.ids.has(event.windowId);
     };

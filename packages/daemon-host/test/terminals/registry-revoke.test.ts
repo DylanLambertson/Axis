@@ -128,3 +128,9 @@ test("shutdown: pending opens abandoned, live plain terminals closed (revoked, k
   assert.equal(r.reg.publish(pending, new FakeHandle()), undefined);
   assert.deepEqual(run.kills, []);
 });
+
+test("review nit 4: a record whose subjects cannot be read is reached by every revoke (fail closed)", () => {
+  const r = rig();
+  const odd = r.open("ws/../x", "p1", "w1"); // no journal id has this shape
+  assert.deepEqual(r.reg.revoked({ kind: "subject", id: "unrelated" }).map((o) => o.terminalId), [odd.id]);
+});

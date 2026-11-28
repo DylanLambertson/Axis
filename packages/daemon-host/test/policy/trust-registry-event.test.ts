@@ -47,35 +47,46 @@ test("a full table refusing a GRANT notifies nothing", () => {
   assert.equal(n, 0);
 });
 
-test("a nested set during a dispatch (grant or revoke) is refused and records nothing; the outer revoke stands", () => {
+test("review nit 1: a nested REVOKE is queued and recorded right after the dispatch (never dropped); a nested GRANT is refused", () => {
   const reg = new InMemoryTrustRegistry();
   const refused: string[] = [];
-  let depth = 0; // the listener tries nested sets on its first call only, so a registry that let them through cannot recurse forever
-  reg.onRevoked(() => {
+  const heard: string[] = [];
+  let depth = 0; // nested sets on the first call only, so a registry that recursed could not loop forever
+  reg.onRevoked((e) => {
+    heard.push(e.kind === "window" ? e.windowId : e.kind);
     if (depth++ > 0) return;
-    for (const trusted of [true, false]) {
-      try {
-        reg.set({ windowId: "w1" }, trusted);
-      } catch (e) {
-        refused.push(`${trusted}:${(e as Error).name}`);
-      }
-    }
     try {
-      reg.set({ windowId: "other" }, false);
-    } catch {
-      refused.push("other");
+      reg.set({ windowId: "w1" }, true); // a grant would overtake the revoke being delivered: refused
+    } catch (err) {
+      refused.push((err as Error).name);
     }
+    reg.set({ windowId: "other" }, false); // a revoke lowers authority: queued, not dropped
+    assert.equal(reg.isRevoked({ windowId: "other" }), false, "not yet recorded inside the dispatch");
   });
   let later = 0;
-  reg.onRevoked(() => void (later++, assert.equal(reg.isRevoked({ windowId: "w1" }), true, "the next listener still sees the revoke")));
+  reg.onRevoked(() => void (later++, assert.equal(reg.isRevoked({ windowId: "w1" }), true, "the grant did not overtake")));
   reg.set({ windowId: "w1" }, false);
-  assert.deepEqual(refused, ["true:RangeError", "false:RangeError", "other"]);
-  assert.equal(later, 1, "no recursion: each listener heard one event");
-  assert.equal(depth, 1, "the first listener was not re-entered");
+  assert.deepEqual(refused, ["RangeError"]);
   assert.equal(reg.isRevoked({ windowId: "w1" }), true);
-  assert.equal(reg.isRevoked({ windowId: "other" }), false, "the nested revoke recorded nothing");
-  reg.set({ windowId: "w2" }, false); // after the dispatch, sets work again
-  assert.equal(reg.isRevoked({ windowId: "w2" }), true);
+  assert.equal(reg.isRevoked({ windowId: "other" }), true, "the nested revoke was recorded after the dispatch");
+  assert.deepEqual(heard, ["w1", "other"], "and dispatched in its own turn, after the first completed");
+  assert.equal(later, 2);
+});
+
+test("review nit 1: the queue is bounded; overflowing it latches the registry saturated (fail closed) and notifies all", () => {
+  const reg = new InMemoryTrustRegistry();
+  const heard: string[] = [];
+  let first = true;
+  reg.onRevoked((e) => {
+    heard.push(e.kind);
+    if (!first) return;
+    first = false;
+    for (let i = 0; i < 100; i++) reg.set({ windowId: `n${i}` }, false);
+  });
+  reg.set({ windowId: "w1" }, false);
+  assert.equal(reg.saturated, true);
+  assert.ok(heard.includes("all"));
+  assert.equal(reg.isRevoked({ windowId: "anything" }), true);
 });
 
 test("listeners are a snapshot: one added during a dispatch hears the next event; one disposed before its turn is skipped", () => {

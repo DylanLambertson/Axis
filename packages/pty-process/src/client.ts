@@ -265,6 +265,9 @@ export function createPtyProcessPort(options: PtyProcessPortOptions): PtyProcess
    * leader lives. Once the leader is known to have exited, a process now holding that pid means the id may be another group's, and
    * an answer that cannot be had counts the same: not ours to signal. The pty process ends its own groups when its channel closes.
    */
+  // Residual (DC-3c code review nit 5; terminal-trust-revocation.md 6.3): the /proc read and the signal are not atomic, so in the few
+  // microseconds between them the pid could be reused as a new group id. Accepted: improbable, same user, and the pty process ends
+  // its own groups when its control channel closes. A pidfd taken at spawn would close it (not built).
   const owned = (t: Term): boolean => {
     if (t.group.kind !== "pgid") return false;
     if (t.exit === undefined) return true;

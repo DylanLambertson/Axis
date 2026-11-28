@@ -49,7 +49,7 @@ import type { PtyExecPort, PtyForgePort, PtyPort, PtyPushPort } from "./ports/pt
 import type { ChannelMux } from "./transport/mux.js";
 import { createEgressClient, type EgressClient } from "./net/egress-client.js";
 import type { SecretBackend } from "./bindings/integrations.js";
-import { composeTerminals, installTerminals, recordRunTerminals, runScope, withTerminalFanOut, type HostTerminals } from "./terminals/compose.js";
+import { composeTerminals, installTerminals, recordRunTerminals, runScope, withTerminalFanOut, type HostTerminals, type TerminalDataBroker } from "./terminals/compose.js";
 
 /**
  * The composition root (ticket H12, design section 3 steps 10 and 11, plan section 1 and questions 18 and 19). It is the one
@@ -118,6 +118,8 @@ export interface ComposeOptions {
   readonly observeWindowLifetimes?: (lifetimes: Pick<WindowLifetimes, "current" | "status">) => void;
   /** TEST ONLY observer (DC-3c): the composed terminals, when there are any. It can watch them; it cannot add any path to them. */
   readonly observeTerminals?: (terminals: HostTerminals) => void;
+  /** DC-3b's data-port broker attestation: only DC-3b's broker makes one; without it `axis.terminals/1` is not served. */
+  readonly terminalDataBroker?: TerminalDataBroker;
   /** TEST ONLY: sees whether the composer binding was given the WT-2 guard (review c3 r1 N-6). */
   readonly observeAgent?: (agent: { readonly commands: boolean; readonly gitReads: boolean; readonly commandLimits: CommandLimits }) => void;
   /** TEST ONLY: sees the `agentOf` the messaging binding was given (PV-G4: it knows no run unless `messaging.enabled`), the CLI endpoint path's own lookup and whether its relay was wired (PV-M7 slice 2: the user's switch alone decides both). */
@@ -166,7 +168,7 @@ export function composeDaemonHost(options: ComposeOptions): ComposedHost {
   if (typeof commandBounds === "string") refuseComposition(commandBounds);
   const { control, pty } = options;
   // DC-3a/DC-3c: terminals only with all four pty parts and a trust registry with onRevoked (fixed here); otherwise not served.
-  const { terminals, config, ports } = composeTerminals(options.config, options.ports, pty, options.observeTerminals);
+  const { terminals, config, ports } = composeTerminals(options.config, options.ports, pty, options.observeTerminals, options.terminalDataBroker);
   const snapshotterFactory = options.snapshotter;
   const logger: Logger | undefined = ports.logger;
   const scanner = createSecretScanner({ mode: options.scanMode ?? "refuse" });

@@ -224,7 +224,7 @@ export function registerServing(registrar: HandlerRegistrar, services: HostServi
   // all four terminal-port parts AND the installed, active routing. Served without handlers fails the coverage check: exit 70.
   const terms = ctx.terminals;
   if (terms !== undefined && services.served.includes(TERMINALS_CONTRACT)) {
-    registerTerminalsServing(registrar, terms.port, ctx.terminalRouting, (port) => ({
+    registerTerminalsServing(registrar, terms.port, ctx.terminalRouting, terms.broker, (port) => ({
       registry: terms.registry, port, journal, locator: worktrees.locator, belongs: (w, c) => worktreeBelongs(w, c), gate, trust: services.trust, mutex: worktrees.mutex, needsAttention: worktrees.needsAttention,
       shell: () => pickShell({ env: ports.env, platform: config.platform }), env: () => plainTerminalEnv(ports.env, config.platform), now: () => ports.clock.monotonic(), audit: (e) => (audit.append(e), services.anchors.noteWrite()),
     }));

@@ -25,10 +25,11 @@ The registry has no project identity and no event. This note adds both, as far a
 - **Saturation:** a revoke that latches the registry saturated sets the latch, then notifies `{ kind: "all" }`, then throws its `RangeError` as today. Every subject is then revoked (the registry's existing rule), so every terminal is affected.
 - **Grants do not fire.** A grant never ends anything.
 - **The registry's state is changed first,** so a listener that reads `isRevoked` sees the revoke.
-- **Re-entrancy (review 1 S1): refused.**
-  - A `set` called while listeners are being notified throws (`RangeError`), records nothing, and notifies nothing.
-  - So a grant cannot overtake the revoke being delivered, and a listener that revokes again cannot recurse.
-  - No daemon listener calls `set`. The supervisor's `trust.set` arrives from the event loop, never inside a dispatch, so this refusal is reachable only by a bug.
+- **Re-entrancy (review 1 S1; the code review's nit 1): a grant is refused, a revoke is deferred.**
+  - A GRANT asked for while listeners are being notified throws (`RangeError`) and records nothing, so it cannot overtake the revoke being delivered.
+  - A REVOKE asked for then is never dropped (dropping it would fail open). It is queued and, right after the current dispatch completes, recorded and dispatched in its own turn, so nothing recurses.
+  - The queue holds at most 32. One more latches the registry saturated (every subject revoked) and delivers `all` right after the dispatch: fail closed.
+  - No daemon listener calls `set`. The supervisor's `trust.set` arrives from the event loop, never inside a dispatch, so this path is reachable only by a bug.
 - **The listener list:**
   - dispatch takes a snapshot of the listeners when it starts, in registration order;
   - a listener added during a dispatch first hears the next event;
@@ -43,6 +44,9 @@ The registry has no project identity and no event. This note adds both, as far a
 A terminal's record (DC-3a section 4) gains the trust subjects it was reached through, set before the dispatch for a pending open:
 - `workspaceId` and `projectId`, fixed at open (a CLI run's terminal: its run's);
 - **windows:** the window of the connection that opened it, and the window of every connection that attached it.
+  - A CLI run's terminal has no opening window: the run supervisor starts it, not a window (the code review's nit 2).
+  - Its windows are the ones that attach it. That covers every grant, because a grant exists only through `attach`, which records the window before granting.
+  - A subject revoke reaches it by its workspace or project in any case.
 
 The registry's subject ids are not typed: the gate checks `s:<workspaceId>`, and a plugin's rule checks `s:<projectId>`. A subject revoke is global: one recorded through window B reaches window A's terminal in the same workspace.
 
@@ -54,7 +58,7 @@ The registry's subject ids are not typed: the gate checks `s:<workspaceId>`, and
 
 **The mapping fails closed when it saturates.**
 - At most 8 windows are kept per terminal. A ninth attach marks the terminal `anyWindow`, and any window revoke then reaches it.
-- A record whose subjects cannot be read (a malformed id) counts as reached by every revoke.
+- A record whose subjects cannot be read (an id not of the journal's shape) counts as reached by every revoke. This is implemented in the scan, though the journal and the protocol never produce such an id.
 
 **What is never a reason to skip:** an unknown terminal kind, a record missing from one index, or a listener that threw earlier. The routing scans the registry itself (at most 8 plain terminals per workspace, and the runs' terminals), so no secondary index can disagree with it.
 
@@ -99,9 +103,14 @@ The gate itself is unchanged. Its other callers' scope is not this note's to wid
 
 - **`installTerminalRevocationRouting(trust, registry)`** registers the listener on the composed registry's `onRevoked`. It returns an owned **`TerminalRevocationRouting`** with `active(): boolean` and `dispose()`.
 - **`active()` attests to the installed subscription itself:** it is true only between a successful registration and `dispose()`, and `dispose()` removes the listener. It is not an enable flag. A registry without `onRevoked` gives no routing object at all.
-- **One predicate, `terminalsServable(port, routing)`,** used by production, by the default composition and by every injected test composition. It requires:
+- **One predicate, `terminalsServable(port, routing, broker)`,** used by production, by the default composition and by every injected test composition. It requires five parts:
   - the terminal port's four parts (`PtyTerminalPort` in `ports/pty.ts`, merged with DC-3a's daemon side): `spawn(spec, onLate?)`, `grantTerminal(terminalId, conn)`, `revoke(terminalId)`, and `lateSpawnReports`;
-  - `routing?.active() === true`.
+  - `routing?.active() === true`;
+  - **DC-3b's data-port broker attestation** (decided with DC-3c's code review): a `TerminalDataBroker` (`ports/terminal-broker.ts`, `readonly dataBroker: true`).
+    - Main hands this capability object to the composition when it brokers the pty process's data ports: it mints each connection's name for the window that asked, and checks the sender.
+    - Without it no data connection can reach a terminal, so an opened shell could never be viewed. It would only run the shell's start-up files with nobody watching, and could fill the pty process's shared bound.
+    - So `composeTerminals` drops `axis.terminals` from what the host serves until a broker exists, exactly as for a port without its parts. The registry, the routing, the run wrapper and the guards still run.
+    - It is a capability object, never a configuration flag. Only DC-3b makes one.
 
   The host advertises `axis.terminals/1`, holds its policy rows, and registers its handlers only when the predicate holds. Each handler checks `routing.active()` again per call, and answers `not_found` once the routing is disposed.
 - **Tested distinctly:**
@@ -139,6 +148,17 @@ DC-3a's daemon side forwards all of them through the control slot (`bindings/pty
   - it is never published or granted. The daemon's own revoke is required whatever the client does;
 - a lost channel, or an evicted late callback with no authoritative outcome, keeps the slot charged.
 
+### 6.3 Residual: the reused-group check (the code review's nit 5)
+
+The pty client signals a tracked group by its id only while the id is ours: its leader has not exited, or the leader's pid is free (`/proc/<pid>` on Linux; elsewhere it is not signalled).
+- **The window:** between that read and the signal, the pid could be taken by a new process that makes it a group id. On Linux this is the only check.
+- **Why it is accepted:** the window is a few microseconds, at dispose or once the pty process is gone. Pid reuse in that window is improbable, and the process would be the same user's. The pty process ends its own groups when its control channel closes anyway.
+- **What would close it:** a pidfd for the leader (Linux), taken at spawn, would remove the window. It is not built.
+
+### 6.4 A host-wide bound
+
+At most **16 plain terminals** exist in the whole host, pending and live together (`MAX_PLAIN_TERMINALS`), besides the 8 per workspace. A plain terminal and a CLI run, a hook or a push all count against the pty process's own bound of 64. A flood of opens across many workspaces therefore stops at 16, leaving CLI runs and pushes their headroom. The refusal is `too_many_terminals`, as for a full workspace.
+
 ## 7. Every authority-loss event (review 1 S2)
 
 | Event | Owner | Pending open | Live plain terminal | A CLI run's terminal | Slots and late answers |
@@ -167,7 +187,7 @@ DC-3a's daemon side forwards all of them through the control slot (`bindings/pty
   - fires on saturation as `all`, before the throw, filling the real 4096-entry registry through control;
   - grants do not fire;
   - a throwing listener changes neither the record nor the other listeners;
-  - a nested `set` (grant or revoke) during dispatch is refused and records nothing;
+  - a nested grant during dispatch is refused and records nothing; a nested revoke is recorded and dispatched right after it; an overflowing queue latches saturation;
   - a listener added during dispatch hears only the next event, and one disposed during dispatch is skipped.
 - **Mapping:**
   - opener window, attaching window and a ninth attach (`anyWindow`);

@@ -18,6 +18,11 @@ export const TERMINALS_VERSION = 1 as const;
 
 /** At most this many plain terminals per workspace, pending and live together (contract section 4). */
 export const MAX_TERMINALS_PER_WORKSPACE = 8;
+/**
+ * At most this many plain terminals in the whole host, pending and live together (DC-3c decision): well under the pty process's
+ * own bound (64), which CLI runs, hooks and pushes share, so a flood of opens across workspaces can never starve them.
+ */
+export const MAX_PLAIN_TERMINALS = 16;
 
 /** A terminal id is the pty process's: `pty_` and 32 lower-case hex characters. */
 export const terminalIdSchema = z.string().regex(/^pty_[0-9a-f]{32}$/);

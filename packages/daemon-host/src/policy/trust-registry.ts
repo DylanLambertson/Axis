@@ -3,6 +3,8 @@ import type { TrustRegistry, TrustRevocation, TrustRevocationSource, TrustSubjec
 
 /** Bound on remembered decisions. */
 export const MAX_TRUST_ENTRIES = 4096;
+/** Revokes a listener may queue during one dispatch (review nit 1); past it the registry latches saturated. */
+export const MAX_QUEUED_REVOKES = 32;
 
 const ID = /^[A-Za-z0-9._:-]{1,64}$/;
 
@@ -41,6 +43,9 @@ export class InMemoryTrustRegistry implements TrustRegistry, TrustRevocationSour
   /** DC-3c: the revocation listeners, in registration order; `live` is cleared by the disposer. */
   #listeners: Array<{ readonly fn: (r: TrustRevocation) => void; live: boolean }> = [];
   #dispatching = false;
+  /** Revokes asked for during a dispatch: recorded and dispatched right after it, in order (review nit 1). Bounded. */
+  #queued: TrustSubject[] = [];
+  #overflowed = false;
   readonly #onListenerError: (() => void) | undefined;
 
   constructor(options: { readonly onListenerError?: () => void } = {}) {
@@ -63,7 +68,10 @@ export class InMemoryTrustRegistry implements TrustRegistry, TrustRevocationSour
     };
   }
 
-  /** A snapshot of the listeners at the start; one disposed before its turn is skipped; each throw is caught on its own. */
+  /**
+   * A snapshot of the listeners at the start; one disposed before its turn is skipped; each throw is caught on its own. Then the
+   * revokes queued during it are recorded and dispatched, each in its own turn (a queued one may queue more, within the bound).
+   */
   #notify(revocation: TrustRevocation): void {
     const snapshot = this.#listeners;
     this.#dispatching = true;
@@ -78,6 +86,19 @@ export class InMemoryTrustRegistry implements TrustRegistry, TrustRevocationSour
       }
     } finally {
       this.#dispatching = false;
+    }
+    while (this.#queued.length > 0 && !this.#saturated) {
+      const next = this.#queued.shift() as TrustSubject;
+      try {
+        this.set(next, false);
+      } catch {
+        /* a full table latches saturation inside set, which notifies all */
+      }
+    }
+    this.#queued = [];
+    if (this.#overflowed) {
+      this.#overflowed = false;
+      this.#notify({ kind: "all" });
     }
   }
 
@@ -109,8 +130,20 @@ export class InMemoryTrustRegistry implements TrustRegistry, TrustRevocationSour
   }
 
   set(subject: TrustSubject, trusted: boolean): void {
-    // DC-3c: no decision is taken while a revoke is being delivered, so none can overtake it, and nothing recurses.
-    if (this.#dispatching) throw new RangeError("trust registry is notifying");
+    // DC-3c (review nit 1): while a revoke is being delivered, a GRANT is refused (it would overtake the revoke), and a REVOKE is
+    // queued and recorded right after the dispatch, never dropped. Past the bound the registry latches saturated: fail closed.
+    if (this.#dispatching) {
+      if (trusted !== false) throw new RangeError("trust registry is notifying");
+      if (levels(subject) === null) throw new RangeError("invalid trust subject");
+      if (this.#queued.length >= MAX_QUEUED_REVOKES) {
+        this.#saturated = true;
+        this.#queued = [];
+        this.#overflowed = true; // `all` is delivered right after this dispatch
+        return;
+      }
+      this.#queued.push(subject);
+      return;
+    }
     if (this.#saturated) throw new RangeError("trust registry is saturated");
     const keys = levels(subject);
     if (keys === null || typeof trusted !== "boolean") throw new RangeError("invalid trust subject");
