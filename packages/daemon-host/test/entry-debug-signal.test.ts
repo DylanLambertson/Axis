@@ -1,8 +1,9 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 // Audit C M1: `kill -USR1 <daemon>` makes Node open an unauthenticated inspector on 127.0.0.1:9229, from which any local user
-// could read every revealed credential in the heap. Two lines:
+// could read every revealed credential in the heap. Here, on plain Node:
 // - `--disable-sigusr1`, the one `execArgv` the entry accepts, holds from the first instruction: a signal at 5 ms or 300 ms after
-//   the fork, while the module graph is still loading, opens nothing (review 1 S1: a listener alone loses that window);
+//   the fork, while the module graph is still loading, opens nothing. Electron's utility process ignores the flag, so there
+//   the control is the guard the forked file installs before the graph loads (`process-main.test.ts`);
 // - the entry's own listener, installed first and never removed, holds once the entry runs, for a fork without the flag.
 // Detected by Node's stderr line and by a TCP connect to 9229 (skipped when the port is already taken). Not on Windows, where
 // `process._debugProcess(pid)` starts the inspector with no signal and no listener can stop it (RR-83).

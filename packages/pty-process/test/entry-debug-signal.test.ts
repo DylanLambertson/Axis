@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
-// Audit C M1 for the pty process: forked with `--disable-sigusr1` (the one accepted execArgv), a SIGUSR1 at 5 ms or 300 ms after
-// the fork opens no inspector; without the flag, the entry's listener keeps it closed once the entry runs. Detected by Node's
+// Audit C M1 for the pty process, on plain Node: forked with `--disable-sigusr1` (the one accepted execArgv), a SIGUSR1 at 5 ms or
+// 300 ms after the fork opens no inspector; without the flag, the entry's listener keeps it closed once the entry runs. Electron's
+// utility process ignores the flag: there the forked file's guard is the control (`process-main.test.ts`). Detected by Node's
 // stderr line and by a TCP connect to 9229 (skipped when the port is already taken). Not on Windows (RR-83).
 import assert from "node:assert/strict";
 import { fork } from "node:child_process";

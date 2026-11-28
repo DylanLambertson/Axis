@@ -49,6 +49,7 @@ import type { PtyExecPort, PtyForgePort, PtyPort, PtyPushPort } from "./ports/pt
 import type { ChannelMux } from "./transport/mux.js";
 import { createEgressClient, type EgressClient } from "./net/egress-client.js";
 import type { SecretBackend } from "./bindings/integrations.js";
+import { hostTerminals, recordRunTerminals, runScope, withTerminalFanOut } from "./terminals/compose.js";
 
 /**
  * The composition root (ticket H12, design section 3 steps 10 and 11, plan section 1 and questions 18 and 19). It is the one
@@ -162,6 +163,7 @@ export function composeDaemonHost(options: ComposeOptions): ComposedHost {
   const commandBounds = hostCommandLimits(options.composer?.commandLimits);
   if (typeof commandBounds === "string") refuseComposition(commandBounds);
   const { config, control, ports, pty } = options;
+  const terminals = hostTerminals(pty); // DC-3a: the terminal registry, when the pty port has all four parts
   const snapshotterFactory = options.snapshotter;
   const logger: Logger | undefined = ports.logger;
   const scanner = createSecretScanner({ mode: options.scanMode ?? "refuse" });
@@ -233,6 +235,7 @@ export function composeDaemonHost(options: ComposeOptions): ComposedHost {
           transact: (fn) => withTransaction(parts.db, fn),
           random: { bytes: (n) => randomBytes(n), uuid: () => randomUUID() },
           runs: forwarder,
+          ...(terminals === undefined ? {} : { terminals: terminals.registry }),
           now: () => ports.clock.monotonic(),
           gitPath: parts.gitPath,
           env: ports.env,
@@ -244,7 +247,7 @@ export function composeDaemonHost(options: ComposeOptions): ComposedHost {
           journal: parts.journal,
           audit: parts.audit,
           // PV-M6: a CLI run's endpoint at spawn, only with the messaging flags on; PV-M7: the enable rule is checked again first.
-          pty: cliEndpointPty(pty, () => cliLive.current(), hostMintRecheck({ journal: parts.journal, settingsGet: (k, o) => control.settingsGet(k, o), platform: config.platform, agentOfRun: (id) => parts.journal.agents.agentOfRun(id), acknowledged: (id) => parts.journal.messages.cliAcknowledged(id), audit: parts.audit })),
+          pty: recordRunTerminals(cliEndpointPty(pty, () => cliLive.current(), hostMintRecheck({ journal: parts.journal, settingsGet: (k, o) => control.settingsGet(k, o), platform: config.platform, agentOfRun: (id) => parts.journal.agents.agentOfRun(id), acknowledged: (id) => parts.journal.messages.cliAcknowledged(id), audit: parts.audit })), terminals, (id) => runScope(parts.journal, id)),
           clock: createRunsClock(ports.clock),
           locator: worktrees.locator,
           snapshotter,
@@ -363,12 +366,12 @@ export function composeDaemonHost(options: ComposeOptions): ComposedHost {
     registerAuditHandlers(registrar, { audit: services.auditRead, anchors: services.anchors, degraded: () => services.degraded, clock: ports.clock });
     registrar.register(PROJECTS_CONTRACT, PROJECTS_VERSION, createProjectsHandlers({ projects: () => services.journalRead.listProjects() }));
     // A revoke (a gesture, or the gate's lost binding) stops the project's live runs (project-registration-and-trust.md §5.4).
-    const stopProjectRuns = createProjectRunStopper({ mutex: () => built.worktrees?.mutex, journal: () => services.journal, runs: () => built.runs?.service, composer: () => built.composer });
+    const stopProjectRuns = withTerminalFanOut(createProjectRunStopper({ mutex: () => built.worktrees?.mutex, journal: () => services.journal, runs: () => built.runs?.service, composer: () => built.composer }), terminals);
     if (writable) {
       const egress = options.integrations?.client ?? createEgressClient();
       cleanups.push(() => egress.close());
       const integrations = { sender: egress, backend: options.integrations?.vaultBackend };
-      registerServing(registrar, services, { built, config, control, ports, pty, scanner, ptyGitRunnerFor, logger, runHooks: options.runHooks ?? false, sshSpawn: options.sshSpawn, pluginGrants: options.pluginGrants === true, stopProjectRuns, minter: createRunTrustMinter(ports.clock), hostWindows: windowLifetimes, integrations });
+      registerServing(registrar, services, { built, config, control, ports, pty, scanner, ptyGitRunnerFor, logger, runHooks: options.runHooks ?? false, sshSpawn: options.sshSpawn, pluginGrants: options.pluginGrants === true, stopProjectRuns, minter: createRunTrustMinter(ports.clock), hostWindows: windowLifetimes, integrations, terminals });
     }
     if (events !== undefined) {
       registrar.register(EVENTS_CONTRACT, EVENTS_VERSION, events.handlers());

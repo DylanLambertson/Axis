@@ -8,6 +8,8 @@
   },
   "include": ["main", "preload", "renderer", "test"],
   "references": [
+    { "path": "../../packages/daemon-host" },
+    { "path": "../../packages/desktop-main" },
     { "path": "../../packages/shell-core" },
     { "path": "../../packages/shell-sdk" },
     { "path": "../../packages/ui" },

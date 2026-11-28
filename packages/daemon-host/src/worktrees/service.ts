@@ -12,8 +12,8 @@ import type { DiscardPreview, WorktreesService } from "../ports/worktrees.js";
 import { DaemonError } from "@axis/daemon";
 import { worktreeFailure } from "./errors.js";
 import { verifyFinalised } from "./finalise-recovery.js";
-import { assertNoActiveRun, liveWorkspace } from "./guards.js";
-import { externalInfo, workspaceInfo, type WorktreeInfo } from "./info.js";
+import { assertNoActiveRun, closeWorkspaceTerminals, liveWorkspace, type WorkspaceTerminals } from "./guards.js";
+import { externalInfo, localInfo, workspaceInfo, type LocalInfo, type WorktreeInfo } from "./info.js";
 import type { ProjectMutex } from "./project-mutex.js";
 import { reconcileWorktrees } from "./reconcile.js";
 import type { ManagerShape } from "./shapes.js";
@@ -34,6 +34,8 @@ export interface WorktreesServiceDeps {
   readonly locator: WorktreeLocator;
   readonly mutex: ProjectMutex;
   readonly runs: Pick<RunsService, "hasActiveRun">;
+  /** DC-3a: the plain terminals, closed before finalise and remove (absent: no terminals exist). */
+  readonly terminals?: WorkspaceTerminals;
   /** Monotonic milliseconds: the project trust ticket's clock. */
   readonly now: () => number;
   readonly random: RandomSource;
@@ -108,18 +110,25 @@ export function createWorktreesService(deps: WorktreesServiceDeps): WorktreesRun
     async list(req, ctx) {
       const project = journal.getProject(req.projectId);
       if (project === undefined) throw worktreeFailure("E_NOT_FOUND");
-      const worktrees: WorktreeInfo[] = [];
+      // One `git worktree list`, read before the workspaces so the local checkout (DC-7, only when asked) comes first and
+      // counts toward the cap. A list that cannot be read leaves the recorded workspaces, as before.
+      let listed: Awaited<ReturnType<typeof manager.list>> = [];
+      try {
+        listed = await manager.list(project.path);
+      } catch {
+        ctx.signal.throwIfAborted();
+      }
+      const worktrees: (WorktreeInfo | LocalInfo)[] = [];
+      const main = listed.find((e) => e.isMain);
+      const local = req.includeLocal === true && main !== undefined && !main.bare ? localInfo(main, project.id) : undefined;
+      if (local !== undefined) worktrees.push(local);
       for (const ws of journal.listWorkspaces().filter((w) => w.projectId === project.id && (w.state === "READY" || w.state === "FINALISED" || w.state === "REMOVING"))) {
         ctx.signal.throwIfAborted();
         if (worktrees.length >= MAX_LIST) break;
         worktrees.push(await inspect(ws, ctx.signal));
       }
-      try {
-        for (const e of await manager.list(project.path)) {
-          if (!e.isMain && !e.managed && e.external && worktrees.length < MAX_LIST) worktrees.push(externalInfo(e, project.id));
-        }
-      } catch {
-        ctx.signal.throwIfAborted(); // the repository could not be listed: the recorded workspaces are still shown
+      for (const e of listed) {
+        if (!e.isMain && !e.managed && e.external && worktrees.length < MAX_LIST) worktrees.push(externalInfo(e, project.id));
       }
       return { worktrees };
     },
@@ -195,6 +204,7 @@ export function createWorktreesService(deps: WorktreesServiceDeps): WorktreesRun
           if (ws.state === "FINALISED") throw worktreeFailure("E_CONFLICT", "already_finalised");
           if (ws.state !== "READY") throw worktreeFailure("E_CONFLICT", "not_ready");
           assertNoActiveRun(journal, deps.runs, ws.id);
+          await closeWorkspaceTerminals(deps.terminals, ws.id);
           const ref = await locator.locate(ws.id);
           return withLockRecord(ws.id, actor, async () => {
             const project = journal.getProject(ws.projectId);
@@ -260,6 +270,7 @@ export function createWorktreesService(deps: WorktreesServiceDeps): WorktreesRun
           const ws = liveWorkspace(journal, req.id);
           if (ws.state !== "FINALISED") throw worktreeFailure("E_CONFLICT", "not_finalised");
           assertNoActiveRun(journal, deps.runs, ws.id);
+          await closeWorkspaceTerminals(deps.terminals, ws.id);
           const ref = await locator.locate(ws.id);
           // Journal first: REMOVING is written (and audited by the transition record) before the repository changes.
           journal.transitionWorkspace(ws.id, "REMOVING", { actor, reason: "REMOVE_REQUESTED", expectedFrom: "FINALISED" });

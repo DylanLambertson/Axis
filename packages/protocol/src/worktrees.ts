@@ -127,10 +127,31 @@ export const MAX_USER_EDITING_PATHS = 200;
 export const MAX_UNBACKED_PATHS = 50;
 export const MAX_UNBACKED_DISPLAY = 256;
 
-// list (read, tier 0)
-export const listRequestSchema = z.strictObject({ projectId: projectIdSchema });
+/**
+ * The repository's own checkout (DC-7, docs/design/worktrees-local-checkout.md), only in a `list` reply that asked for it.
+ * No id (nothing can operate on it), no state or base, and no dirty counts or ahead/behind: reading those would run `git
+ * status` in the user's checkout, which can run the repository's own programs. Never locked (git cannot lock a main worktree).
+ */
+export const localCheckoutInfoSchema = z.strictObject({
+  origin: z.literal("local"),
+  projectId: projectIdSchema,
+  branch: z.string().max(256).nullable(),
+  head: sha.nullable(),
+  /** Absolute path, for display and opening only. Never accepted back as input. */
+  path: z.string().max(4096),
+  locked: z.literal(false),
+  present: z.boolean(),
+});
+export type LocalCheckoutInfo = z.infer<typeof localCheckoutInfoSchema>;
+
+// list (read, tier 0). `includeLocal: true` (only that value) adds the local checkout as the first row; without it the reply
+// never holds origin "local", so a client that does not know that value never receives it.
+export const listRequestSchema = z.strictObject({ projectId: projectIdSchema, includeLocal: z.literal(true).optional() });
 export const listResponseSchema = z.strictObject({
-  worktrees: z.array(worktreeInfoSchema).max(1000),
+  worktrees: z
+    .array(z.union([worktreeInfoSchema, localCheckoutInfoSchema]))
+    .max(1000)
+    .refine((rows) => rows.every((r, i) => r.origin !== "local" || i === 0), { message: "the local checkout is at most one row, the first" }),
 });
 
 // status (read, tier 0)
