@@ -44,7 +44,7 @@ export class FakeHandle implements PtyTerminalHandle {
 
 export interface PendingSpawn {
   readonly spec: PtySpawn;
-  readonly onLate: (l: PtyLateSpawn) => void;
+  readonly onLate: (l: PtyLateSpawn) => void;  // a no-op when the caller passed none
   resolve(h: PtyTerminalHandle): void;
   reject(e: unknown): void;
 }
@@ -55,8 +55,8 @@ export class FakeTerminalPort implements PtyTerminalPort {
   readonly spawns: PendingSpawn[] = [];
   readonly grants: Array<[string, string]> = [];
   readonly revokes: string[] = [];
-  spawn(spec: PtySpawn, onLate: (l: PtyLateSpawn) => void): Promise<PtyTerminalHandle> {
-    return new Promise((resolve, reject) => void this.spawns.push({ spec, onLate, resolve, reject }));
+  spawn(spec: PtySpawn, onLate?: (l: PtyLateSpawn) => void): Promise<PtyTerminalHandle> {
+    return new Promise((resolve, reject) => void this.spawns.push({ spec, onLate: onLate ?? (() => undefined), resolve, reject }));
   }
   grant(terminalId: string, conn: string): void {
     this.grants.push([terminalId, conn]);

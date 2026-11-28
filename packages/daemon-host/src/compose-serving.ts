@@ -61,6 +61,11 @@ import type { Logger } from "./log/logger.js";
 import type { PtyExecPort, PtyForgePort, PtyPort } from "./ports/pty.js";
 import { loadPushedBases, savePushedBases } from "./storage/pushed-bases-file.js";
 import type { WindowLifetimes } from "./plugins/window-lifetimes.js";
+import type { HostTerminals } from "./terminals/compose.js";
+import { registerTerminalsServing } from "./terminals/handlers.js";
+import { pickShell } from "./terminals/shell.js";
+import { plainTerminalEnv } from "./terminals/service.js";
+import { worktreeBelongs } from "./gate/project-trust-gate.js";
 
 /** What `registerServing` takes from the composition (moved out of compose.ts unchanged, plus the project trust gate). */
 /**
@@ -96,6 +101,8 @@ export interface ServingContext {
   readonly pluginGrants?: boolean;
   /** Stops the project's live CLI and composer runs (a revoke or a lost binding). */
   readonly stopProjectRuns: (projectId: string) => void;
+  /** DC-3a: the terminal registry over the terminal port, when the pty port has all four parts. */
+  readonly terminals?: HostTerminals | undefined;
   /** The CLI run trust minter (made by the composition root, the only module that may import it). */
   readonly minter: RunTrustMinter;
   /** The host windows' lifetimes (PV-K2 K2-g4b): a plugin's run start is checked against the one pinned at issue. */
@@ -211,6 +218,15 @@ export function registerServing(registrar: HandlerRegistrar, services: HostServi
     providerFor: agentStart.providerFor,
   });
   registerCliRunsHandlers(registrar, cliRuns);
+  // DC-3a: axis.terminals/1 only with all four terminal-port parts AND DC-3c's installed routing (terminals-contract.md section 2
+  // step 5). DC-3c has not landed, so there is no routing: nothing registers here, and the contract is still planned.
+  const terms = ctx.terminals;
+  if (terms !== undefined) {
+    registerTerminalsServing(registrar, terms.port, undefined, (port) => ({
+      registry: terms.registry, port, journal, locator: worktrees.locator, belongs: (w, c) => worktreeBelongs(w, c), gate, trust: services.trust, mutex: worktrees.mutex, needsAttention: worktrees.needsAttention,
+      shell: () => pickShell({ env: ports.env, platform: config.platform }), env: () => plainTerminalEnv(ports.env, config.platform), now: () => ports.clock.monotonic(), audit: (e) => (audit.append(e), services.anchors.noteWrite()),
+    }));
+  }
   registrar.register(
     REVIEW_CONTRACT,
     REVIEW_VERSION,

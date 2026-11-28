@@ -68,7 +68,8 @@ export type PtyLateSpawn = { readonly kind: "spawned"; readonly handle: PtyTermi
  * `lateSpawnReports` marks a port whose rejections carry `definitive` and whose `onLate` is honoured.
  */
 export interface PtyTerminalPort {
-  spawn(spec: PtySpawn, onLate: (late: PtyLateSpawn) => void): Promise<PtyTerminalHandle>;
+  /** `onLate` is optional on the port (the runs call `spawn(spec)` on the same port); the terminal service always passes it. */
+  spawn(spec: PtySpawn, onLate?: (late: PtyLateSpawn) => void): Promise<PtyTerminalHandle>;
   grant(terminalId: string, conn: string): void;
   revoke(terminalId: string): boolean;
   readonly lateSpawnReports: true;
