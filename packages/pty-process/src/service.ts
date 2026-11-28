@@ -7,6 +7,7 @@ import { createGitExec, type GitExec, type GitExecConfig } from "./git-exec.js";
 import { controlRequest, dataRequest, relayOutbound, type ControlReply, type ControlRequest, type DataReply, type ExecReply, type RelayInbound } from "./messages.js";
 import { createEndpointHost, type EndpointHostConfig } from "./endpoint-host.js";
 import { DEFAULT_FLOW, OutputFlow, type FlowLimits } from "./flow.js";
+import { DEFAULT_INPUT_LIMITS, inputFull as inputOver } from "./input.js";
 import { probeGroup, signalGroup, validPgid } from "./group.js";
 import { OscCwdFilter } from "./osc.js";
 import { preparePush, vetPushRemote } from "./push-run.js";
@@ -69,13 +70,15 @@ interface Terminal {
   /** Input was refused: every write is refused until the child has taken all it was given. */
   inputBlocked: boolean;
   exited: boolean;
+  /** DC-3a: no data connection may reach this terminal again (a `revoke`, or the leader's exit). Never cleared. */
+  revoked: boolean;
   /** The run's messaging endpoint, closed with the terminal (PV-M6). */
   endpoint?: string;
   groupGone: boolean;
 }
 
 export const DEFAULT_MAX_TERMINALS = 64;
-export const DEFAULT_INPUT_LIMITS = { terminal: 1024 * 1024, process: 8 * 1024 * 1024, entriesTerminal: 1024, entriesProcess: 8192 } as const;
+export { DEFAULT_INPUT_LIMITS } from "./input.js";
 export const DEFAULT_MAX_CONN_NAMES = 65536;
 
 export function createPtyService(options: PtyServiceOptions): PtyService {
@@ -147,38 +150,23 @@ export function createPtyService(options: PtyServiceOptions): PtyService {
   const releaseFlow = (t: Terminal): void => {
     if (t.flow.reset()) tryChild(t.child.resume?.bind(t.child));
   };
+  /**
+   * DC-3a (terminals-contract.md section 5): ends every data connection's access to `t`, for good. The grant is cleared, the owner
+   * is told the terminal ended and detached, and no later grant is taken (a stale one in flight included). The data connection
+   * itself stays open: it may carry other terminals.
+   */
+  const revoke = (t: Terminal): void => {
+    if (t.revoked) return;
+    t.revoked = true;
+    t.granted = undefined;
+    if (t.owner === undefined) return;
+    sendTo(t.owner, { t: "exit", term: t.id });
+    t.owner = undefined;
+    releaseFlow(t);
+  };
 
   const inputLimits = { ...DEFAULT_INPUT_LIMITS, ...options.input };
-  /**
-   * PTY-4: whether the child (or the process as a whole) holds more unconsumed input than allowed. Checked cheapest first, and
-   * every scan is bounded by the entry limits: the terminal's queue by `entriesTerminal`, all queues together by `entriesProcess`.
-   * Unmeasurable counts as full. Once refused, a terminal stays refused until its queue is empty, so the writer notices; a writer that is refused must abandon the rest of that input (a later chunk of the same paste would otherwise splice).
-   */
-  const inputFull = (t: Terminal): boolean => {
-    const block = (): true => (t.inputBlocked = true);
-    try {
-      const entries = t.child.pendingEntries?.();
-      const bytes = (): number | undefined => t.child.pendingWrite?.();
-      if (t.inputBlocked) {
-        if ((entries ?? 0) > 0 || (bytes() ?? 0) > 0) return true;
-        t.inputBlocked = false;
-      }
-      if (entries !== undefined) {
-        if (!(entries <= inputLimits.entriesTerminal)) return block();
-        let totalEntries = 0;
-        for (const x of terminals.values()) totalEntries += x.child.pendingEntries?.() ?? 0;
-        if (!(totalEntries <= inputLimits.entriesProcess)) return block();
-      }
-      const own = bytes();
-      if (own === undefined) return false;
-      if (!(own < inputLimits.terminal)) return block();
-      let total = 0;
-      for (const x of terminals.values()) total += x.child.pendingWrite?.() ?? 0;
-      return total < inputLimits.process ? false : block();
-    } catch {
-      return block();
-    }
-  };
+  const inputFull = (t: Terminal): boolean => inputOver(t, () => terminals.values(), inputLimits);
 
   const refuseSpawn = (req: string, code: Extract<ControlReply, { t: "spawn-failed" }>["code"]): void => void sendTo(control, { t: "spawn-failed", req, code });
 
@@ -279,7 +267,7 @@ export function createPtyService(options: PtyServiceOptions): PtyService {
     let idText = "";
     do idText = "pty_" + Buffer.from(rand(16)).toString("hex");
     while (terminals.has(idText));
-    const t: Terminal = { id: idText, child, filter: new OscCwdFilter(), resync: true, cancel: false, seen: false, inputBlocked: false, flow: new OutputFlow(options.flow ?? DEFAULT_FLOW), subs: [], granted: undefined, owner: undefined, exited: false, groupGone: false, ...(endpoint === undefined ? {} : { endpoint }) };
+    const t: Terminal = { id: idText, child, filter: new OscCwdFilter(), resync: true, cancel: false, seen: false, inputBlocked: false, flow: new OutputFlow(options.flow ?? DEFAULT_FLOW), subs: [], granted: undefined, owner: undefined, exited: false, revoked: false, groupGone: false, ...(endpoint === undefined ? {} : { endpoint }) };
     terminals.set(t.id, t);
     t.subs.push(
       child.onData((chunk) => {
@@ -303,7 +291,7 @@ export function createPtyService(options: PtyServiceOptions): PtyService {
         t.exited = true;
         if (t.endpoint !== undefined) endpoints?.close(t.endpoint); // the run ended: its endpoint goes with it
         sendTo(control, { t: "exit", term: t.id, exitCode: exit.exitCode, signal: exit.signal });
-        sendTo(t.owner, { t: "exit", term: t.id });
+        revoke(t); // the leader's exit ends access even while a child of its group survives
       }),
     );
     if (child.onGroupEmpty !== undefined) {
@@ -353,7 +341,9 @@ export function createPtyService(options: PtyServiceOptions): PtyService {
     }
     const t = terminals.get(m.term);
     if (t === undefined) return; // already reaped: the group is gone
+    if (m.t === "revoke") return revoke(t);
     if (m.t === "grant") {
+      if (t.revoked) return; // monotonic: an ended terminal is never granted again
       if (t.owner !== undefined && dataChannels.get(t.owner) !== m.conn) {
         t.owner = undefined; // re-granted to another connection
         releaseFlow(t);
