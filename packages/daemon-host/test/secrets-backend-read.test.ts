@@ -55,6 +55,39 @@ test("a hung get fails within the daemon's timeout and other names stay usable (
   assert.equal(r.client.stats().pending, 0, "the pending entry and its timer are gone");
 });
 
+test("six concurrent gets on a hung name each fail within about one timeout, not one after another (gate 6, SF-1)", async () => {
+  const r = rig({ budgetMs: { get: 60_000 } }, 500);
+  r.main.workMs = (op, name) => (op === "get" && name === "c1" ? Infinity : 0);
+  const started = performance.now();
+  const ends = await Promise.all(Array.from({ length: 6 }, () => r.backend.get("c1").then(() => -1, () => performance.now() - started)));
+  // Each fails within about one timeout: at the daemon's own, or at once when main's queue for the name is full (4, §3.4).
+  // Before the fix they failed one after another: 500, 1000, 1500 ... ms.
+  for (const t of ends) assert.ok(t >= 0 && t < 900, `each failed within one timeout (${ends.map(Math.round).join(", ")} ms)`);
+  assert.ok(ends.filter((t) => t >= 450).length >= 4, "the four main accepted waited their own timeout, side by side");
+});
+
+test("behind a hung put, at most 4 requests wait for the name; each fails within its timeout from asking; the rest are busy at once", async () => {
+  // The put (and its reconciling get) may take 2 s each; a waiting meta has 300 ms, counted from when it was asked.
+  const r = rig({ budgetMs: { put: 60_000 } }, { slow: 2_000, fast: 300 });
+  r.main.workMs = (op) => (op === "put" ? Infinity : 0);
+  const put = r.backend.put("c1", SECRET, META);
+  put.catch(() => undefined);
+  await wait(5);
+  const started = performance.now();
+  const waiters = Array.from({ length: 4 }, () => r.backend.meta("c1").then(() => "answered", (e: { detail?: Record<string, unknown> }) => [e.detail?.["reason"], performance.now() - started] as const));
+  const extra = await r.backend.meta("c1").then(() => "answered", (e: { detail?: Record<string, unknown> }) => [e.detail?.["reason"], performance.now() - started] as const);
+  assert.equal((extra as readonly [unknown, number])[0], "busy");
+  assert.ok((extra as readonly [unknown, number])[1] < 100, "refused at once");
+  for (const w of await Promise.all(waiters)) {
+    const [reason, at] = w as readonly [unknown, number];
+    assert.equal(reason, "timeout");
+    assert.ok(at >= 250 && at < 1_500, `failed at its own deadline from asking, not after the put (${Math.round(at)} ms)`);
+  }
+  assert.ok(r.ops().every((o) => o === "put:c1" || o === "get:c1"), "no waiting meta was ever sent");
+  assert.equal(await r.backend.meta("c2"), undefined, "another name is not held up");
+  await Promise.allSettled([put]);
+});
+
 test("a malformed answer, an answer for another op, or an oversized one fails at once, never as a partial value (gate 8)", async () => {
   const cases: Array<[string, (m: { requestId: string }) => unknown]> = [
     ["wrong op", (m) => ({ type: "secrets.result", requestId: m.requestId, ok: true, value: { op: "meta", meta: META } })],

@@ -1,34 +1,41 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import { AxisError } from "@axis/audit";
 import type { CREDENTIAL_BACKENDS, CREDENTIAL_PROTECTIONS } from "@axis/protocol";
-import type { RequestOptions, SecretsAnswer, SecretsAsk } from "./control/client.js";
+import { SECRETS_TIMEOUTS_MS, type RequestOptions, type SecretsAnswer, type SecretsAsk } from "./control/client.js";
 import { SECRET_NAME_RE, type SecretMeta, type SecretsValue } from "./control/secrets-messages.js";
 
 /**
  * The vault's `SecretBackend` over main's secret broker (PV-N0c-1, `docs/design/secret-broker.md` §3.4 and §3.5). It is typed
- * structurally: only the two bindings may import `@axis/vault`, so the providers binding is where this object is checked
- * against the vault's interface. Every answer was parsed by the control client's strict schemas; failures are one fixed
- * `AxisError` (`E_UNAVAILABLE`, "The secret broker did not complete the request") with a closed `reason`, never main's text,
- * a name or a value. The vault replaces any throw with its own `backend_failed` anyway.
+ * structurally, because only the two bindings may import `@axis/vault`; `bindings/providers.ts` assigns it to the vault's
+ * `SecretBackend` (`asVaultBackend`), so the build fails if the two diverge. Every answer was parsed by the control client's
+ * strict schemas; failures are one fixed `AxisError` (`E_UNAVAILABLE`, "The secret broker did not complete the request") with
+ * a closed `reason` only, never main's text, a name or a value. The vault replaces any throw with its own `backend_failed`.
  *
- * - Ordering: the daemon's own requests for ONE name leave in the order they were made, each after the previous one settled,
- *   so a rollback `remove` never overtakes the `put` it undoes. Other names are not held up.
- * - A `put` that main answered `failed`, or that timed out, or whose answer was refused, is UNKNOWN: main's late operation may
- *   still write the record. The backend reconciles with ONE `get` for that name, which main orders behind the late `put`.
- *   The same secret with the same `storedAt`, `label` and consent is this put: it is reported where the record says it landed
- *   (the vault then checks that against the backend its decision was made on). Anything else is reported failed and nothing
- *   is removed, so a rotation keeps the previous secret. When the `get` cannot tell either, the put stays unknown: reported
- *   failed, with the closed event `secrets.put_unknown`. Never retried. A `refused` put, or one the daemon never sent, is
- *   certain and not reconciled.
+ * - Ordering: a `put` or `remove` for ONE name leaves only after the previous `put` or `remove` for it settled, so a rollback
+ *   `remove` never overtakes the `put` it undoes; a `get` or `meta` waits only behind such a mutation (it must see its
+ *   outcome) and otherwise goes straight to main, which orders requests by name itself. Other names are never held up.
+ * - Bounds (gate 6; review n0c1-2a SF-1): at most 4 requests wait per name, more fail `busy` at once; a waiting request's
+ *   deadline runs from when it was asked, not from when it leaves, so with main hung on a name every caller fails within one
+ *   timeout. What leaves counts against the control client's 8 outstanding.
+ * - A `put` that main answered `failed`, that timed out, whose answer was refused, or that was cut off after it was SENT
+ *   (dispose, channel close) is UNKNOWN: main's late operation may still write the record. The backend reconciles with ONE
+ *   `get`, which main orders behind the late `put`. The same secret with the same `storedAt`, `label` and consent is this put:
+ *   reported where the record says it landed (the vault then checks that against the backend its decision was made on).
+ *   Anything else is reported failed and nothing is removed, so a rotation keeps the previous secret. When the `get` cannot
+ *   tell, the put stays unknown: reported failed, with the closed event `secrets.put_unknown`. Never retried. A put that never
+ *   left the daemon, or that main answered `refused`, `corrupt` or `not_found`, is certain (main writes nothing then: the
+ *   handoff list of §3.4) and is not reconciled. The secret comparison is not constant-time: both values are already in this
+ *   process (accepted, review N-3).
  * - `list` is tolerant (§3.5): a name the vault's rule refuses is dropped, with one closed event each, before the vault sees
  *   the list (the vault's `list` throws on any bad name). Malformed metadata, an over-long name or more than 256 entries
- *   still fail the whole list (the control schema).
+ *   still fail the whole list (the control schema). An answer the channel itself drops (over the control byte cap) is not
+ *   seen at all: it fails at the request's timeout, still as a fixed failure (review N-2).
  */
 
 type BackendId = (typeof CREDENTIAL_BACKENDS)[number];
 type Protection = (typeof CREDENTIAL_PROTECTIONS)[number];
 
-/** The vault's `BackendInfo`, `WrittenTo` and entry shapes, restated. */
+/** The vault's `BackendInfo`, `WrittenTo` and `EntryMeta`, restated (an absent label is absent, never `undefined`). */
 export interface BrokerBackendInfo {
   readonly id: BackendId;
   readonly protection: Protection;
@@ -38,14 +45,21 @@ export interface BrokerWrittenTo {
   readonly id: BackendId;
   readonly protection: Protection;
 }
+export interface BrokerEntryMeta {
+  readonly label?: string;
+  readonly storedAt: number;
+  readonly backend: BackendId;
+  readonly protection: Protection;
+  readonly weakConsent: boolean;
+}
 
 export interface BrokerSecretBackend {
   info(): Promise<BrokerBackendInfo>;
-  put(name: string, secret: string, meta: SecretMeta): Promise<BrokerWrittenTo>;
-  get(name: string): Promise<{ readonly secret: string; readonly meta: SecretMeta } | undefined>;
-  meta(name: string): Promise<SecretMeta | undefined>;
+  put(name: string, secret: string, meta: BrokerEntryMeta): Promise<BrokerWrittenTo>;
+  get(name: string): Promise<{ readonly secret: string; readonly meta: BrokerEntryMeta } | undefined>;
+  meta(name: string): Promise<BrokerEntryMeta | undefined>;
   remove(name: string): Promise<boolean>;
-  list(): Promise<ReadonlyArray<{ readonly name: string; readonly meta: SecretMeta }>>;
+  list(): Promise<ReadonlyArray<{ readonly name: string; readonly meta: BrokerEntryMeta }>>;
 }
 
 /** The closed events (no name, no value). */
@@ -58,9 +72,10 @@ export interface SecretsPort {
 export interface BrokerSecretBackendOptions {
   readonly client: SecretsPort;
   readonly onEvent?: (event: BrokerEvent) => void;
-  /** Tests only: shorter daemon-side timeouts than the control client's defaults. */
-  readonly timeoutsMs?: { readonly slow: number; readonly fast: number };
 }
+
+/** At most this many requests wait for one name (main keeps 4 queued in all, §3.4). */
+export const MAX_WAITING_PER_NAME = 4;
 
 /** Fixed UI text per backend id (the vault keeps a label only when it is plain ASCII). */
 const LABELS: Readonly<Record<BackendId, string>> = Object.freeze({
@@ -79,19 +94,38 @@ type Reason = "refused" | "corrupt" | "failed" | "unknown" | "invalid_answer" | 
 
 const fail = (reason: Reason): AxisError => new AxisError("E_UNAVAILABLE", "The secret broker did not complete the request", { reason });
 
-/** A client rejection, as a closed reason. Only a request that certainly never reached main is `certain`. */
-function rejectionOf(e: unknown): { reason: Reason; certain: boolean } {
+/** A client rejection as a closed reason; `sent` is the client's own record of whether the message left (SF-3). */
+function rejectionOf(e: unknown): { reason: Reason; sent: boolean } {
   const code = e instanceof AxisError ? e.code : undefined;
   const why = e instanceof AxisError ? e.detail["reason"] : undefined;
-  if (code === "E_TIMEOUT") return { reason: "timeout", certain: false };
-  if (code === "E_BACKPRESSURE") return { reason: "busy", certain: true };
-  if (code === "E_CANCELLED") return { reason: "cancelled", certain: false };
-  if (code === "E_UNAVAILABLE") return { reason: "closed", certain: why === "client_closed" };
-  if (why === "answer_invalid") return { reason: "invalid_answer", certain: false };
-  return { reason: "failed", certain: false };
+  const sent = e instanceof AxisError && e.detail["sent"] === true;
+  if (code === "E_TIMEOUT") return { reason: "timeout", sent };
+  if (code === "E_BACKPRESSURE") return { reason: "busy", sent };
+  if (code === "E_CANCELLED") return { reason: "cancelled", sent };
+  if (code === "E_UNAVAILABLE") return { reason: "closed", sent };
+  if (why === "answer_invalid") return { reason: "invalid_answer", sent };
+  return { reason: "failed", sent };
 }
 
+/** A parsed meta as the vault's shape: the label only when there is one. */
+const entryMeta = (m: SecretMeta): BrokerEntryMeta => ({
+  ...(m.label === undefined ? {} : { label: m.label }),
+  storedAt: m.storedAt,
+  backend: m.backend,
+  protection: m.protection,
+  weakConsent: m.weakConsent,
+});
+
 export function createBrokerSecretBackend(options: BrokerSecretBackendOptions): BrokerSecretBackend {
+  return build(options, SECRETS_TIMEOUTS_MS);
+}
+
+/** TEST ONLY: the same backend with shorter daemon-side timeouts (never reachable from the composition: a pinned test). */
+export function createBrokerSecretBackendForTest(options: BrokerSecretBackendOptions, timeoutsMs: { readonly slow: number; readonly fast: number }): BrokerSecretBackend {
+  return build(options, timeoutsMs);
+}
+
+function build(options: BrokerSecretBackendOptions, timeoutsMs: { readonly slow: number; readonly fast: number }): BrokerSecretBackend {
   const { client } = options;
   const emit = (event: BrokerEvent["event"]): void => {
     try {
@@ -100,19 +134,21 @@ export function createBrokerSecretBackend(options: BrokerSecretBackendOptions): 
       // an observer never changes the outcome
     }
   };
-  const timeoutFor = (ask: SecretsAsk): RequestOptions => {
-    const t = options.timeoutsMs;
-    if (t === undefined) return {};
-    return { timeoutMs: ask.type === "secrets.get" || ask.type === "secrets.put" ? t.slow : t.fast };
-  };
+  const budget = (a: SecretsAsk): number => (a.type === "secrets.get" || a.type === "secrets.put" ? timeoutsMs.slow : timeoutsMs.fast);
+  /** Whether a failed request may have reached main; kept beside the error, never on it (review N-4). */
+  const mayHaveActed = new WeakSet<AxisError>();
 
-  /** One request; a client rejection becomes a fixed failure carrying whether main may have acted on it. */
-  const ask = async (a: SecretsAsk): Promise<SecretsAnswer> => {
+  /** One request, due `deadline` (monotonic ms). A client rejection becomes a fixed failure. */
+  const ask = async (a: SecretsAsk, deadline: number): Promise<SecretsAnswer> => {
+    const left = Math.ceil(deadline - performance.now());
+    if (left < 1) throw fail("timeout"); // it waited its whole budget behind another request: never sent
     try {
-      return await client.secrets(a, timeoutFor(a));
+      return await client.secrets(a, { timeoutMs: left });
     } catch (e) {
       const r = rejectionOf(e);
-      throw Object.assign(fail(r.reason), { certain: r.certain });
+      const f = fail(r.reason);
+      if (r.sent) mayHaveActed.add(f);
+      throw f;
     }
   };
   const valueOf = <O extends SecretsValue["op"]>(answer: SecretsAnswer, op: O): Extract<SecretsValue, { op: O }> | "not_found" => {
@@ -124,32 +160,65 @@ export function createBrokerSecretBackend(options: BrokerSecretBackendOptions): 
     throw fail(answer.error);
   };
 
-  // One chain per name: each request for a name starts after the previous one settled (success or failure).
-  const chains = new Map<string, Promise<unknown>>();
-  const serial = <T>(name: string, run: () => Promise<T>): Promise<T> => {
-    const before = chains.get(name) ?? Promise.resolve();
-    const mine = before.then(run); // `before` is a tail, which never rejects
+  // Per name: the tail of its put/remove chain (a promise that never rejects) and how many requests wait for it.
+  const mutations = new Map<string, Promise<void>>();
+  const waiting = new Map<string, number>();
+  /** Wait until `before` settles or `deadline` passes; counted against the name's waiting bound. */
+  const waitFor = async (name: string, before: Promise<void>, deadline: number): Promise<void> => {
+    const n = waiting.get(name) ?? 0;
+    if (n >= MAX_WAITING_PER_NAME) throw fail("busy");
+    waiting.set(name, n + 1);
+    let timer: NodeJS.Timeout | undefined;
+    try {
+      const timedOut = new Promise<"timeout">((r) => {
+        const t = setTimeout(() => r("timeout"), Math.max(0, deadline - performance.now())) as unknown as NodeJS.Timeout; // opaque handle under Code OSS's typings (ADR 0005)
+        t.unref();
+        timer = t;
+      });
+      if ((await Promise.race([before.then(() => "settled" as const), timedOut])) === "timeout") throw fail("timeout");
+    } finally {
+      clearTimeout(timer);
+      const left = (waiting.get(name) ?? 1) - 1;
+      if (left === 0) waiting.delete(name);
+      else waiting.set(name, left);
+    }
+  };
+  /** A put or remove: after the name's previous mutation, and the next one's predecessor. */
+  const mutation = <T>(name: string, a: SecretsAsk, run: (deadline: number) => Promise<T>): Promise<T> => {
+    const deadline = performance.now() + budget(a);
+    const before = mutations.get(name);
+    const mine = (async () => {
+      if (before !== undefined) await waitFor(name, before, deadline);
+      return run(deadline);
+    })();
     const tail = mine.then(
       () => undefined,
       () => undefined,
     );
-    chains.set(name, tail);
+    mutations.set(name, tail);
     void tail.then(() => {
-      if (chains.get(name) === tail) chains.delete(name);
+      if (mutations.get(name) === tail) mutations.delete(name);
     });
     return mine;
   };
+  /** A get or meta: behind a pending mutation of the name only; otherwise at once. */
+  const read = async <T>(name: string, a: SecretsAsk, run: (deadline: number) => Promise<T>): Promise<T> => {
+    const deadline = performance.now() + budget(a);
+    const before = mutations.get(name);
+    if (before !== undefined) await waitFor(name, before, deadline);
+    return run(deadline);
+  };
 
-  const getNow = async (name: string): Promise<{ secret: string; meta: SecretMeta } | undefined> => {
-    const v = valueOf(await ask({ type: "secrets.get", name }), "get");
-    return v === "not_found" ? undefined : { secret: v.secret, meta: v.meta };
+  const getNow = async (name: string, deadline: number): Promise<{ secret: string; meta: BrokerEntryMeta } | undefined> => {
+    const v = valueOf(await ask({ type: "secrets.get", name }, deadline), "get");
+    return v === "not_found" ? undefined : { secret: v.secret, meta: entryMeta(v.meta) };
   };
 
   /** The put's outcome is unknown: one `get`, ordered behind it by main, decides; never a retry. */
-  const reconcile = async (name: string, secret: string, meta: SecretMeta): Promise<BrokerWrittenTo> => {
-    let seen: { secret: string; meta: SecretMeta } | undefined;
+  const reconcile = async (name: string, secret: string, meta: BrokerEntryMeta): Promise<BrokerWrittenTo> => {
+    let seen: { secret: string; meta: BrokerEntryMeta } | undefined;
     try {
-      seen = await getNow(name);
+      seen = await getNow(name, performance.now() + timeoutsMs.slow);
     } catch {
       emit("secrets.put_unknown");
       throw fail("unknown");
@@ -164,18 +233,19 @@ export function createBrokerSecretBackend(options: BrokerSecretBackendOptions): 
 
   return {
     async info() {
-      const v = valueOf(await ask({ type: "secrets.info" }), "info");
+      const v = valueOf(await ask({ type: "secrets.info" }, performance.now() + timeoutsMs.fast), "info");
       if (v === "not_found") throw fail("invalid_answer");
       // An unavailable cipher protects nothing: the vault's weak policy then refuses every store.
       return { id: v.backend, protection: v.available ? v.protection : "none", label: LABELS[v.backend] };
     },
     put(name, secret, meta) {
-      return serial(name, async () => {
+      const a: SecretsAsk = { type: "secrets.put", name, secret, meta };
+      return mutation(name, a, async (deadline) => {
         let answer: SecretsAnswer;
         try {
-          answer = await ask({ type: "secrets.put", name, secret, meta });
+          answer = await ask(a, deadline);
         } catch (e) {
-          if ((e as { certain?: boolean }).certain === true) throw e; // never reached main: nothing to reconcile
+          if (!(e instanceof AxisError) || !mayHaveActed.has(e)) throw e; // never left the daemon: nothing to reconcile
           return reconcile(name, secret, meta);
         }
         if (!answer.ok && answer.error === "failed") return reconcile(name, secret, meta);
@@ -185,26 +255,29 @@ export function createBrokerSecretBackend(options: BrokerSecretBackendOptions): 
       });
     },
     get(name) {
-      return serial(name, () => getNow(name));
+      const a: SecretsAsk = { type: "secrets.get", name };
+      return read(name, a, (deadline) => getNow(name, deadline));
     },
     meta(name) {
-      return serial(name, async () => {
-        const v = valueOf(await ask({ type: "secrets.meta", name }), "meta");
-        return v === "not_found" ? undefined : v.meta;
+      const a: SecretsAsk = { type: "secrets.meta", name };
+      return read(name, a, async (deadline) => {
+        const v = valueOf(await ask(a, deadline), "meta");
+        return v === "not_found" ? undefined : entryMeta(v.meta);
       });
     },
     remove(name) {
-      return serial(name, async () => {
-        const v = valueOf(await ask({ type: "secrets.remove", name }), "remove");
+      const a: SecretsAsk = { type: "secrets.remove", name };
+      return mutation(name, a, async (deadline) => {
+        const v = valueOf(await ask(a, deadline), "remove");
         return v === "not_found" ? false : v.removed;
       });
     },
     async list() {
-      const v = valueOf(await ask({ type: "secrets.list" }), "list");
+      const v = valueOf(await ask({ type: "secrets.list" }, performance.now() + timeoutsMs.fast), "list");
       if (v === "not_found") throw fail("invalid_answer");
-      const kept: Array<{ name: string; meta: SecretMeta }> = [];
+      const kept: Array<{ name: string; meta: BrokerEntryMeta }> = [];
       for (const e of v.entries) {
-        if (SECRET_NAME_RE.test(e.name)) kept.push({ name: e.name, meta: e.meta });
+        if (SECRET_NAME_RE.test(e.name)) kept.push({ name: e.name, meta: entryMeta(e.meta) });
         else emit("secrets.list_name_dropped");
       }
       return kept;

@@ -51,9 +51,55 @@ test("a stored copy with the same secret and storedAt but another label or conse
 
 test("a late landing is reported where the record says it landed, not where the put asked (the vault then rolls it back)", async () => {
   const r = rig();
-  r.main.info = { backend: "kwallet6", protection: "os_protected", available: true };
   r.main.workMs = (op) => (op === "put" ? 250 : 0);
-  assert.deepEqual(await r.backend.put("c1", SECRET, META), { id: "kwallet6", protection: "os_protected" });
+  r.main.readProtection = () => "none"; // main reads the protection from the ciphertext it wrote (handoff H-6)
+  assert.deepEqual(await r.backend.put("c1", SECRET, META), { id: "gnome_libsecret", protection: "none" });
+});
+
+test("main refuses a put whose backend or protection is not where it would write, and writes nothing (handoff H-4)", async () => {
+  for (const info of [{ backend: "kwallet6", protection: "os_protected" }, { backend: "gnome_libsecret", protection: "ephemeral" }] as const) {
+    const r = rig();
+    r.main.info = { ...info, available: true };
+    await assert.rejects(r.backend.put("c1", SECRET, META), (e: Error & { detail?: Record<string, unknown> }) => e.detail?.["reason"] === "refused");
+    assert.equal(r.main.entries.has("c1"), false, JSON.stringify(info));
+    assert.deepEqual(r.ops(), ["put:c1"], "certain: no reconciling get");
+  }
+});
+
+test("a put cut off by dispose AFTER it was sent is unknown, not certain: put_unknown, and main may still have written it (SF-3)", async () => {
+  const r = rig({ budgetMs: { put: 60_000 } }, 60_000);
+  r.main.workMs = (op) => (op === "put" ? 200 : 0);
+  const put = r.backend.put("c1", SECRET, META);
+  const outcome = assert.rejects(put, (e: Error & { detail?: Record<string, unknown> }) => e.detail?.["reason"] === "unknown");
+  await new Promise((res) => setTimeout(res, 20));
+  r.client.dispose();
+  await outcome;
+  assert.deepEqual(r.events, [{ event: "secrets.put_unknown" }]);
+  assert.deepEqual(r.ops(), ["put:c1"], "the reconciling get could not leave a disposed client");
+  await new Promise((res) => setTimeout(res, 300));
+  assert.equal(r.main.entries.get("c1")?.secret, SECRET, "main did write it: exactly why it was unknown");
+});
+
+test("a put refused before it left the daemon is certain: no reconciling get, no event, and the error carries no extra field", async () => {
+  const r = rig();
+  const e = await r.backend.put("Not A Name", SECRET, META).then(
+    () => assert.fail("refused"),
+    (err: Error & { detail?: Record<string, unknown> }) => err,
+  );
+  assert.equal(e.message, "The secret broker did not complete the request");
+  assert.deepEqual(Object.keys(e).sort(), ["code", "detail", "name"], "no `certain` or `sent` field on the error the vault sees");
+  assert.deepEqual(e.detail, { reason: "failed" });
+  assert.deepEqual(r.ops(), []);
+  assert.deepEqual(r.events, []);
+});
+
+test("a name that is an Object.prototype key round-trips (the per-name state is a Map)", async () => {
+  const r = rig();
+  for (const name of ["constructor", "tostring", "hasownproperty"]) {
+    assert.deepEqual(await r.backend.put(name, SECRET, META), { id: "gnome_libsecret", protection: "os_protected" });
+    assert.deepEqual(await r.backend.get(name), { secret: SECRET, meta: { ...META } });
+    assert.equal(await r.backend.remove(name), true);
+  }
 });
 
 test("a put the daemon never sent (8 already outstanding) is certain: refused as busy, with no reconciling get", async () => {

@@ -58,3 +58,15 @@ test("the client itself refuses an answer of another op, at once", async () => {
   await refused;
   assert.equal(client.stats().pending, 0);
 });
+
+test("every rejection says whether the request left the daemon: busy and closed-before-send did not, a sent one cut off by dispose did", async () => {
+  const { client } = setup();
+  const sentOf = async (p: Promise<unknown>): Promise<unknown> => p.then(() => "resolved", (e: { detail?: Record<string, unknown> }) => e.detail?.["sent"]);
+  const held = Array.from({ length: 8 }, (_, i) => client.secrets({ type: "secrets.meta", name: `c${i}` }, { timeoutMs: 60_000 }));
+  const results = held.map(sentOf);
+  assert.equal(await sentOf(client.secrets({ type: "secrets.meta", name: "c9" })), false, "the ninth was never sent");
+  await wait(0);
+  client.dispose();
+  for (const r of await Promise.all(results)) assert.equal(r, true, "sent, then cut off by dispose");
+  assert.equal(await sentOf(client.secrets({ type: "secrets.meta", name: "c1" })), false, "after dispose nothing is sent");
+});

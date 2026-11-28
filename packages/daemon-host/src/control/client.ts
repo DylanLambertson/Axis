@@ -253,23 +253,38 @@ export class ControlClient {
    * One secrets request (PV-N0c-1). Resolves with main's answer, matched by id AND by op: an answer of another kind, or one
    * that fails the strict schema while its id names this request, rejects at once (`answer_invalid`), never as a partial
    * value. `E_BACKPRESSURE` (`secrets_busy`) when 8 are outstanding: the ninth is never sent. A timeout, abort or dispose
-   * clears the pending entry, its timer and its listener; a late answer is ignored and counted.
+   * clears the pending entry, its timer and its listener; a late answer is ignored and counted. Every rejection carries
+   * `detail.sent`: whether the message left the daemon (review n0c1-2a SF-3: a request cut off by `dispose` after it was sent
+   * may still have been acted on, one refused before sending was not).
    */
   async secrets(ask: SecretsAsk, options: RequestOptions = {}): Promise<SecretsAnswer> {
     if (this.#secretsOutstanding >= MAX_SECRETS_OUTSTANDING && !this.#disposed) {
-      throw new AxisError("E_BACKPRESSURE", "Too many secrets requests outstanding", { reason: "secrets_busy" });
+      throw new AxisError("E_BACKPRESSURE", "Too many secrets requests outstanding", { reason: "secrets_busy", sent: false });
     }
+    const mark = { sent: false };
     const requestId = this.#id();
     const op = ask.type.slice("secrets.".length);
     const timeout = ask.type === "secrets.get" || ask.type === "secrets.put" ? SECRETS_TIMEOUTS_MS.slow : SECRETS_TIMEOUTS_MS.fast;
     this.#secretsOutstanding += 1;
     try {
-      const m = await this.#request<Extract<InboundMessage, { type: "secrets.result" }>>("secrets", requestId, { ...ask, requestId } as OutboundMessage, timeout, options, (r) =>
-        r.type === "secrets.result" ? { value: r } : undefined,
-      );
+      let m: Extract<InboundMessage, { type: "secrets.result" }>;
+      try {
+        m = await this.#request<Extract<InboundMessage, { type: "secrets.result" }>>(
+          "secrets",
+          requestId,
+          { ...ask, requestId } as OutboundMessage,
+          timeout,
+          options,
+          (r) => (r.type === "secrets.result" ? { value: r } : undefined),
+          mark,
+        );
+      } catch (e) {
+        const a = e instanceof AxisError ? e : new AxisError("E_INTERNAL", "The control request failed");
+        throw new AxisError(a.code, a.message, { ...a.detail, sent: mark.sent });
+      }
       if (m.ok && m.value !== undefined && m.value.op === op) return { ok: true, value: m.value };
       if (!m.ok && m.error !== undefined) return { ok: false, error: m.error };
-      throw new AxisError("E_INTERNAL", "The supervisor's answer was refused", { reason: "answer_invalid" });
+      throw new AxisError("E_INTERNAL", "The supervisor's answer was refused", { reason: "answer_invalid", sent: true });
     } finally {
       this.#secretsOutstanding -= 1;
     }
@@ -308,6 +323,7 @@ export class ControlClient {
     defaultTimeout: number,
     options: RequestOptions,
     accept: (m: InboundMessage) => { value: T } | undefined,
+    mark?: { sent: boolean },
   ): Promise<T> {
     const timeoutMs = options.timeoutMs ?? defaultTimeout;
     if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > MAX_TIMEOUT_MS) {
@@ -345,6 +361,7 @@ export class ControlClient {
       });
       try {
         this.send(message);
+        if (mark !== undefined) mark.sent = true;
       } catch (e) {
         settle(() => reject(e));
       }

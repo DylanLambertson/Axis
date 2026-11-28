@@ -35,6 +35,11 @@ export class FakeSecretsMain {
   workMs: (op: SecretsOp, name: string | undefined) => number = () => 0;
   /** When true for an operation, its work fails and writes nothing (answered `failed`). */
   failWork: (op: SecretsOp, name: string | undefined) => boolean = () => false;
+  /**
+   * The protection `get` and `meta` report for a stored entry, as main reads it from the ciphertext (handoff H-6); default the
+   * stored metadata's own.
+   */
+  readProtection: (name: string) => SecretMeta["protection"] | undefined = () => undefined;
   /** Replace the answer: return the raw object to send, `null` to send nothing, `undefined` for the normal answer. */
   rawAnswer: (m: Message, normal: unknown) => unknown = () => undefined;
   readonly #budget: Record<SecretsOp, number>;
@@ -101,25 +106,33 @@ export class FakeSecretsMain {
     release();
   }
 
+  /** A fresh copy (no shared reference inside an answer, handoff H-7) with the protection read from the "ciphertext". */
+  #read(name: string, meta: SecretMeta): SecretMeta {
+    const p = this.readProtection(name);
+    return { ...meta, ...(p === undefined ? {} : { protection: p }) };
+  }
+
   #do(op: SecretsOp, m: Message, name: string | undefined): unknown {
     const ok = (value: unknown) => ({ type: "secrets.result", requestId: m.requestId, ok: true, value });
     const notFound = { type: "secrets.result", requestId: m.requestId, ok: false, error: "not_found" };
     const e = name === undefined ? undefined : this.entries.get(name);
     switch (op) {
       case "put": {
-        if (!this.info.available || this.info.protection === "none") return { type: "secrets.result", requestId: m.requestId, ok: false, error: "refused" };
-        const meta = { ...(m["meta"] as SecretMeta), backend: this.info.backend, protection: this.info.protection };
-        this.entries.set(name as string, { secret: m["secret"] as string, meta });
+        const meta = m["meta"] as SecretMeta;
+        // The vault's contract (handoff H-4): refuse, never write, when the write would land elsewhere than the decision.
+        const elsewhere = meta.backend !== this.info.backend || meta.protection !== this.info.protection;
+        if (!this.info.available || this.info.protection === "none" || elsewhere) return { type: "secrets.result", requestId: m.requestId, ok: false, error: "refused" };
+        this.entries.set(name as string, { secret: m["secret"] as string, meta: { ...meta } });
         return ok({ op: "put", landedOn: { backend: this.info.backend, protection: this.info.protection } });
       }
       case "get":
-        return e === undefined ? notFound : ok({ op: "get", secret: e.secret, meta: e.meta });
+        return e === undefined ? notFound : ok({ op: "get", secret: e.secret, meta: this.#read(name as string, e.meta) });
       case "meta":
-        return e === undefined ? notFound : ok({ op: "meta", meta: e.meta });
+        return e === undefined ? notFound : ok({ op: "meta", meta: this.#read(name as string, e.meta) });
       case "remove":
         return ok({ op: "remove", removed: this.entries.delete(name as string) });
       case "list":
-        return ok({ op: "list", entries: [...this.entries].map(([n, v]) => ({ name: n, meta: v.meta })) });
+        return ok({ op: "list", entries: [...this.entries].map(([n, v]) => ({ name: n, meta: this.#read(n, v.meta) })) });
       default:
         return { type: "secrets.result", requestId: m.requestId, ok: false, error: "failed" };
     }
