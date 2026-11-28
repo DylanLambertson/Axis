@@ -40,7 +40,7 @@
 
 ## 2. The three slices
 
-Each slice is its own PR with its own security review. OS-3b (project actions and trust without Code OSS) follows slice 2.
+Each slice is its own PR with its own security review. **OS-3p** (the terminal backend, §6a) is its own ticket between slices 3.1 and 3.2. OS-3b (project actions and trust without Code OSS) follows slice 2.
 
 | Slice | Holds | Proves | Defers |
 |---|---|---|---|
@@ -58,7 +58,8 @@ Each slice is its own PR with its own security review. OS-3b (project actions an
    - The environment is `daemonEnvironment()` for the daemon and the pty launch environment for the pty process. The fork options' refusals hold: no `NODE_*`, `ELECTRON_*`, `LD_*` or `DYLD_*` name reaches a child.
    - The `cwd` is the bundle directory: the read-only install directory, never the data roots or a worktree. Both children must run with a read-only `cwd` (no relative-path writes anywhere). Every shell the pty process spawns gets its own explicit `cwd`, never the bundle directory.
    - stdio is piped and drained, and never echoed raw.
-4. **Order and lifetime.** The anchor store is read before the first spawn, so a keychain prompt cannot use up the daemon's 5 s anchor wait. The pty process starts first, then the daemon, under `shouldStartDaemon`. Each daemon child is reported to the pty hand-over, so both get a fresh control channel when either restarts. Restarts follow the supervisor's bounded policy. Shutdown runs on `before-quit`, bounded: the daemon first, then the pty process. `app.exit` comes only after both settled or timed out.
+   - **The pty file's spawn refuses** in slice 3.1. It is the entry's existing refusal path ("no terminal backend"), so it fails closed and is tested. The terminal backend is OS-3p. The daemon needs only the pty process's control hand-over to reach ready, not a terminal backend.
+4. **Order and lifetime.** The anchor store is read before the first spawn, so a keychain prompt cannot use up the daemon's 5 s anchor wait. The pty process starts first, then the daemon, under the start gate. `shouldStartDaemon` starts both only in a development build until the owner's packaging ADR. The own shell's equivalent of Code OSS's `isBuilt` is `app.isPackaged`, so a packaged build starts neither process, with a test. Each daemon child is reported to the pty hand-over, so both get a fresh control channel when either restarts. Restarts follow the supervisor's bounded policy. Shutdown runs on `before-quit`, bounded: the daemon first, then the pty process. `app.exit` comes only after both settled or timed out.
 5. **The answers in slice 1.** `anchor.get` and `anchor.put` are answered from the anchor store; `settings.get` from main's settings source. No app window can be named yet, so `native.confirm` is refused at once with the native queue's closed reason, and `trust.check` answers `false` (fail closed). Neither can hang. No renderer IPC is added, so no tier-4 operation is reachable from a page in slice 1. **Tier 4 is refused until slice 2**, and the PR says so.
 
 ## 4. Slice 3.1: the test plan
@@ -98,6 +99,18 @@ Each slice is its own PR with its own security review. OS-3b (project actions an
 - The orphaned openExternal confirmation is aborted when its window closes.
 - `trust.check` answered as "the window is live".
 
+## 6a. OS-3p: the terminal backend
+
+`node-pty` is the only new dependency OS-3 needs. Code OSS shipped it, and nothing in this repo depends on it yet. It is its own ticket and its own review: a supply-chain and documentation review, plus a review of the build step. Its requirements:
+
+- **Where it lives.** In `apps/desktop`, never in `packages/*`. ADR 0005 D4 keeps the packages to `zod` as their only runtime dependency ("No other runtime dependency without an ADR amendment"). The pty process's spawn function is injected (`createNodePtySpawn`), so `@axis/pty-process` stays free of it.
+- **The pin.** The exact newest release that is at least 14 days old (checked with `npm view node-pty time`), with its integrity in the lockfile. Its licence must be compatible with `docs/LICENSING.md`, and every new package, transitive ones included, is listed with any install script it carries.
+- **The Electron 45.3.2 ABI.** Prebuilt binaries or a rebuild step, whichever is safer and reproducible, and the note says what runs at install time. The repo installs with `--ignore-scripts`, so the native build is an explicit, pinned, auditable step in the bundle or CI script, never a `postinstall`.
+- **The notices.** `THIRD-PARTY-NOTICES.txt` generation includes it, and its test still passes.
+- **CI.** The desktop smoke job, and any macOS and Windows jobs: what builds the native module on each runner, and what happens on a runner without a toolchain.
+- **A smoke test.** A real pty spawns `/bin/sh` in the packaged-shaped layout.
+- **Alternatives considered** are recorded with the ticket: `node-pty` against a PTY through a small helper process, and why `node-pty`.
+
 ## 6. Slice 3.3 in outline: the handoff from N0c-1
 
 The real main's `SecretBackend` must guarantee what the fake in N0c-1 assumes:
@@ -116,6 +129,7 @@ The contract is agreed with the N0c work before slice 3.3 is coded, and it depen
 
 | Item | Where |
 |---|---|
+| The terminal backend (`node-pty`), its native build and its notices | OS-3p |
 | Project actions, the folder picker, trust without Code OSS | OS-3b |
 | The packaging fuses and the launch test (G-28) | OS-21 |
 | Stripping the smoke hooks from packaged builds | OS-21 |
