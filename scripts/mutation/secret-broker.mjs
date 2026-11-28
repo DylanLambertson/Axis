@@ -41,6 +41,8 @@ const M = [
   ["b", "puts and removes for a name do not wait for the previous one", "const before = mutations.get(name);\n        const mine = (async () => {", "const before = undefined;\n        const mine = (async () => {"],
   ["b", "a read does not wait for a pending mutation", "const before = mutations.get(name);\n        if (before !== undefined)\n            await waitFor(name, before, deadline);\n        return run(deadline);", "return run(deadline);"],
   ["b", "the per-name wait is unbounded", "if (n >= MAX_WAITING_PER_NAME)", "if (false)"],
+  ["b", "a put that gave up waiting lets the next one pass", "Promise.all([before, mine.catch(() => undefined)])", "Promise.all([mine.catch(() => undefined)])"],
+  ["b", "reads and mutations share one waiting count", "await waitFor(`m:${name}`, before, deadline);", "await waitFor(`r:${name}`, before, deadline);"],
   ["b", "a waiting request has no deadline of its own", 'setTimeout(() => r("timeout"), Math.max(0, deadline - performance.now()))', 'setTimeout(() => r("timeout"), 2147483647)'],
   ["b", "a request that used its budget waiting is still sent", "if (left < 1)\n            throw fail(\"timeout\");", ";", "the wait itself fails at the deadline first, and a 0 ms budget is refused unsent by the client (timeout_range)"],
   // Reads, info and the tolerant list.
