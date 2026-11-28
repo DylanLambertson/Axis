@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import { MAX_TERMINALS_PER_WORKSPACE, terminalIdSchema, type Terminal } from "@axis/protocol";
 import { isDefinitiveSpawnFailure, type PtyLateSpawn, type PtyTerminalHandle, type PtyTerminalPort } from "../ports/pty.js";
+import type { TrustRevocation } from "../ports/trust.js";
 
 export type TerminalState = Terminal["state"];
 
@@ -29,6 +30,23 @@ interface Charge extends TerminalOp {
   unknown: boolean;
   /** Settled: the spawn's outcome is decided (published, failed, or handed over late). */
   settled: boolean;
+  /** DC-3c: the windows that reached it (the opener, then every attacher), and whether that set overflowed. */
+  readonly windows: Windows;
+}
+
+/** DC-3c (terminal-trust-revocation.md section 3): at most `MAX_WINDOWS` are kept; one more makes any window revoke reach it. */
+interface Windows {
+  readonly ids: Set<string>;
+  any: boolean;
+}
+export const MAX_WINDOWS = 8;
+
+/** What a revoke did to one reached record (the routing audits these after its scan). */
+export interface RevokeOutcome {
+  readonly terminalId: string | null;
+  readonly workspaceId: string;
+  readonly projectId: string;
+  readonly outcome: "closed" | "abandoned" | "grant_revoked";
 }
 
 interface Rec {
@@ -41,6 +59,9 @@ interface Rec {
   readonly handle: PtyTerminalHandle;
   readonly charge: Charge | undefined;
   readonly off: { dispose(): void };
+  readonly windows: Windows;
+  /** DC-3c: a CLI run's terminal a revoke reached: revoked in the pty process for good, the run untouched, never attachable. */
+  detached: boolean;
 }
 
 export interface TerminalRegistryDeps {
@@ -90,12 +111,12 @@ export class TerminalRegistry {
   }
 
   /** Reserves a plain-terminal slot in `workspaceId`, or `undefined` when its slots are all charged. */
-  reserve(workspaceId: string, projectId: string): TerminalOp | undefined {
+  reserve(workspaceId: string, projectId: string, windowId?: string): TerminalOp | undefined {
     this.sweep();
     let used = 0;
     for (const c of this.#charges) if (c.workspaceId === workspaceId) used++;
     if (used >= this.#max) return undefined;
-    const c: Charge = { workspaceId, projectId, handle: undefined, abandoned: false, unknown: false, settled: false };
+    const c: Charge = { workspaceId, projectId, handle: undefined, abandoned: false, unknown: false, settled: false, windows: { ids: new Set(windowId === undefined ? [] : [windowId]), any: false } };
     this.#charges.add(c);
     return c;
   }
@@ -176,7 +197,7 @@ export class TerminalRegistry {
   /** The terminal, when it may be granted now: known and `open`. Read immediately before the grant, with no await between. */
   attachable(terminalId: string): TerminalRecord | undefined {
     const r = this.#recs.get(terminalId);
-    return r !== undefined && r.state === "open" ? this.#view(r) : undefined;
+    return r !== undefined && r.state === "open" && !r.detached ? this.#view(r) : undefined;
   }
 
   /** Closes a plain terminal (idempotent). False for an unknown id or a CLI run's terminal. */
@@ -210,6 +231,58 @@ export class TerminalRegistry {
     return false;
   }
 
+  /** DC-3c: a window attached this terminal. Past `MAX_WINDOWS`, any window revoke reaches it (the mapping fails closed). */
+  noteWindow(terminalId: string, windowId: string): void {
+    const w = this.#recs.get(terminalId)?.windows;
+    if (w === undefined || w.ids.has(windowId)) return;
+    if (w.ids.size >= MAX_WINDOWS) w.any = true;
+    else w.ids.add(windowId);
+  }
+
+  /**
+   * DC-3c (terminal-trust-revocation.md section 4.1): a recorded trust revoke, synchronously, in three passes over every reached
+   * record, each step for each record caught on its own:
+   * 1. lower authority for all of them first: a pending open is abandoned; an open plain terminal goes to closing; every reached
+   *    live terminal (plain, or a CLI run's, which is detached) is revoked in the pty process;
+   * 2. then kill each plain terminal moved to closing (a throwing kill leaves it closing);
+   * 3. the outcomes are returned, for an audit written after the scan.
+   */
+  revoked(event: TrustRevocation): RevokeOutcome[] {
+    const reached = (x: { readonly workspaceId: string; readonly projectId: string; readonly windows: Windows }): boolean => {
+      if (event.kind === "all") return true;
+      if (event.kind === "subject") return x.workspaceId === event.id || x.projectId === event.id;
+      return x.windows.any || x.windows.ids.has(event.windowId);
+    };
+    const out: RevokeOutcome[] = [];
+    const toKill: Rec[] = [];
+    for (const c of this.#charges) {
+      if (c.settled || c.abandoned || !reached(c)) continue;
+      c.abandoned = true;
+      out.push({ terminalId: null, workspaceId: c.workspaceId, projectId: c.projectId, outcome: "abandoned" });
+    }
+    for (const r of [...this.#recs.values()]) {
+      if (r.state !== "open" || r.detached || !reached(r)) continue;
+      try {
+        if (r.kind === "plain") {
+          r.state = "closing";
+          toKill.push(r);
+        } else r.detached = true;
+        out.push({ terminalId: r.terminalId, workspaceId: r.workspaceId, projectId: r.projectId, outcome: r.kind === "plain" ? "closed" : "grant_revoked" });
+      } finally {
+        this.#revoke(r.terminalId); // caught inside: a failing revoke never stops the scan
+      }
+    }
+    for (const r of toKill) {
+      try {
+        r.handle.kill("SIGKILL");
+        if (r.state === "closing") r.state = "closed";
+      } catch {
+        /* stays closing: the slot waits for the group to be gone */
+      }
+    }
+    return out;
+  }
+
   /** Frees the slots whose group is known gone, and forgets ended terminals whose group is gone. */
   sweep(): void {
     for (const r of [...this.#recs.values()]) {
@@ -239,7 +312,7 @@ export class TerminalRegistry {
       } else if (rec.state === "closing") rec.state = "closed";
     });
     if (charge !== undefined) charge.handle = handle;
-    rec = { ...f, terminalId: handle.terminalId, state: "open", handle, charge, off };
+    rec = { ...f, terminalId: handle.terminalId, state: "open", handle, charge, off, windows: charge?.windows ?? { ids: new Set(), any: false }, detached: false };
     this.#recs.set(rec.terminalId, rec);
     return this.#view(rec);
   }

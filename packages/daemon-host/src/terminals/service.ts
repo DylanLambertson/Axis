@@ -47,6 +47,8 @@ export const TERMINALS_PAYLOAD_ALLOWLIST: Readonly<Record<string, readonly strin
   "terminal.open": Object.freeze(["terminalId", "workspaceId", "projectId"]),
   "terminal.close": Object.freeze(["terminalId", "workspaceId", "projectId"]),
   "terminal.attach": Object.freeze(["terminalId", "conn"]),
+  // DC-3c: a revoke reached a terminal (or a pending open: no terminal id); the level is the revoke's kind, never a window id.
+  "terminal.revoked": Object.freeze(["terminalId", "workspaceId", "projectId", "level", "outcome"]),
 });
 
 const notFound = () => terminalFailure("not_found");
@@ -108,7 +110,7 @@ export async function openTerminal(deps: TerminalServiceDeps, req: { readonly wo
       if (!(await deps.belongs(workTree, project.commonDir).catch(() => false))) throw notFound();
       // ---- synchronous from here to the dispatch: no await ----
       finalAdmission(deps, context, project, start, workTree);
-      const op = deps.registry.reserve(req.workspaceId, project.id);
+      const op = deps.registry.reserve(req.workspaceId, project.id, context.identity.windowId); // DC-3c: the opener's window
       if (op === undefined) throw terminalFailure("too_many_terminals");
       try {
         consumeTicket(ticket, { projectId: project.id, workspaceId: req.workspaceId }, deps.now);
@@ -186,6 +188,7 @@ export function attachTerminal(deps: Pick<TerminalServiceDeps, "registry" | "por
   // Review N2: the project's trust now, from the journal. An untrust closes plain terminals at once, but a CLI run's terminal stays
   // open until its run's stop, which queues behind the project mutex: it is not attachable meanwhile.
   if (deps.journal.getProject(rec.projectId)?.trusted !== true) throw notFound();
+  deps.registry.noteWindow(terminalId, context.identity.windowId); // DC-3c: a revoke of this window now reaches it
   deps.port.grantTerminal(terminalId, conn);
   deps.audit({ actor: "user", action: "terminal.attach", target: `terminal:${terminalId}`, outcome: "success", payload: { terminalId, conn } });
 }
