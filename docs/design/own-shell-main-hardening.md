@@ -57,6 +57,7 @@ Measured on Linux (WSLg, X11), with probe apps on the pinned runtime in developm
 - Pin "no listener" for the device-picker events (`select-hid-device`, `select-serial-port`, `select-usb-device` on the session, `select-bluetooth-device` on the web contents) and for `app`'s `select-client-certificate` and `login`: a listener that forgets `preventDefault` makes Electron pick the first device.
 - The preload: one frozen global, four functions, no `ipcRenderer` leak, and its source pin.
 - Feed real `protocol.handle` request URLs through the handler (Chromium canonicalises the standard scheme before main sees it).
+- For OS-3: each forked file imports the signal guard (`@axis/daemon-host/signal-guard`, `@axis/pty-process/signal-guard`, audit C follow-up) as its one static import and loads the entry with `import()`; each package's `testing/process-main-child.ts` shows the shape. Measured under load, the guard still leaves a narrow band right after spawn in which a `SIGUSR1` can open the inspector, so the `EnableNodeCliInspectArguments` fuse (OS-21) stays the control for packaged builds.
 - For OS-3: `window.gone` on navigation uses `did-start-navigation` (`will-navigate` does not fire on a reload or an in-page change); the fork's working directory is main's choice.
 - Later: an openExternal rate limit per window (dialog fatigue), and refusing or flagging loopback and private-address `http(s)` hosts.
 
