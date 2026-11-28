@@ -43,12 +43,12 @@
 
 ## 2. The three slices
 
-Each slice is its own PR with its own security review. **OS-3p** (the terminal backend, §6a) is its own ticket between slices 3.1 and 3.2. OS-3b (project actions and trust without Code OSS) follows slice 2.
+Each slice is its own PR with its own security review. **OS-3h** (the acknowledged control hand-over, §3a) and **OS-3p** (the terminal backend, §6a) are their own tickets between slices 3.1 and 3.2. OS-3b (project actions and trust without Code OSS) follows slice 2.
 
 | Slice | Holds | Proves | Defers |
 |---|---|---|---|
 | **3.1 Process spine and control answers** | The daemon and pty forked by main from fixed bundle files in the signal-guard shape; the narrow `@axis/daemon-host/main` subpath that shrinks `main.cjs`; supervisor start, restart and shutdown order; the pty control hand-over; the answers that need no window (anchor, read before the first spawn, and settings); `native.confirm` and `trust.check` answered with the closed refusal | §4 | All renderer IPC, every dialog, the secret store |
-| **3.2 Renderer connect and window lifetime** | `axis:connect` and `axis:terminalPort` (`checkAppSender` before any payload parse, `ConnectBroker` rate and identity, the `MessageChannelMain` hand-over); `window.gone` on `destroyed`, `render-process-gone` and a main-frame `did-start-navigation` (a reload included); per-window state pruned on `closed`; `native.confirm` with the dialog acceptance rules; the orphaned openExternal dialog aborted on close; `trust.check` answered as "the window is live" | Once `window.gone` is sent, the old document's `axis:connect` is refused; the dialog rules on every OS; no state outlives its window | Project actions (OS-3b), the secret store |
+| **3.2 Renderer connect and window lifetime** | `axis:connect` (`checkAppSender` before any payload parse, `ConnectBroker` rate and identity, the `MessageChannelMain` hand-over); `window.gone` on `destroyed`, `render-process-gone` and a main-frame `did-start-navigation` (a reload included); per-window state pruned on `closed`; `native.confirm` with the dialog acceptance rules; the orphaned openExternal dialog aborted on close; `trust.check` answered as "the window is live"; `axis:terminalPort` answers a closed refusal (the terminal data broker is DC-3b's) | Once `window.gone` is sent, the old document's `axis:connect` is refused; the dialog rules on every OS; no state outlives its window | Project actions (OS-3b), the secret store |
 | **3.3 Secret store and main's SecretBackend (N0c-2)** | `safeStorage` behind `secret-store.ts` and `secret-files.ts`; main's side of the vault's `SecretBackend` | The seven guarantees the N0c-1 slice 2a review handed to the real main (§6) | Nothing of OS-3 |
 
 ## 3. Slice 3.1: the contract
@@ -68,16 +68,18 @@ Each slice is its own PR with its own security review. **OS-3p** (the terminal b
    - stdio is piped and drained, and never echoed raw.
    - **The pty file's spawn refuses** in slice 3.1. It is the entry's existing refusal path ("no terminal backend"), so it fails closed and is tested. The terminal backend is OS-3p. The daemon needs only the pty process's control hand-over to reach ready, not a terminal backend.
 4. **Order and lifetime.** The anchor store is read before the first spawn, so a keychain prompt cannot use up the daemon's 5 s anchor wait. The pty process starts first, then the daemon, under the start gate. `shouldStartDaemon` starts both only in a development build until the owner's packaging ADR. The own shell's equivalent of Code OSS's `isBuilt` is `app.isPackaged`, so a packaged build starts neither process, with a test. Each daemon child is reported to the pty hand-over, so both get a fresh control channel when either restarts. Restarts follow the supervisor's bounded policy. Shutdown runs on `before-quit`, bounded: the daemon first, then the pty process. `app.exit` comes only after both settled or timed out.
-5. **The control hand-over: acceptance and recovery** (§3a).
+5. **The control hand-over ships with a known defect** (§3a), fixed by OS-3h before slice 3.2.
 6. **One instance per profile.** Main takes `app.requestSingleInstanceLock()` before it forks anything. A second launch on the same profile asks the first to show its window and quits at once (measured: exit 0 in about 0.4 s, one closed line). A second main with another profile but the same data roots is stopped by the daemon's own instance lock: its daemon exits 75 and its supervisor ends `failed` with reason `lock_held`, without a restart loop (measured). That main's pty process keeps running until it quits; slice 3.2 shows the state to the renderer.
 7. **Orphans.** Measured on Linux under WSLg: after `kill -9` of main, both utility processes were gone within 1 s (they end when their connection to main closes). Not verified on macOS or Windows; OS-21 measures it on the packaged builds.
 8. **The answers in slice 1.** `anchor.get` and `anchor.put` are answered from the anchor store; `settings.get` from main's settings source. No app window can be named yet, so `native.confirm` is refused at once with the native queue's closed reason, and `trust.check` answers `false` (fail closed). Neither can hang. No renderer IPC is added, so no tier-4 operation is reachable from a page in slice 1. **Tier 4 is refused until slice 2**, and the PR says so.
 
-## 3a. The control hand-over: posting a port is not a completed hand-over
+## 3a. The control hand-over: posting a port is not a completed hand-over (OS-3h)
+
+**Slice 3.1 ships with this known open defect**; OS-3h fixes it, in its own PR with its own review, after 3.1 merges and before 3.2 starts. Before 3.2 no renderer path exists, so no page can reach it. What a user of a development build would see: after the daemon or the pty process restarts, the daemon can be left without a control channel. The daemon does not exit when its port closes, so the supervisor still shows it running and ready, and main's log shows a normal hand-over. But every operation that needs the pty process (exec, git with hooks, the forge list, and later terminals) fails closed with `channel_closed` until the next restart of either process or of the app.
 
 The inherited hand-over posts a new channel to both children and counts that as done. It is not done. The pty service serves one control channel at a time and closes a second one while the first is still registered. So if the replacement arrives before the pty process has seen its old channel close, the replacement is closed, the hand-over still counts success, and the old close then clears the old channel. Neither end is left with a working channel, and nothing retries. The design review reproduced this with the real modules.
 
-Slice 3.1 makes acceptance explicit:
+OS-3h makes acceptance explicit:
 
 - **Generations.** Main numbers every channel it makes. Each `pty-control` message carries its generation.
 - **Latest wins, at both ends.** A child that receives a `pty-control` adopts it and closes the channel it held. Only main can post on a child's parent port, so the newest port is always main's own, and a renderer or data port can never become a control port. This matches the daemon entry, which already replaces its port after ready. The pty service's old rule, refusing a second channel while one is open, is what loses the replacement.
@@ -114,7 +116,7 @@ Slice 3.1 makes acceptance explicit:
 
 ## 5. Slice 3.2 in outline
 
-- `axis:connect` and `axis:terminalPort` handlers. Each runs `checkAppSender` before it parses its payload, as `registerOpenExternal` does.
+- The `axis:connect` handler runs `checkAppSender` before it parses its payload, as `registerOpenExternal` does. `axis:terminalPort` gets the same check and then a closed refusal: the terminal data broker is DC-3b's.
 - `ConnectBroker`'s rate limit and identity, and the `MessageChannelMain` hand-over.
 - `window.gone`, sent through `daemon-host/src/main`, when a window is destroyed, when its renderer dies, and when its main frame starts a navigation (a reload included), before the new document can connect. A test proves that once `window.gone` is sent, the old document's `axis:connect` is refused, so nothing from it joins the new lifetime. This is a precondition of PV-K2 condition 6.
 - Per-window state pruned on `closed`: rate buckets, in-flight actions, a waiting dialog, the binding slot and the status.
@@ -157,7 +159,9 @@ The contract is agreed with the N0c work before slice 3.3 is coded, and it depen
 
 | Item | Where |
 |---|---|
+| The acknowledged control hand-over (§3a) | OS-3h |
 | The terminal backend (`node-pty`), its native build and its notices | OS-3p |
+| The terminal data broker (`axis:terminalPort`) | DC-3b |
 | Project actions, the folder picker, trust without Code OSS | OS-3b |
 | The packaging fuses and the launch test (G-28) | OS-21 |
 | Stripping the smoke hooks from packaged builds | OS-21 |
