@@ -12,16 +12,16 @@ import { serviceRig } from "./service-rig.js";
 const on: TerminalRevocationRouting = { active: () => true };
 const notFound = (e: unknown): boolean => (e as { code?: unknown }).code === "E_NOT_FOUND";
 
-function withoutPart(part: "spawn" | "grant" | "revoke" | "lateSpawnReports"): unknown {
+function withoutPart(part: "spawn" | "grantTerminal" | "revoke" | "lateSpawnReports"): unknown {
   const p = new FakeTerminalPort();
-  const o: Record<string, unknown> = { spawn: p.spawn.bind(p), grant: p.grant.bind(p), revoke: p.revoke.bind(p), lateSpawnReports: true };
+  const o: Record<string, unknown> = { spawn: p.spawn.bind(p), grantTerminal: p.grantTerminal.bind(p), revoke: p.revoke.bind(p), lateSpawnReports: true };
   delete o[part];
   return o;
 }
 
 test("servable only with every port part and an active routing", () => {
   assert.equal(terminalsServable(new FakeTerminalPort(), on), true);
-  for (const part of ["spawn", "grant", "revoke", "lateSpawnReports"] as const) assert.equal(terminalsServable(withoutPart(part), on), false, `without ${part}`);
+  for (const part of ["spawn", "grantTerminal", "revoke", "lateSpawnReports"] as const) assert.equal(terminalsServable(withoutPart(part), on), false, `without ${part}`);
   assert.equal(terminalsServable({ ...new FakeTerminalPort(), lateSpawnReports: "yes" }, on), false, "the marker is the literal true");
   assert.equal(terminalsServable(new FakeTerminalPort(), undefined), false, "no routing (DC-3c not installed)");
   assert.equal(terminalsServable(new FakeTerminalPort(), { active: () => false }), false, "a disposed routing");
@@ -33,7 +33,7 @@ test("register: nothing is registered unless servable; with every part and an ac
   const seen: string[] = [];
   const registrar = { register: (c: string, v: number) => void seen.push(`${c}/${v}`) };
   const deps = () => serviceRig().deps;
-  for (const part of ["spawn", "grant", "revoke", "lateSpawnReports"] as const) assert.equal(registerTerminalsServing(registrar, withoutPart(part), on, deps), false, part);
+  for (const part of ["spawn", "grantTerminal", "revoke", "lateSpawnReports"] as const) assert.equal(registerTerminalsServing(registrar, withoutPart(part), on, deps), false, part);
   assert.equal(registerTerminalsServing(registrar, new FakeTerminalPort(), undefined, deps), false);
   assert.equal(registerTerminalsServing(registrar, new FakeTerminalPort(), { active: () => false }, deps), false);
   assert.deepEqual(seen, []);

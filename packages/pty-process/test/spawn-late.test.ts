@@ -134,7 +134,7 @@ test("with the real service: a spawned answer delayed past the timeout, whose gr
   // Review nit 1: the service revoked it before the kill, so a grant to it (a stale or a mistaken one) gives no data connection access.
   const data = channelPair();
   r.service.serveData(data.b, "c1");
-  r.port.grant(late.handle.terminalId, "c1");
+  r.port.grantTerminal(late.handle.terminalId, "c1");
   await settle();
   data.a.send({ t: "attach", term: late.handle.terminalId });
   await settle();

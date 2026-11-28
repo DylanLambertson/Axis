@@ -12,7 +12,7 @@ export interface PtyControlSlot {
   /** The host's pty port. Before a control port arrives, and after one closes, every call fails closed (`channel_closed`). */
   /** Also the endpoint relay (PV-M6): one handler, kept across reconnects; answers go to the current port. */
   /**
-   * Also DC-3a's terminal port: `spawn` forwards `onLate`; `grant` and `revoke` go to the current port. A terminal id of a replaced
+   * Also DC-3a's terminal port: `spawn` forwards `onLate`; `grantTerminal` and `revoke` go to the current port. A terminal id of a replaced
    * port reaches a pty process that ended that terminal when its control channel closed, so it is ignored there.
    */
   readonly port: PtyPort & PtyTerminalPort & PtyExecPort & PtyPushPort & PtyForgePort & PtyRelayPort;
@@ -56,7 +56,7 @@ export function createPtyControlSlot(options: PtyControlOptions = {}): PtyContro
   return {
     port: {
       spawn: (spec, onLate?: Parameters<PtyTerminalPort["spawn"]>[1]) => (current === undefined ? spawnClosed() : current.spawn(spec, onLate)),
-      grant: (terminalId, conn) => void current?.grant(terminalId, conn),
+      grantTerminal: (terminalId, conn) => void current?.grantTerminal(terminalId, conn),
       revoke: (terminalId) => current?.revoke(terminalId) ?? false,
       lateSpawnReports: true,
       push: (call) => (current === undefined ? spawnClosed() : current.push(call)),

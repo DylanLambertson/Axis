@@ -58,7 +58,7 @@ export class FakeTerminalPort implements PtyTerminalPort {
   spawn(spec: PtySpawn, onLate?: (l: PtyLateSpawn) => void): Promise<PtyTerminalHandle> {
     return new Promise((resolve, reject) => void this.spawns.push({ spec, onLate: onLate ?? (() => undefined), resolve, reject }));
   }
-  grant(terminalId: string, conn: string): void {
+  grantTerminal(terminalId: string, conn: string): void {
     this.grants.push([terminalId, conn]);
   }
   revoke(terminalId: string): boolean {

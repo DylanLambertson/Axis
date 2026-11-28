@@ -74,7 +74,7 @@ export interface PtyProcessPort extends PtyPort, Disposable {
   /** DC-3a: ends every data connection's access to `terminalId` for good (terminals-contract.md section 5); false when closed. */
   revoke(terminalId: string): boolean;
   /** G-2: lets data connection `conn` (the name main gave the brokered port) attach to `terminalId`. Nothing else may. */
-  grant(terminalId: string, conn: string): void;
+  grantTerminal(terminalId: string, conn: string): void;
   /**
    * A plain, bounded git command (`exec`, H9-hooks §4.1). Settles within `call.timeoutMs` plus `spawnTimeoutMs`, and when the
    * channel closes; rejects with a `PtyExecError` code only. The daemon host's `createPtyGitRunner` is its one caller.
@@ -338,7 +338,7 @@ export function createPtyProcessPort(options: PtyProcessPortOptions): PtyProcess
     forgeList: (request) => forge.list(request),
     trackedTerminals: () => terms.size,
     relay: (msg) => !closed && send(msg),
-    grant(terminalId, conn) {
+    grantTerminal(terminalId, conn) {
       send({ t: "grant", term: terminalId, conn });
     },
     revoke: (terminalId) => send({ t: "revoke", term: terminalId }),

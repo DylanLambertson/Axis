@@ -20,7 +20,7 @@ yes<Equal<ReturnType<PtyForgePort["forgeList"]>, ReturnType<PtyProcessPort["forg
 // DC-3a: the terminal port's failure codes and late outcomes are the client's.
 yes<Equal<PtySpawnFailureCode, PtySpawnFailure>>();
 yes<Equal<PtyLateSpawn["kind"], RealLate["kind"]>>();
-yes<Equal<Parameters<PtyTerminalPort["grant"]>, Parameters<PtyProcessPort["grant"]>>>();
+yes<Equal<Parameters<PtyTerminalPort["grantTerminal"]>, Parameters<PtyProcessPort["grantTerminal"]>>>();
 yes<Equal<Parameters<PtyTerminalPort["revoke"]>, Parameters<PtyProcessPort["revoke"]>>>();
 
 test("the host's exec port matches the pty process client (checked by the compiler)", () => {

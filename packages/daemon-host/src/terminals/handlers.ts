@@ -21,7 +21,7 @@ export interface TerminalRevocationRouting {
 export function terminalPortOf(pty: unknown): PtyTerminalPort | undefined {
   if (typeof pty !== "object" || pty === null) return undefined;
   const p = pty as Record<string, unknown>;
-  return typeof p["spawn"] === "function" && typeof p["grant"] === "function" && typeof p["revoke"] === "function" && p["lateSpawnReports"] === true ? (pty as PtyTerminalPort) : undefined;
+  return typeof p["spawn"] === "function" && typeof p["grantTerminal"] === "function" && typeof p["revoke"] === "function" && p["lateSpawnReports"] === true ? (pty as PtyTerminalPort) : undefined;
 }
 
 /**

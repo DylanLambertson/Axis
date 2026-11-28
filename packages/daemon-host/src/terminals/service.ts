@@ -158,6 +158,6 @@ function revokedFor(trust: Pick<TrustRegistry, "isRevoked">, context: HandlerCon
 export function attachTerminal(deps: Pick<TerminalServiceDeps, "registry" | "port" | "audit" | "trust">, terminalId: string, conn: string, context: HandlerContext): void {
   const rec = deps.registry.attachable(terminalId);
   if (rec === undefined || revokedFor(deps.trust, context, rec.workspaceId, rec.projectId)) throw notFound();
-  deps.port.grant(terminalId, conn);
+  deps.port.grantTerminal(terminalId, conn);
   deps.audit({ actor: "user", action: "terminal.attach", target: `terminal:${terminalId}`, outcome: "success", payload: { terminalId, conn } });
 }

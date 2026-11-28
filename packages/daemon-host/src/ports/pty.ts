@@ -62,7 +62,8 @@ export type PtyLateSpawn = { readonly kind: "spawned"; readonly handle: PtyTermi
 /**
  * DC-3a's terminal port (`terminals-contract.md` section 8), all four parts or none:
  * - `spawn`, giving a handle that carries its `terminalId`, and hearing the late outcome of a spawn that timed out (`onLate`);
- * - `grant(terminalId, conn)`: only data connection `conn` may attach;
+ * - `grantTerminal(terminalId, conn)` (the pty process's `grant` message): only data connection `conn` may attach. Never named
+ *   `grant`: that name is the plugin grant store's, fenced by the static writer rule;
  * - `revoke(terminalId)`: no data connection may reach it again (false when the port is closed);
  * - definitive outcomes: a rejection's `definitive` is true only when no process can appear for it (`isDefinitiveSpawnFailure`).
  * `lateSpawnReports` marks a port whose rejections carry `definitive` and whose `onLate` is honoured.
@@ -70,7 +71,7 @@ export type PtyLateSpawn = { readonly kind: "spawned"; readonly handle: PtyTermi
 export interface PtyTerminalPort {
   /** `onLate` is optional on the port (the runs call `spawn(spec)` on the same port); the terminal service always passes it. */
   spawn(spec: PtySpawn, onLate?: (late: PtyLateSpawn) => void): Promise<PtyTerminalHandle>;
-  grant(terminalId: string, conn: string): void;
+  grantTerminal(terminalId: string, conn: string): void;
   revoke(terminalId: string): boolean;
   readonly lateSpawnReports: true;
 }
