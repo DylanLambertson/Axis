@@ -59,7 +59,7 @@ test("the renderer has no network, no inline or eval script, no frames, no new w
     assert.equal(r.windowOpen, "denied");
     assert.equal(r.windowOpenHttps, "denied");
     // Permissions: a copy from a user gesture works; paste and everything else are refused.
-    assert.equal(r.focused, true, "the window took focus within the bounded retry");
+    assert.equal(r.focused, true, `the window took focus within the bounded retry: ${JSON.stringify(r.focus)}`);
     assert.equal(r.clipboardWrite, "ok", `copy (${r.clipboardFocusRetries})`);
     assert.equal(r.clipboardRead, "refused");
     assert.equal(r.geolocation, "refused");

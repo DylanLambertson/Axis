@@ -84,8 +84,18 @@ async function ready(): Promise<void> {
   if (SMOKE === "boundary") {
     const { BOUNDARY_MARKER, runBoundaryProbe } = await import("./boundary-probe.js");
     type Probed = Parameters<typeof runBoundaryProbe>[0]["app"];
+    const probed = {
+      webContents: win.webContents,
+      focus: (): void => {
+        if (!win.isVisible()) win.show();
+        win.moveTop();
+        win.focus();
+        win.webContents.focus();
+      },
+      focusState: (): Record<string, unknown> => ({ visible: win.isVisible(), focusedWindow: win.isFocused(), contentsFocused: win.webContents.isFocused() }),
+    };
     const result = await runBoundaryProbe({
-      app: win as unknown as Probed,
+      app: probed as unknown as Probed,
       unregistered: async () => {
         const second = new BrowserWindow({ ...mainWindowOptions(dir, "dark", PACKAGED), show: false });
         await second.loadURL(APP_URL);

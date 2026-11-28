@@ -52,7 +52,10 @@ export const PAGE_BOUNDARY = `(async () => {
 })()`;
 
 export interface BoundaryWindow {
+  /** Makes the window visible, raises it and focuses it and its web contents (no window manager may be running). */
   focus?(): void;
+  /** What main sees of the window's focus, for the report when focus is not reached. */
+  focusState?(): Record<string, unknown>;
   readonly webContents: {
     executeJavaScript(code: string, userGesture?: boolean): Promise<unknown>;
     getURL(): string;
@@ -100,14 +103,18 @@ export interface BoundaryDeps {
 }
 
 export async function runBoundaryProbe(deps: BoundaryDeps): Promise<Record<string, unknown>> {
-  // Focus first, bounded: under load another window can hold focus for a moment, and the copy check needs it.
+  // Focus first, bounded (5 s): under load another window can hold focus for a moment, and on a bare X server with no window
+  // manager nothing activates a window but main. The copy check needs a focused document; if focus never comes, the test fails.
   let focused = false;
-  for (let i = 0; i < 20 && !focused; i++) {
+  let attempts = 0;
+  for (; attempts < 50 && !focused; attempts++) {
     deps.app.focus?.();
     focused = (await deps.app.webContents.executeJavaScript("document.hasFocus()", false)) === true;
     if (!focused) await deps.wait(100);
   }
-  const page = { focused, ...((await deps.app.webContents.executeJavaScript(PAGE_BOUNDARY, true)) as Record<string, unknown>) };
+  const pageFocus = await deps.app.webContents.executeJavaScript("({ hasFocus: document.hasFocus(), visibility: document.visibilityState })", false).catch(() => null);
+  const focus = { focused, attempts, page: pageFocus, window: deps.app.focusState?.() ?? null };
+  const page = { focused, focus, ...((await deps.app.webContents.executeJavaScript(PAGE_BOUNDARY, true)) as Record<string, unknown>) };
   const urlBefore = deps.app.webContents.getURL();
   const navigation: Record<string, string> = {};
   for (const target of ["https://example.com/", "axis-app://shell/other.html", "file:///etc/passwd"]) navigation[target] = await attemptNavigation(deps.app, target, deps.wait);
