@@ -71,9 +71,10 @@ the reviewed-tree registry. So a selection names things that survive between rou
   - `MAX_HUNKS_REPLY_HUNKS` = 200 (the core's `maxHunksPerFile` is at most this);
   - `MAX_HUNKS_REPLY_LINES` = 1,500 lines in the whole reply. Each line is an object and four values, so lines and hunks
     together stay under 9,000 of the message walk's 10,000 values, with room for the envelope;
-  - `MAX_HUNK_LINE_CHARS` = 9,216 per line. At the host's `maxDisplay` of 256 the core keeps at most 1,024 code points,
-    and one escaped code point is at most 9 units (`\u{e0fff}`). The binding pins `maxDisplay` at 256 for this, and the
-    schema refuses a longer line, so it can never be cut silently;
+  - `MAX_HUNK_LINE_CHARS` = 10,240 per line. At the host's `maxDisplay` of 256 the core keeps at most 1,024 code points,
+    and one escaped code point is at most 10 units: a six-digit escape such as `\u{10ffff}` (the noncharacters U+10FFFE
+    and U+10FFFF are escaped). The binding pins `maxDisplay` at 256 for this, and the schema refuses a longer line, so it
+    can never be cut silently;
   - `MAX_HUNKS_REPLY_CHARS` = 131,072 units of `text` in the whole reply (at most 3 UTF-8 bytes a unit, so under 400 KB,
     far inside the 1 MiB message and below the 262,144-byte string ceiling for every single field).
 - **Fallback, all or nothing.** The handler builds the complete candidate reply, then checks it against the four bounds
@@ -201,8 +202,9 @@ code is reserved for the daemon's own audited policy decisions. Both handlers th
   - exactly one of `hunks` and `fileLevelReason`;
   - `acknowledgedHunkIds` ⊄ `hunkIds`, a duplicate `fileId`, an empty selection and 2,001 ids are refused;
   - every `HunkFileLevelReason` value accepted, an unknown one refused;
-  - boundary replies at each bound (1,500 lines, 131,072 units, a 9,216-unit line of escaped astral and bidi code points)
-    PASS the production `inspectMessage` and envelope schema, and one past each bound is refused.
+  - boundary replies at each bound (1,500 lines, 131,072 units, a 10,240-unit line of 1,024 U+10FFFF, and one of 1,024 U+10FFFE)
+    PASS the production `inspectMessage` and envelope schema, and one past each bound is refused. A final line of 1,024
+    U+10FFFF comes back as hunks, not `over_view_budget`.
 - Daemon, real repositories through the composed handlers (the client-observed reply):
   - a two-hunk file and an untouched file: select hunk 1 only, commit with the built tree. The commit holds hunk 1 and not
     hunk 2, the other file is unchanged, and the parent is the reviewed head. Then the three staging states of section 4;
