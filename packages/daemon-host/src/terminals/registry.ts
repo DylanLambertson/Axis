@@ -231,6 +231,21 @@ export class TerminalRegistry {
     return false;
   }
 
+  /**
+   * DC-3c (terminal-trust-revocation.md section 7): main's `window.gone`. That window's pending opens are abandoned (the caller is
+   * gone: their handles are never published). Live terminals keep running: a terminal outlives a window and another re-attaches it;
+   * its data owner ends when main closes the window's ports (DC-3b), and the pty process then clears the grant.
+   */
+  windowGone(windowId: string): void {
+    for (const c of this.#charges) if (!c.settled && c.windows.ids.has(windowId)) c.abandoned = true;
+  }
+
+  /** DC-3c, daemon shutdown (after the routing is disposed): pending opens abandoned, live plain terminals closed. */
+  shutdown(): void {
+    for (const c of this.#charges) if (!c.settled) c.abandoned = true;
+    for (const r of [...this.#recs.values()]) if (r.kind === "plain") this.#end(r);
+  }
+
   /** DC-3c: a window attached this terminal. Past `MAX_WINDOWS`, any window revoke reaches it (the mapping fails closed). */
   noteWindow(terminalId: string, windowId: string): void {
     const w = this.#recs.get(terminalId)?.windows;

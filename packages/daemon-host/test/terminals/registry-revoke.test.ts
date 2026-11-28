@@ -100,3 +100,31 @@ test("a CLI run's terminal reached by a revoke is revoked, keeps running, and is
   assert.equal(r.reg.attachable(run.terminalId), undefined);
   assert.equal(r.reg.revoked({ kind: "subject", id: "ws1" }).length, 0, "a repeated revoke reaches nothing new");
 });
+
+test("window.gone abandons that window's pending opens only; live terminals keep running (a terminal outlives its window)", () => {
+  const r = rig();
+  const live = r.open("ws1", "p1", "w1");
+  const mine = r.reg.reserve("ws1", "p1", "w1");
+  const other = r.reg.reserve("ws1", "p1", "w2");
+  assert.ok(mine !== undefined && other !== undefined);
+  r.reg.windowGone("w1");
+  const late = new FakeHandle();
+  assert.equal(r.reg.publish(mine, late), undefined, "the gone window's pending open is never published");
+  assert.deepEqual(late.kills, ["SIGKILL"]);
+  assert.ok(r.reg.publish(other, new FakeHandle()) !== undefined, "another window's open is unaffected");
+  assert.equal(r.reg.get(live.id)?.state, "open", "a live terminal stays: another window re-attaches it");
+});
+
+test("shutdown: pending opens abandoned, live plain terminals closed (revoked, killed); a CLI run's terminal ends with its run", () => {
+  const r = rig();
+  const live = r.open("ws1", "p1", "w1");
+  const pending = r.reg.reserve("ws1", "p1", "w1");
+  assert.ok(pending !== undefined);
+  const run = new FakeHandle();
+  r.reg.addCliRun(run, { runId: "run1", workspaceId: "ws1", projectId: "p1" });
+  r.reg.shutdown();
+  assert.equal(r.reg.get(live.id)?.state, "closed");
+  assert.deepEqual(live.h.kills, ["SIGKILL"]);
+  assert.equal(r.reg.publish(pending, new FakeHandle()), undefined);
+  assert.deepEqual(run.kills, []);
+});

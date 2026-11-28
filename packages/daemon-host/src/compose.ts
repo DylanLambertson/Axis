@@ -49,7 +49,7 @@ import type { PtyExecPort, PtyForgePort, PtyPort, PtyPushPort } from "./ports/pt
 import type { ChannelMux } from "./transport/mux.js";
 import { createEgressClient, type EgressClient } from "./net/egress-client.js";
 import type { SecretBackend } from "./bindings/integrations.js";
-import { hostTerminals, recordRunTerminals, runScope, withTerminalFanOut } from "./terminals/compose.js";
+import { composeTerminals, installTerminals, recordRunTerminals, runScope, withTerminalFanOut, type HostTerminals } from "./terminals/compose.js";
 
 /**
  * The composition root (ticket H12, design section 3 steps 10 and 11, plan section 1 and questions 18 and 19). It is the one
@@ -116,6 +116,8 @@ export interface ComposeOptions {
   readonly observeSealedWriters?: (writers: { readonly challenge: { append(e: never): unknown }; readonly composer: { append(e: never): unknown } }) => void;
   /** TEST ONLY: sees the host windows' lifetimes the composition feeds (PV-K2 K2-g4b); it can read them, never feed them. */
   readonly observeWindowLifetimes?: (lifetimes: Pick<WindowLifetimes, "current" | "status">) => void;
+  /** TEST ONLY observer (DC-3c): the composed terminals, when there are any. It can watch them; it cannot add any path to them. */
+  readonly observeTerminals?: (terminals: HostTerminals) => void;
   /** TEST ONLY: sees whether the composer binding was given the WT-2 guard (review c3 r1 N-6). */
   readonly observeAgent?: (agent: { readonly commands: boolean; readonly gitReads: boolean; readonly commandLimits: CommandLimits }) => void;
   /** TEST ONLY: sees the `agentOf` the messaging binding was given (PV-G4: it knows no run unless `messaging.enabled`), the CLI endpoint path's own lookup and whether its relay was wired (PV-M7 slice 2: the user's switch alone decides both). */
@@ -162,8 +164,9 @@ export function composeDaemonHost(options: ComposeOptions): ComposedHost {
   // Lower-only (C3): read field by field before anything is built; a bad override refuses the composition.
   const commandBounds = hostCommandLimits(options.composer?.commandLimits);
   if (typeof commandBounds === "string") refuseComposition(commandBounds);
-  const { config, control, ports, pty } = options;
-  const terminals = hostTerminals(pty); // DC-3a: the terminal registry, when the pty port has all four parts
+  const { control, pty } = options;
+  // DC-3a/DC-3c: terminals only with all four pty parts and a trust registry with onRevoked (fixed here); otherwise not served.
+  const { terminals, config, ports } = composeTerminals(options.config, options.ports, pty, options.observeTerminals);
   const snapshotterFactory = options.snapshotter;
   const logger: Logger | undefined = ports.logger;
   const scanner = createSecretScanner({ mode: options.scanMode ?? "refuse" });
@@ -371,7 +374,7 @@ export function composeDaemonHost(options: ComposeOptions): ComposedHost {
       const egress = options.integrations?.client ?? createEgressClient();
       cleanups.push(() => egress.close());
       const integrations = { sender: egress, backend: options.integrations?.vaultBackend };
-      registerServing(registrar, services, { built, config, control, ports, pty, scanner, ptyGitRunnerFor, logger, runHooks: options.runHooks ?? false, sshSpawn: options.sshSpawn, pluginGrants: options.pluginGrants === true, stopProjectRuns, minter: createRunTrustMinter(ports.clock), hostWindows: windowLifetimes, integrations, terminals });
+      registerServing(registrar, services, { built, config, control, ports, pty, scanner, ptyGitRunnerFor, logger, runHooks: options.runHooks ?? false, sshSpawn: options.sshSpawn, pluginGrants: options.pluginGrants === true, stopProjectRuns, minter: createRunTrustMinter(ports.clock), hostWindows: windowLifetimes, integrations, terminals, terminalRouting: installTerminals(terminals, services.trust, (e) => (services.audit?.append(e), services.anchors.noteWrite()), () => logger?.warn("request.failed", { reason: "terminal_audit" }), cleanups) });
     }
     if (events !== undefined) {
       registrar.register(EVENTS_CONTRACT, EVENTS_VERSION, events.handlers());
@@ -404,7 +407,7 @@ export function composeDaemonHost(options: ComposeOptions): ComposedHost {
       offPort?.();
     };
     cleanups.push(() => offConnect?.());
-    cleanups.push(control.onWindowGone((m) => windowLifetimes.gone(m.windowId)));
+    cleanups.push(control.onWindowGone((m) => (windowLifetimes.gone(m.windowId), terminals?.registry.windowGone(m.windowId))));
     cleanups.push(control.onTrustSet((m) => {
       try {
         services.trust.set({ windowId: m.windowId, ...(m.workspaceId === undefined ? {} : { workspaceId: m.workspaceId }) }, m.trusted);

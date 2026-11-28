@@ -20,9 +20,4 @@ export const PLANNED_RULES: Readonly<Record<string, Rule>> = Object.freeze({
   "axis.integrations/1.write": userRule(3),
   "axis.net/1.read": userRule(0),
   "axis.net/1.send": userRule(3),
-  // DC-3a (terminals-contract.md section 1): planned until DC-3c; user rows, never a web client or a plugin (the deny list).
-  "axis.terminals/1.open": userRule(2, "per-start"),
-  "axis.terminals/1.list": userRule(0),
-  "axis.terminals/1.close": userRule(2),
-  "axis.terminals/1.attach": userRule(2),
 });

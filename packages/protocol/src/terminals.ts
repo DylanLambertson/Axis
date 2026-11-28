@@ -7,9 +7,8 @@ import { projectIdSchema, runIdSchema, workspaceIdSchema, type MethodSpec } from
  * `axis.terminals/1` (DC-3a, docs/design/terminals-contract.md): plain terminals in a managed worktree, and the grant of a terminal
  * to a named data connection. The user's own desktop connection's alone: never a web client, a plugin or a worker.
  *
- * PLANNED until DC-3c (terminal-trust-revocation.md): the contract is in `plannedContracts`, so no host serves it and every call
- * is an unknown method. It moves to `contracts` in the change that lands DC-3c's routing, and the host then serves it only when its
- * pty port has all four parts of the terminal capability (contract section 8).
+ * Served since DC-3c (terminal-trust-revocation.md): a host serves it only when its pty port has all four parts of the terminal
+ * capability AND the trust-registry routing is installed (contract section 8); otherwise the host drops it from what it serves.
  *
  * No payload carries a path, a command or an environment: a terminal is opened for a workspace id, and the daemon resolves the
  * directory (the shared locator) and the shell itself.

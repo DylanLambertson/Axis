@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
-// DC-3a's composition: until DC-3c's routing exists, a host whose pty port has all four terminal parts still serves no
-// axis.terminals/1 (planned; nothing registers), and starts cleanly. The wiring pieces: a CLI run's terminal is recorded when it
+// DC-3a/DC-3c's composition: a host serves axis.terminals/1 only with all four terminal-port parts AND a trust registry with
+// onRevoked (the routing is then installed on it); with either missing, the contract is dropped from what it serves and the host
+// still starts. The wiring pieces: a CLI run's terminal is recorded when it
 // spawns, and project untrust reaches the plain terminals synchronously, before the run stop and whatever it throws.
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
@@ -14,18 +15,28 @@ import { FakeHandle, FakeTerminalPort } from "./fakes.js";
 const runner: GitRunner = { run: () => Promise.reject(new Error("unused")) };
 const snapshotter: NonNullable<ComposeOptions["snapshotter"]> = () => ({ before: () => Promise.resolve(), after: () => Promise.resolve({ drift: false }) });
 
-test("a host with a fully terminal-capable pty port, and no DC-3c routing, serves no axis.terminals/1 and starts", async () => {
+async function served(pty: unknown, trust?: unknown): Promise<readonly string[]> {
   const fix = hostFixture();
   const { control: _control, ...ports } = fix.ports as typeof fix.ports & { control: unknown };
-  const composed = composeDaemonHost({ config: fix.config, control: fix.client, ports, pty: new FakeTerminalPort(), ptyGitRunner: runner, snapshotter, process: new EventEmitter(), exit: () => undefined });
+  const composed = composeDaemonHost({ config: fix.config, control: fix.client, ports: { ...ports, ...(trust === undefined ? {} : { trust: trust as never }) }, pty: pty as never, ptyGitRunner: runner, snapshotter, process: new EventEmitter(), exit: () => undefined });
   try {
-    const s = await composed.start();
-    assert.equal(s.served.includes("axis.terminals"), false);
-    assert.ok(s.served.includes("axis.cli-runs"), "the rest is served as before");
+    return (await composed.start()).served;
   } finally {
     await composed.stop();
     fix.cleanup();
   }
+}
+
+test("served with all four port parts and the default trust registry (which offers onRevoked); the rest as before", async () => {
+  const s = await served(new FakeTerminalPort());
+  assert.equal(s.includes("axis.terminals"), true);
+  assert.ok(s.includes("axis.cli-runs"));
+});
+
+test("not served, and the host still starts, with an ordinary CLI port or a trust registry without onRevoked", async () => {
+  assert.equal((await served({ spawn: () => Promise.reject(new Error("unused")) })).includes("axis.terminals"), false, "a port without the parts");
+  const plainTrust = { isTrusted: () => false, isRevoked: () => true, set: () => undefined };
+  assert.equal((await served(new FakeTerminalPort(), plainTrust)).includes("axis.terminals"), false, "a registry without onRevoked");
 });
 
 test("hostTerminals exists only for a port with all four parts", () => {
