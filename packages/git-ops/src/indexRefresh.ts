@@ -222,7 +222,9 @@ async function refreshOnce(deps: GitOpsDeps, w: WorktreeRef, oldHead: string, ne
       }
     }
     // Review 2 B1: an add whose path is a parent or a child of an entry that stays (the user's own staging, a flagged entry, or
-    // anything not removed above) would drop that entry; it is skipped. Removals are written first.
+    // anything not removed above) would drop that entry; it is skipped. Removals are written first. With that check the order
+    // is equivalent (git's replace would drop exactly the entries removed here anyway), so no test can tell the two apart and
+    // none pins it (review 3 nit 1); it stays for clarity and for any future change to the check.
     const has = new Set([...entries.keys()].filter((p) => !removed.has(p)));
     const staying = [...has].sort();
     const lines = [...removals, ...adds.filter((a) => !conflictsWithStaying(a.raw, staying, has)).map((a) => a.line)];
