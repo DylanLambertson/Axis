@@ -48,10 +48,11 @@ test("the checker refuses a config that reaches code that starts a program", () 
   }
 });
 
-test("package.json maps ./config to the built config module, next to . and ./client", () => {
+test("package.json maps ./config to the built config module, next to ., ./client and ./signal-guard (audit C M1)", () => {
   const exports = JSON.parse(read("package.json")).exports;
-  assert.deepEqual(Object.keys(exports).sort(), [".", "./client", "./config"]);
+  assert.deepEqual(Object.keys(exports).sort(), [".", "./client", "./config", "./signal-guard"]);
   assert.deepEqual(exports["./config"], { types: "./dist/src/config.d.ts", default: "./dist/src/config.js" });
+  assert.deepEqual(exports["./signal-guard"], { types: "./dist/src/signal-guard.d.ts", default: "./dist/src/signal-guard.js" });
 });
 
 test("the entry re-exports the names and the check from config.ts and defines none of them itself", () => {

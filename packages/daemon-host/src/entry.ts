@@ -19,9 +19,9 @@ import { adaptParentPort, type ParentPortLike } from "./transport/electron-paren
 import { ChannelMux } from "./transport/mux.js";
 
 /**
- * The utility process entry logic (ticket X1, design `docs/design/daemon-host-entry.md`). The overlay file
- * `vs/axis/daemon/node/axisDaemonMain.ts` only hands this function the real `process`, `process.parentPort` and the environment
- * main gave the process; everything that can be tested without Electron is here.
+ * The utility process entry logic (ticket X1, design `docs/design/daemon-host-entry.md`). The forked file (the shell's, OS-3;
+ * in the legacy shell the overlay file `vs/axis/daemon/node/axisDaemonMain.ts`) only hands this function the real `process`,
+ * `process.parentPort` and the environment main gave the process; everything that can be tested without Electron is here.
  *
  * What it does, in order, and what fails closed (every refusal is exit code 78 and a `fatal` message of closed codes, before any
  * data directory, lock, file or listener exists):
@@ -125,7 +125,10 @@ const realClock: Clock = { now: () => Date.now(), monotonic: () => performance.n
 
 /** True for an argument that opens a debugger or inspector port, in any spelling Node accepts. */
 export const isDebugFlag = (arg: string): boolean => DEBUG_FLAG.test(arg);
-/** The one `execArgv` a daemon may be forked with: the flag that stops SIGUSR1 from opening the inspector (audit C M1). */
+/**
+ * The one `execArgv` a daemon may be forked with: the flag that stops SIGUSR1 from opening the inspector under plain Node (audit
+ * C M1). Electron's utility process ignores it, so there the guard in `signal-guard.ts` is the control.
+ */
 export const EXEC_ARGV_ALLOWED = "--disable-sigusr1";
 /** Empty, or exactly `[EXEC_ARGV_ALLOWED]`. */
 export const execArgvAllowed = (args: readonly string[]): boolean => args.length === 0 || (args.length === 1 && args[0] === EXEC_ARGV_ALLOWED);
@@ -157,10 +160,10 @@ export function runDaemonEntry(deps: DaemonEntryDeps): DaemonEntryHandle {
   };
 
   // Audit C M1: SIGUSR1 would open Node's unauthenticated inspector on 127.0.0.1:9229, from which any local user could read the
-  // heap and every revealed credential. The one complete fix is `--disable-sigusr1` (EXEC_ARGV_ALLOWED), which holds from the
-  // first instruction. This listener is the second line, for a fork without the flag: it replaces Node's handler once this
-  // file runs, which is after the module graph has loaded (a signal before then opens the inspector or kills the process).
-  // It is installed first, on every path, and never removed: with no listener the signal's default applies again.
+  // heap and every revealed credential. Under Electron's utility process `--disable-sigusr1` is not honoured, so a listener is
+  // the control: the file main forks installs a silent one through `signal-guard.ts`, its one static import, before this module
+  // graph loads. This one is for callers that run the entry directly; it writes the closed line. It is installed first, on
+  // every path, and never removed: with no listener the signal's default applies again.
   let signalled = false;
   deps.process.on("SIGUSR1", () => {
     if (signalled) return;
@@ -187,7 +190,7 @@ export function runDaemonEntry(deps: DaemonEntryDeps): DaemonEntryHandle {
   if (deps.parentPort === undefined || typeof deps.parentPort.postMessage !== "function") return refuseEarly("not_utility_process");
   if (deps.execArgv.some(isDebugFlag)) return refuseEarly("debug_flag_refused");
   // `--require`, `--import` and loaders would run code before this file does: the one allowed argument is the flag that keeps
-  // the inspector closed (audit C M1), alone. Main forks with an empty `execArgv` today; passing it is the forking main's ticket.
+  // the inspector closed under plain Node (audit C M1), alone; it is harmless under Electron, which ignores it.
   if (!execArgvAllowed(deps.execArgv)) return refuseEarly("exec_args_refused");
   for (const [name, reason] of REFUSED_ENV) {
     if (envSet(deps.env, name, deps.platform)) return refuseEarly(reason);
