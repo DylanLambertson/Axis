@@ -4,13 +4,14 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { AuditLog, openDatabase } from "@axis/audit";
-import { TERMINALS_PAYLOAD_ALLOWLIST, attachTerminal, closeTerminal, openTerminal } from "../../src/terminals/service.js";
+import { HOST_PAYLOAD_ALLOWLIST } from "../../src/host.js";
+import { attachTerminal, closeTerminal, openTerminal } from "../../src/terminals/service.js";
 import { FakeHandle } from "./fakes.js";
 import { serviceRig } from "./service-rig.js";
 
 test("open, attach and close rows keep exactly their ids through the real audit log", async () => {
   const db = openDatabase(":memory:");
-  const log = new AuditLog(db, { payloadAllowlist: TERMINALS_PAYLOAD_ALLOWLIST });
+  const log = new AuditLog(db, { payloadAllowlist: HOST_PAYLOAD_ALLOWLIST }) // the host's own merge (review 2 nit 3);
   const r = serviceRig({ audit: (e) => void log.append(e) });
   const p = openTerminal(r.deps, { workspaceId: "ws1", cols: 80, rows: 24 }, r.context());
   for (let i = 0; i < 1000 && r.port.spawns.length === 0; i++) await new Promise((res) => setImmediate(res));

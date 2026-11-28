@@ -45,9 +45,9 @@ const POLL_MS = 25;
 /**
  * Before finalise or remove: the workspace's plain terminals are closed first; then the call waits, at most
  * `TERMINALS_GONE_WAIT_MS`, for their groups to be gone, and is refused (`active_run`, as for a run) if any may still live. Fails
- * closed: a throw counts as busy.
+ * closed: a throw counts as busy. A cancellation of the request ends the wait with its abort.
  */
-export async function closeWorkspaceTerminals(terminals: WorkspaceTerminals | undefined, workspaceId: string, waitMs = TERMINALS_GONE_WAIT_MS): Promise<void> {
+export async function closeWorkspaceTerminals(terminals: WorkspaceTerminals | undefined, workspaceId: string, signal?: AbortSignal, waitMs = TERMINALS_GONE_WAIT_MS): Promise<void> {
   if (terminals === undefined) return;
   const busy = (first: boolean): boolean => {
     try {
@@ -58,6 +58,7 @@ export async function closeWorkspaceTerminals(terminals: WorkspaceTerminals | un
   };
   let still = busy(true);
   for (let waited = 0; still && waited < waitMs; waited += POLL_MS) {
+    signal?.throwIfAborted(); // review 2 nit 4: a cancelled request stops waiting (the terminals are already closed)
     await new Promise<void>((resolve) => setTimeout(resolve, POLL_MS));
     still = busy(false);
   }
