@@ -38,20 +38,21 @@ function userDataOverride(): string | undefined {
 let mainWindow: BrowserWindow | undefined;
 
 function start(): void {
-  // One instance per profile, before anything is forked or registered.
-  if (!claimSingleInstance(app, () => {
-    if (mainWindow === undefined || mainWindow.isDestroyed()) return;
-    if (mainWindow.isMinimized()) mainWindow.restore();
-    mainWindow.show();
-    mainWindow.focus();
-  }, (line) => void process.stderr.write(`${line}\n`))) return;
-  prepareBeforeReady({
+  // The internal name and the profile path first, so the single-instance lock is taken on OUR profile (Electron keeps its lock
+  // files in userData), then one instance per profile, before anything is forked or registered.
+  const userData = prepareBeforeReady({
     app,
     protocol,
     platform: PLATFORM,
     dataBase: dirname(axisDataRoots(PLATFORM, process.env, homedir()).dataDir),
     ...(userDataOverride() === undefined ? {} : { userDataOverride: userDataOverride() as string }),
   });
+  if (!claimSingleInstance(app, userData, () => {
+    if (mainWindow === undefined || mainWindow.isDestroyed()) return;
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.show();
+    mainWindow.focus();
+  }, (line) => void process.stderr.write(`${line}\n`))) return;
   installAppHardening(app as unknown as Parameters<typeof installAppHardening>[0], log, (error) => {
     process.stderr.write(`web contents hardening failed: ${error.message}\n`);
     app.exit(1);

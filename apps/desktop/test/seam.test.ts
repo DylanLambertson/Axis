@@ -5,7 +5,9 @@
 //   fork with another entry, service name, execArgv, environment, cwd or stdio, or an entry outside the bundle directory; S4 a
 //   child's stdout left unread or its stderr unbounded; S5 the daemon not restarted after it exits; S6 the pty process stopped
 //   before the daemon, or the shutdown unbounded; S7 native.confirm answered with anything but a refusal, or not at once; S8
-//   trust.check answered true; S9 the control hand-over not given to both children.
+//   trust.check answered true; S9 the control hand-over not given to both children; S10 a child's stderr reaching the log raw (a
+//   forged line of main's, an escape sequence); S11 settings answered with anything but unset; S12 the daemon killed by SIGTERM
+//   only; S13 a quit during start still spawning the daemon; S14 a dead daemon left in the control hand-over.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
@@ -13,7 +15,7 @@ import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { UTILITY_EXEC_ARGV } from "@axis/desktop-main";
-import { DAEMON_FILE, PTY_FILE, SEAM_SHUTDOWN_BOUND_MS, DAEMON_STOP_BOUND_MS, startMainSeam, type UtilityChildLike } from "../main/seam.js";
+import { DAEMON_FILE, PTY_FILE, SEAM_SHUTDOWN_BOUND_MS, DAEMON_STOP_BOUND_MS, childStderrLines, startMainSeam, type UtilityChildLike } from "../main/seam.js";
 import { safeStorageCipher } from "../main/safe-storage.js";
 
 type Listener = (value: never) => void;
@@ -131,7 +133,8 @@ function rig(t: { after(fn: () => void): void }, packaged = false, bundleOverrid
 
 const settle = () => new Promise((r) => setImmediate(r));
 const until = async (cond: () => boolean, what: string) => {
-  for (let i = 0; i < 200 && !cond(); i++) await settle();
+  const end = Date.now() + 5_000;
+  while (!cond() && Date.now() < end) await settle();
   assert.ok(cond(), what);
 };
 
@@ -172,7 +175,7 @@ test("the forks: fixed bundle files, the fixed options, allow-listed environment
   assert.equal((byService.get("axis-pty")!.options["env"] as Record<string, string>)["SSH_AUTH_SOCK"], "/tmp/agent.sock", "the pty launch environment adds SSH_AUTH_SOCK");
   const d = byService.get("axis-daemon")!;
   d.child.stderrListener!("x".repeat(5000));
-  assert.ok(r.lines.some((l) => l.startsWith("axis-daemon: ") && l.length <= "axis-daemon: ".length + 512), "S4: stderr bounded");
+  assert.ok(r.lines.some((l) => l.startsWith("[axis-daemon stderr] ") && l.length <= "[axis-daemon stderr] ".length + 512), "S4: stderr bounded");
   await r.seam!.shutdown();
 });
 
@@ -223,4 +226,69 @@ test("slice 3.1's answers: native.confirm is refused at once, trust.check is fal
 
 test("a relative bundle directory is refused before anything starts", (t) => {
   assert.throws(() => rig(t, false, "dist/app"), /absolute/, "S3");
+});
+
+test("a child's stderr is split, escaped and tagged: it can neither forge main's lines nor reach the terminal", () => {
+  const hostile = "ok line\naxis daemon: failed reason=lock_held\r\n\u001b]0;owned\u0007\u001b[31mred\u001b[0m\n\u202Eevil\n";
+  const lines = childStderrLines("axis-daemon", new TextEncoder().encode(hostile));
+  assert.deepEqual(lines.map((l) => l.slice(0, 21)), Array(4).fill("[axis-daemon stderr] "), "S10: every line tagged");
+  assert.equal(lines.some((l) => l.startsWith("axis daemon:")), false, "S10: no forged line of main's");
+  for (const l of lines) assert.match(l, /^[\x20-\x7e]+$/, `S10: printable only: ${l}`);
+  assert.ok(lines[2]!.includes("\\u{1b}"), "S10: escapes are visible, not executed");
+  const many = childStderrLines("axis-pty", Array.from({ length: 50 }, (_, i) => `l${i}`).join("\n"));
+  assert.equal(many.length, 21, "at most 20 lines per chunk, and a count of the rest");
+});
+
+test("settings: both keys are answered unset", async (t) => {
+  const r = rig(t);
+  await until(() => r.forks.length === 2, "both forked");
+  for (const key of ["axis.cliAgents", "axis.git.runHooks"]) {
+    const replies: unknown[] = [];
+    r.seam!.answers.onRequest({ type: "settings.get", requestId: "r9", key } as never, (m) => void replies.push(m));
+    assert.deepEqual(replies as unknown, [{ type: "settings.result", requestId: "r9", key, value: null }], `S11: ${key}`);
+  }
+  await r.seam!.shutdown();
+});
+
+test("the daemon is killed by SIGKILL on its exact pid, as the pty process is", async (t) => {
+  const r = rig(t);
+  await until(() => r.forks.length === 2, "both forked");
+  const d = r.forks.find((f) => f.options["serviceName"] === "axis-daemon")!;
+  r.log.length = 0;
+  r.clock.advance(70_000); // past the daemon's ready timeout: the supervisor kills it
+  assert.ok(r.log.includes(`killPid ${d.child.pid}`), `S12: ${JSON.stringify(r.log)}`);
+  assert.equal(d.child.killed, 0, "S12: not utilityProcess.kill (SIGTERM)");
+  d.child.emit("exit", null);
+  await r.seam!.shutdown();
+});
+
+test("a quit during start never spawns the daemon", async (t) => {
+  const r = rig(t);
+  await r.seam!.shutdown(); // settles only after the start chain ran, so a spawn would have happened by now
+  await r.seam!.started;
+  assert.equal(r.forks.filter((f) => f.options["serviceName"] === "axis-daemon").length, 0, "S13");
+});
+
+test("a daemon that exited leaves the hand-over: a pty restart posts nothing to it", async (t) => {
+  const r = rig(t);
+  await until(() => r.forks.length === 2, "both forked");
+  const d = r.forks.find((f) => f.options["serviceName"] === "axis-daemon")!;
+  const p = r.forks.find((f) => f.options["serviceName"] === "axis-pty")!;
+  d.child.emit("exit", 78); // a configuration failure: the supervisor does not restart it, so no new daemon replaces this one
+  const before = d.child.posted.length;
+  p.child.emit("exit", 1);
+  r.clock.advance(5_000); // the pty process restarts; the daemon is still in backoff
+  await until(() => r.forks.filter((f) => f.options["serviceName"] === "axis-pty").length === 2, "the pty process restarted");
+  assert.equal(d.child.posted.length, before, "S14: nothing posted into the dead daemon");
+  await r.seam!.shutdown();
+});
+
+test("KNOWN OPEN DEFECT (OS-3h): the hand-over counts two posted ports as done, with no acknowledgement", async (t) => {
+  // This pins today's behaviour on purpose, so OS-3h changes it deliberately (docs/design/own-shell-main-seam.md §3a): neither child
+  // has answered anything, yet main logs a completed hand-over.
+  const r = rig(t);
+  await until(() => r.forks.length === 2 && r.lines.includes("axis pty: handed_over"), "handed_over logged");
+  for (const f of r.forks) assert.equal(f.child.posted.filter((m) => (m.message as { type?: string })?.type === "pty-control").length, 1);
+  assert.equal(r.lines.filter((l) => l === "axis pty: handed_over").length, 1, "counted as done without any acknowledgement");
+  await r.seam!.shutdown();
 });

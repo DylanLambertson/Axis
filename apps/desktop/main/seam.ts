@@ -96,7 +96,21 @@ export interface MainSeam {
   shutdown(): Promise<void>;
 }
 
-const text = (chunk: unknown): string => (chunk instanceof Uint8Array ? Buffer.from(chunk).toString("utf8") : String(chunk)).trimEnd().slice(0, MAX_STDERR_LINE);
+const MAX_STDERR_LINES = 20;
+
+/**
+ * A child's stderr as main's log takes it: split into lines, every character outside printable ASCII escaped (so no escape sequence
+ * reaches a terminal and no line can pass for one of main's own), each line bounded and tagged with the child's fixed prefix, at
+ * most MAX_STDERR_LINES per chunk. Development builds only (the packaged log drops trace lines).
+ */
+export function childStderrLines(service: "axis-daemon" | "axis-pty", chunk: unknown): string[] {
+  const raw = chunk instanceof Uint8Array ? Buffer.from(chunk).toString("utf8") : String(chunk);
+  const lines = raw.split(/\r\n|\r|\n/).filter((l) => l.trim() !== "");
+  const escape = (l: string): string => [...l].map((c) => (/^[\x20-\x7e]$/.test(c) ? c : `\\u{${c.codePointAt(0)?.toString(16)}}`)).join("");
+  const out = lines.slice(0, MAX_STDERR_LINES).map((l) => `[${service} stderr] ${escape(l).slice(0, MAX_STDERR_LINE)}`);
+  if (lines.length > MAX_STDERR_LINES) out.push(`[${service} stderr] (${lines.length - MAX_STDERR_LINES} more lines dropped)`);
+  return out;
+}
 
 /** Forks one fixed bundle file through forkUtility, stdout drained and dropped, stderr to the log (bounded, trace only). */
 function forkFixed<P>(deps: SeamDeps<P>, file: string, service: "axis-daemon" | "axis-pty", env: Readonly<Record<string, string | undefined>>): UtilityChildLike {
@@ -106,7 +120,9 @@ function forkFixed<P>(deps: SeamDeps<P>, file: string, service: "axis-daemon" | 
   child.stdout?.on("data", () => {
     // Drained and dropped: an unread pipe would block the child.
   });
-  child.stderr?.on("data", (chunk) => deps.log.trace(`${service}: ${text(chunk)}`));
+  child.stderr?.on("data", (chunk) => {
+    for (const line of childStderrLines(service, chunk)) deps.log.trace(line);
+  });
   return child;
 }
 
@@ -170,7 +186,8 @@ export function startMainSeam<P>(deps: SeamDeps<P>): MainSeam | undefined {
     windows: { codeWindowOf: () => undefined },
     // No trust model in the own shell (OS-3b): a trust question main cannot decide is `false`.
     trust: { trustModel: () => undefined },
-    // No settings store yet (OS-4): a setting main cannot give is silence, which the daemon refuses on its timeout.
+    // No settings store yet (OS-4): every setting is unset, so main answers `settings.result` with `null` and the daemon applies its own
+    // defaults (`axis.git.runHooks` off; no `axis.cliAgents` entry, so a CLI run is refused).
     settings: { inspect: () => ({}) },
     platform: config.platform,
     now: deps.now,
@@ -189,7 +206,9 @@ export function startMainSeam<P>(deps: SeamDeps<P>): MainSeam | undefined {
       const handle: DaemonChild = {
         // A `connect` carries exactly one port (slice 3.2); every other message carries none.
         postMessage: (message, transfer) => (transfer === undefined ? child.postMessage(message) : child.postMessage(message, [...transfer])),
-        kill: () => child.kill(),
+        // The supervisor kills on its ready timeout and after the stop grace: SIGKILL by exact pid (utilityProcess.kill() sends SIGTERM,
+        // which a daemon with a blocked event loop never handles, so it would keep its data lock until main quits).
+        kill: () => (child.pid !== undefined ? deps.killPid(child.pid, "SIGKILL") : child.kill()),
         onMessage: (handler) => onChild(child, "message", (m: unknown) => m, handler),
         onExit: (handler) => onChild(child, "exit", (code: unknown) => (typeof code === "number" ? code : null), handler),
       };
@@ -211,9 +230,12 @@ export function startMainSeam<P>(deps: SeamDeps<P>): MainSeam | undefined {
     () => undefined,
     () => undefined,
   );
-  void started.then(() => supervisor.start());
-
   let stopping: Promise<void> | undefined;
+  // A quit during the anchor read or the pty start must not spawn the daemon only to stop it.
+  void started.then(() => {
+    if (stopping === undefined) supervisor.start();
+  });
+
   return {
     supervisor,
     answers,

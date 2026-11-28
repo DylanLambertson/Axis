@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { bundle } from "../scripts/bundle.mjs";
+import { appDir, bundle } from "../scripts/bundle.mjs";
 
 const out = mkdtempSync(join(tmpdir(), "axis-desktop-bundle-"));
 const meta = await bundle(out);
@@ -45,23 +45,45 @@ test("the page has a strict CSP: nothing by default, scripts and styles from the
   assert.doesNotMatch(html, /\sstyle=|<style/, "no inline style");
 });
 
-// OS-3.1: main reaches the daemon host only through its narrow `./main` subpath. Measured at 1,127,211 bytes when this was set
-// (zod is about 751 KB of it, needed for the control messages); the budget leaves about 5% headroom and fails when exceeded.
-export const MAIN_BUNDLE_BUDGET = 1_185_000;
+// OS-3.1: main reaches the daemon host only through its narrow `./main` subpath. The budget is on the code esbuild emits for main's
+// inputs (the metafile's bytesInOutput), not the file size, which also holds a path comment per module and so grows with the
+// checkout's depth. Measured at 1,122,574 bytes when this was set (zod is about 751 KB of it, needed for the control messages); the
+// budget leaves about 5% headroom and fails when exceeded.
+export const MAIN_BUNDLE_BUDGET = 1_180_000;
+const MAIN_DAEMON_HOST_INPUTS = [
+  "src/control/messages.js",
+  "src/control/secrets-messages.js",
+  "src/main/anchor-file.js",
+  "src/main/anchor-store.js",
+  "src/main/answers.js",
+  "src/main/attest-sign.js",
+  "src/main/index.js",
+  "src/main/native-queue.js",
+  "src/main/pty-handover.js",
+  "src/main/pty-launch.js",
+  "src/main/pty-supervisor.js",
+  "src/main/settings-scope.js",
+  "src/main/trust-model.js",
+  "src/supervisor.js",
+];
 
-test("main reaches the daemon host only through its main-side modules, and stays within its size budget", () => {
-  const inputs = Object.keys(meta.main.inputs).filter((i) => i.includes("packages/daemon-host/"));
-  assert.ok(inputs.length > 0, "main uses the daemon host");
-  for (const i of inputs) assert.match(i, /packages\/daemon-host\/dist\/src\/(main\/[^/]+|supervisor|control\/messages|control\/secrets-messages)\.js$/, i);
-  for (const needed of ["src/supervisor.js", "src/main/answers.js", "src/control/messages.js"]) {
-    assert.ok(inputs.some((i) => i.endsWith(`packages/daemon-host/dist/${needed}`)), `main really includes ${needed}`);
-  }
+test("main reaches exactly the daemon host's main-side modules, and stays within its size budget", () => {
+  const inputs = Object.keys(meta.main.inputs).filter((i) => i.includes("packages/daemon-host/")).map((i) => i.replace(/.*packages\/daemon-host\/dist\//, "")).sort();
+  assert.deepEqual(inputs, MAIN_DAEMON_HOST_INPUTS, "exactly these modules: a new one is a reviewed change to this list");
   const all = Object.keys(meta.main.inputs);
-  assert.ok(!all.some((i) => /daemon-host\/dist\/src\/(handlers|storage|compose|host|entry)|packages\/(audit|journal|worktrees|runs|review|broker|git-ops|git-snapshot|vault)\//.test(i)), "no composition root, handlers, storage or the daemon's own packages");
+  assert.ok(!all.some((i) => /packages\/(audit|journal|worktrees|runs|review|broker|git-ops|git-snapshot|vault)\//.test(i)), "none of the daemon's own packages");
   const imports = Object.values(meta.main.outputs).flatMap((o) => o.imports);
   assert.ok(!imports.some((i) => i.path === "node:sqlite"), "no node:sqlite");
-  const size = Object.values(meta.main.outputs)[0].bytes;
-  assert.ok(size <= MAIN_BUNDLE_BUDGET, `main.cjs is ${size} bytes, over its budget of ${MAIN_BUNDLE_BUDGET}`);
+  const out = Object.values(meta.main.outputs)[0];
+  const code = Object.values(out.inputs).reduce((sum, i) => sum + i.bytesInOutput, 0);
+  assert.ok(code <= MAIN_BUNDLE_BUDGET, `main's code is ${code} bytes, over its budget of ${MAIN_BUNDLE_BUDGET}`);
+});
+
+test("@axis/daemon-host exports exactly its root, ./main, ./entry and ./signal-guard", () => {
+  const pkg = JSON.parse(readFileSync(join(appDir, "..", "..", "packages", "daemon-host", "package.json"), "utf8"));
+  assert.deepEqual(Object.keys(pkg.exports), [".", "./main", "./entry", "./signal-guard"]);
+  assert.equal(pkg.exports["./main"].default, "./dist/src/main/index.js");
+  assert.equal(pkg.exports["./entry"].default, "./dist/src/entry.js");
 });
 
 test("the forked files reach only their guard, and load their entry bundle by import()", () => {
