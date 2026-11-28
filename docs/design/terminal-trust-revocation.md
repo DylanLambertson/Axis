@@ -150,7 +150,7 @@ DC-3a's daemon side forwards all of them through the control slot (`bindings/pty
 
 ### 6.3 Residual: the reused-group check (the code review's nit 5)
 
-The pty client signals a tracked group by its id only while the id is ours: its leader has not exited, or the leader's pid is free (`/proc/<pid>` on Linux; elsewhere it is not signalled).
+The pty client signals a tracked group by its id only while the id is ours: the pty process has not REPORTED its leader's exit, or the leader's pid is free (`/proc/<pid>` on Linux; elsewhere it is not signalled). An exit settled only because the channel closed or the port was disposed says nothing about the leader, which may still run, so the group stays ours.
 - **The window:** between that read and the signal, the pid could be taken by a new process that makes it a group id. On Linux this is the only check.
 - **Why it is accepted:** the window is a few microseconds, at dispose or once the pty process is gone. Pid reuse in that window is improbable, and the process would be the same user's. The pty process ends its own groups when its control channel closes anyway.
 - **What would close it:** a pidfd for the leader (Linux), taken at spawn, would remove the window. It is not built.

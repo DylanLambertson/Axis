@@ -111,6 +111,8 @@ interface Pending {
 interface Term {
   readonly group: Extract<ControlReply, { t: "spawned" }>["group"];
   exit: PtyExit | undefined;
+  /** The pty process reported the leader's exit (`exit` message). An exit settled because the channel closed is NOT this. */
+  leaderExited: boolean;
   jobEmpty: boolean;
   readonly exitListeners: Set<(e: PtyExit) => void>;
 }
@@ -186,14 +188,14 @@ export function createPtyProcessPort(options: PtyProcessPortOptions): PtyProcess
         // Timed out: the group is still ours to watch until it is gone, and its spawn's owner is told (DC-3a).
         const listener = late.get(m.req);
         late.delete(m.req);
-        const t: Term = { group: m.group, exit: undefined, jobEmpty: false, exitListeners: new Set() };
+        const t: Term = { group: m.group, exit: undefined, leaderExited: false, jobEmpty: false, exitListeners: new Set() };
         prune();
         terms.set(m.term, t);
         return tell(listener, { kind: "spawned", handle: makeHandle(m.term, t) });
       }
       pending.delete(m.req);
       clock.clearTimeout(p.timer);
-      const t: Term = { group: m.group, exit: undefined, jobEmpty: false, exitListeners: new Set() };
+      const t: Term = { group: m.group, exit: undefined, leaderExited: false, jobEmpty: false, exitListeners: new Set() };
       prune();
       terms.set(m.term, t);
       p.resolve(makeHandle(m.term, t));
@@ -210,7 +212,10 @@ export function createPtyProcessPort(options: PtyProcessPortOptions): PtyProcess
       p.reject(new PtySpawnError(m.code, true));
     } else if (m.t === "exit") {
       const t = terms.get(m.term);
-      if (t !== undefined) settleExit(t, { exitCode: m.exitCode, signal: m.signal });
+      if (t !== undefined) {
+        t.leaderExited = true;
+        settleExit(t, { exitCode: m.exitCode, signal: m.signal });
+      }
       prune();
     } else if (m.t === "group-empty") {
       const t = terms.get(m.term);
@@ -270,7 +275,9 @@ export function createPtyProcessPort(options: PtyProcessPortOptions): PtyProcess
   // its own groups when its control channel closes. A pidfd taken at spawn would close it (not built).
   const owned = (t: Term): boolean => {
     if (t.group.kind !== "pgid") return false;
-    if (t.exit === undefined) return true;
+    // Only a REPORTED leader exit frees the pid for reuse. An unknown exit (the channel closed, the port disposed) says nothing
+    // about the leader, which may still run and still hold the id: the group is still ours to signal.
+    if (!t.leaderExited) return true;
     try {
       return leaderPresent(t.group.pgid) === false;
     } catch {
