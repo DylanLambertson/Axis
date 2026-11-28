@@ -34,6 +34,7 @@ const M = [
   ["h", "H12 web contents not hardened", 'hardenWebContents(contents, (what) => onEvent({ kind: "policy", what }));', ""],
   ["h", "H12 certificate chosen", "event.preventDefault();\n        callback();\n        onEvent({ kind: \"policy\", what: \"client_certificate\" });", "onEvent({ kind: \"policy\", what: \"client_certificate\" });"],
   ["h", "H12 login answered", "event.preventDefault();\n        callback();\n        onEvent({ kind: \"policy\", what: \"login\" });", "onEvent({ kind: \"policy\", what: \"login\" });"],
+  ["h", "H12 fatal swallowed", "fatal(error instanceof Error ? error : new Error(String(error)));", ""],
   ["h", "H13 Open the default", "defaultId: c.defaultId", "defaultId: 1"],
   ["h", "H13 cancel answer", "cancelId: c.cancelId", "cancelId: 1"],
   ["h", "H13 link", "noLink: c.noLink", "noLink: false"],

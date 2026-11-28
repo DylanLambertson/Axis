@@ -143,11 +143,17 @@ export interface AppEventsLike {
  * redirect, webview and window-open policy and the startup checks; a client certificate is never chosen and an HTTP login is
  * cancelled (both unreachable while the filter allows no network, refused anyway).
  */
-export function installAppHardening(app: AppEventsLike, onEvent: (event: HardeningEvent) => void = () => {}): void {
+export function installAppHardening(app: AppEventsLike, onEvent: (event: HardeningEvent) => void = () => {}, fatal: (error: Error) => void = (error) => { throw error; }): void {
   app.on("web-contents-created", (_event, contents) => {
-    requireApis(contents, CONTENTS_APIS, "a web contents");
-    assertNoChoosers(contents, CONTENTS_CHOOSER_EVENTS, "a web contents");
-    hardenWebContents(contents, (what) => onEvent({ kind: "policy", what }));
+    // Harden first, so a failed check below never leaves this contents unhardened; then check, and stop main on failure (a throw
+    // inside an Electron listener is only reported, and main would keep running).
+    try {
+      hardenWebContents(contents, (what) => onEvent({ kind: "policy", what }));
+      requireApis(contents, CONTENTS_APIS, "a web contents");
+      assertNoChoosers(contents, CONTENTS_CHOOSER_EVENTS, "a web contents");
+    } catch (error) {
+      fatal(error instanceof Error ? error : new Error(String(error)));
+    }
   });
   app.on("select-client-certificate", (event, _contents, _url, _list, callback) => {
     event.preventDefault();

@@ -266,7 +266,17 @@ test("app-wide: every web contents gets the policy; no client certificate, no lo
   assert.ok(w.openHandler, "H12");
   const chooser = fakeWindow(6);
   chooser.heard = "select-bluetooth-device";
-  assert.throws(() => handlers.get("web-contents-created")!({}, chooser.webContents), /device chooser/, "H12");
+  assert.throws(() => handlers.get("web-contents-created")!({}, chooser.webContents), /device chooser/, "H12: the default fatal throws");
+  const fatals: string[] = [];
+  const second = fakeAppEvents();
+  installAppHardening(second.app as never, () => {}, (e) => void fatals.push(e.message));
+  const late = fakeWindow(7);
+  late.heard = "select-bluetooth-device";
+  second.handlers.get("web-contents-created")!({}, late.webContents);
+  assert.deepEqual(late.contentsEvents.sort(), ["will-attach-webview", "will-frame-navigate", "will-navigate", "will-redirect"], "H12: hardened before the check failed");
+  assert.ok(late.openHandler, "H12");
+  assert.equal(fatals.length, 1, "H12: a failed check stops main");
+  assert.match(fatals[0]!, /device chooser/);
   let prevented = 0;
   const answers: unknown[][] = [];
   handlers.get("select-client-certificate")!({ preventDefault: () => prevented++ }, {}, "https://x", [{ cert: 1 }], (...a: unknown[]) => answers.push(a));

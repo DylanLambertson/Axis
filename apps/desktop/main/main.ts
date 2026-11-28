@@ -39,7 +39,10 @@ function start(): void {
     dataBase: dirname(axisDataRoots(PLATFORM, process.env, homedir()).dataDir),
     ...(userDataOverride() === undefined ? {} : { userDataOverride: userDataOverride() as string }),
   });
-  installAppHardening(app as unknown as Parameters<typeof installAppHardening>[0], log);
+  installAppHardening(app as unknown as Parameters<typeof installAppHardening>[0], log, (error) => {
+    process.stderr.write(`web contents hardening failed: ${error.message}\n`);
+    app.exit(1);
+  });
   app.on("window-all-closed", () => app.quit());
   app.whenReady().then(ready).catch((error: unknown) => {
     process.stderr.write(`main window failed: ${error instanceof Error ? error.message : String(error)}\n`);
