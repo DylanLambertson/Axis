@@ -50,7 +50,9 @@ test("a full table refusing a GRANT notifies nothing", () => {
 test("a nested set during a dispatch (grant or revoke) is refused and records nothing; the outer revoke stands", () => {
   const reg = new InMemoryTrustRegistry();
   const refused: string[] = [];
+  let depth = 0; // the listener tries nested sets on its first call only, so a registry that let them through cannot recurse forever
   reg.onRevoked(() => {
+    if (depth++ > 0) return;
     for (const trusted of [true, false]) {
       try {
         reg.set({ windowId: "w1" }, trusted);
@@ -69,6 +71,7 @@ test("a nested set during a dispatch (grant or revoke) is refused and records no
   reg.set({ windowId: "w1" }, false);
   assert.deepEqual(refused, ["true:RangeError", "false:RangeError", "other"]);
   assert.equal(later, 1, "no recursion: each listener heard one event");
+  assert.equal(depth, 1, "the first listener was not re-entered");
   assert.equal(reg.isRevoked({ windowId: "w1" }), true);
   assert.equal(reg.isRevoked({ windowId: "other" }), false, "the nested revoke recorded nothing");
   reg.set({ windowId: "w2" }, false); // after the dispatch, sets work again
