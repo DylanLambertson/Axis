@@ -135,16 +135,21 @@ export async function openTerminal(deps: TerminalServiceDeps, req: { readonly wo
       const rec = await Promise.race([outcome, aborted]);
       if (rec === "aborted") {
         // Review S2: the answer may have published the terminal in the same turn; abandon ends it then, and it is audited as closed.
+        // Review 2 nit 2: the shell existed, so its open is audited too, then its close.
         const ended = deps.registry.abandon(op);
-        if (ended !== undefined) auditClose(deps, ended);
+        if (ended !== undefined) (auditOpen(deps, ended), auditClose(deps, ended));
         throw terminalFailure("cancelled"); // thrown while aborted: the daemon keeps the key outcome-unknown
       }
       if (rec === undefined) throw terminalFailure("spawn_failed");
-      deps.audit({ actor: "user", action: "terminal.open", target: `terminal:${rec.terminalId}`, outcome: "success", payload: { terminalId: rec.terminalId, workspaceId: rec.workspaceId, projectId: rec.projectId } });
+      auditOpen(deps, rec);
       return rec;
     },
     context.signal,
   );
+}
+
+function auditOpen(deps: Pick<TerminalServiceDeps, "audit">, rec: TerminalRecord): void {
+  deps.audit({ actor: "user", action: "terminal.open", target: `terminal:${rec.terminalId}`, outcome: "success", payload: { terminalId: rec.terminalId, workspaceId: rec.workspaceId, projectId: rec.projectId } });
 }
 
 function auditClose(deps: Pick<TerminalServiceDeps, "audit">, rec: TerminalRecord): void {

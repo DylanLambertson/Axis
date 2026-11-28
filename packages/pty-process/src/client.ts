@@ -1,4 +1,5 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
+import { existsSync } from "node:fs";
 import type { ForgeListRequest, ForgeReply } from "@axis/protocol";
 import { createExecCalls, type PtyExecCall, type PtyExecOutcome } from "./exec-client.js";
 import { createForgeCalls } from "./forge-client.js";
@@ -34,6 +35,11 @@ export interface PtyProcessPortOptions {
   readonly maxPending?: number;
   /** PV-M6: each endpoint relay message, parsed by the shared envelope schema (the daemon's relay answers it with `relay`). */
   readonly onRelay?: (msg: RelayInbound) => void;
+  /**
+   * Whether a process with this pid exists now (`undefined`: cannot tell). Default: `/proc/<pid>` on Linux, `undefined` elsewhere.
+   * Used only for a group whose leader is known to have exited, before signalling its id directly (see `owned`).
+   */
+  readonly leaderPresent?: (pid: number) => boolean | undefined;
 }
 
 /**
@@ -232,7 +238,7 @@ export function createPtyProcessPort(options: PtyProcessPortOptions): PtyProcess
         if (!SIGNALS.has(signal)) throw new Error("invalid signal");
         if (send({ t: "kill", term, signal })) return;
         // The pty process is gone: signal the group directly (POSIX only; a job cannot be reached from here).
-        if (t.group.kind === "pgid") signalGroup(ops, t.group.pgid, signal);
+        if (t.group.kind === "pgid" && owned(t)) signalGroup(ops, t.group.pgid, signal);
       },
       groupAlive() {
         if (t.group.kind === "job") return !t.jobEmpty;
@@ -253,9 +259,25 @@ export function createPtyProcessPort(options: PtyProcessPortOptions): PtyProcess
   }
 
   /** The pty process is gone or being shut down: end every group this port started that still lives (POSIX; a job cannot be reached from here). */
+  const leaderPresent = options.leaderPresent ?? ((pid: number): boolean | undefined => (process.platform === "linux" ? existsSync(`/proc/${pid}`) : undefined));
+  /**
+   * DC-3a review 2: may this port still signal the group by its id? A group id is its leader's pid, which cannot be reused while the
+   * leader lives. Once the leader is known to have exited, a process now holding that pid means the id may be another group's, and
+   * an answer that cannot be had counts the same: not ours to signal. The pty process ends its own groups when its channel closes.
+   */
+  const owned = (t: Term): boolean => {
+    if (t.group.kind !== "pgid") return false;
+    if (t.exit === undefined) return true;
+    try {
+      return leaderPresent(t.group.pgid) === false;
+    } catch {
+      return false;
+    }
+  };
+
   const killKnown = (): void => {
     for (const t of terms.values()) {
-      if (t.group.kind !== "pgid") continue;
+      if (t.group.kind !== "pgid" || !owned(t)) continue;
       try {
         signalGroup(ops, t.group.pgid, "SIGKILL");
       } catch {
