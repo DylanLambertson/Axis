@@ -7,7 +7,9 @@ import { EVENTS_CONTRACT, EVENTS_VERSION, MAX_PROMPT_CHARS, PROJECTS_CONTRACT, P
 import { createSecretScanner, type ScanMode } from "@axis/secret-scan";
 import { anchorPreflight } from "./anchor/preflight.js";
 import { createAgentBinding, type AgentBinding } from "./bindings/agent.js";
-import { createProvidersBinding, productionConnection, type AnthropicConnectionOptions, type ProvidersBinding } from "./bindings/providers.js";
+import { asVaultBackend, createProvidersBinding, productionConnection, type AnthropicConnectionOptions, type ProvidersBinding } from "./bindings/providers.js";
+import { confirmFinalAnchor } from "./compose-anchor.js";
+import { secretBrokerWiring, type SecretBrokerOption } from "./compose-secrets.js";
 import { selectPtyGitRunner } from "./bindings/pty-git.js";
 import { createRunsBinding, type RunsBinding } from "./bindings/runs.js";
 import { composerGuardDeps, createRunRepositoryGuard, type RunSnapshotterFactory } from "./bindings/snapshot.js";
@@ -146,6 +148,8 @@ export interface ComposeOptions {
    * the client is then the production one, and with no backend (production until PV-N0c) nothing is revealed or sent.
    */
   readonly integrations?: { readonly client?: EgressClient; readonly vaultBackend?: SecretBackend };
+  /** TEST ONLY until PV-N0c-2: the secret broker wiring (`compose-secrets.ts`); the daemon entry never sets it (a pinned test). */
+  readonly secretBroker?: SecretBrokerOption;
 }
 
 export interface ComposedHost {
@@ -172,6 +176,9 @@ export function composeDaemonHost(options: ComposeOptions): ComposedHost {
   const snapshotterFactory = options.snapshotter;
   const logger: Logger | undefined = ports.logger;
   const scanner = createSecretScanner({ mode: options.scanMode ?? "refuse" });
+  if (options.secretBroker !== undefined && (options.composer?.anthropic !== undefined || options.integrations?.vaultBackend !== undefined)) refuseComposition("secret_broker_conflict");
+  const broker = secretBrokerWiring(options.secretBroker, control, logger); // undefined unless the option is set: no backend, no send
+  const viaBroker = broker === undefined ? undefined : asVaultBackend(broker.backend); // the ONE backend both bindings get
   // Closed when the final anchor is taken: no composer or challenge row may land after it (review r1 S1).
   const auditSeal = createAuditSeal();
   // The host windows' lifetimes (PV-K2 K2-g4b, plugin-grant-contract.md section 8.4): fed by the daemon's session lifecycle and
@@ -268,7 +275,8 @@ export function composeDaemonHost(options: ComposeOptions): ComposedHost {
         forwarder.bind(runs.service);
         const projectPaths = (): string[] => parts.journal.listProjects().map((p) => p.path);
         // Composer runs: the broker's audit rows mark the anchor batch dirty like every other writer.
-        const providers = createProvidersBinding({ redactor: ports.redactor, audit: composerWriter, ...productionConnection(options.composer?.anthropic) });
+        const providers = createProvidersBinding({ redactor: ports.redactor, audit: composerWriter, ...productionConnection(broker === undefined || viaBroker === undefined ? options.composer?.anthropic : { connectionId: broker.connectionId, backend: viaBroker, vault: broker.vault }) });
+        if (broker !== undefined) void broker.startup((signal) => providers.validateStored(signal)); // the startup reveal, under the option only
         // axis.messages/1 (PV-M3): service, settings and delivery into runs; its rows go through the sealed composer writer.
         const messagingDeps = hostMessagingDeps({ journal: parts.journal, audit: composerWriter, monotonic: () => ports.clock.monotonic(), scan: (text) => scanner.scan(text, { part: "message" }), logger, holdsSecret: messageSecretCheck(ports.redactor), enabled: options.messaging?.enabled === true });
         const messaging = createMessagingBinding(messagingDeps);
@@ -375,7 +383,7 @@ export function composeDaemonHost(options: ComposeOptions): ComposedHost {
     if (writable) {
       const egress = options.integrations?.client ?? createEgressClient();
       cleanups.push(() => egress.close());
-      const integrations = { sender: egress, backend: options.integrations?.vaultBackend };
+      const integrations = { sender: egress, backend: viaBroker ?? options.integrations?.vaultBackend };
       registerServing(registrar, services, { built, config, control, ports, pty, scanner, ptyGitRunnerFor, logger, runHooks: options.runHooks ?? false, sshSpawn: options.sshSpawn, pluginGrants: options.pluginGrants === true, stopProjectRuns, minter: createRunTrustMinter(ports.clock), hostWindows: windowLifetimes, integrations, terminals, terminalRouting: installTerminals(terminals, services.trust, (e) => (services.audit?.append(e), services.anchors.noteWrite()), () => logger?.warn("request.failed", { reason: "terminal_audit" }), cleanups) });
     }
     if (events !== undefined) {
@@ -444,31 +452,13 @@ export function composeDaemonHost(options: ComposeOptions): ComposedHost {
     offConnect?.();
     services.haltAnchor();
     built.runs?.dispose();
+    await broker?.stop(); // the startup reveal starts no read the sealed writers could not audit (review n0c1-b nit)
     // Composer loops stop and write nothing more to the journal; what was running gets a bounded moment to record its result,
     // then the composer and challenge writers are sealed, so the final checkpoint below covers the last row (review r1 S1).
     if (!(await settleComposer(built.composer, auditSeal, options.composerSettleMs ?? 1_000))) logger?.warn("request.failed", { reason: "composer_unsettled" });
     built.agent?.dispose();
     services.flushAnchor();
-    const target = services.anchor().put;
-    const head = services.auditRead.head();
-    // The final put must cover the newest row; one that could not be sent (a closed channel) leaves rows unanchored.
-    if (head !== null && (target === undefined || target === null || target.seq < head.seq) && services.anchor().ackedSeq < head.seq) {
-      throw new AxisError("E_UNAVAILABLE", "The final audit anchor could not be sent", { reason: "final_anchor_unsent" });
-    }
-    if (target === undefined || target === null || services.anchor().ackedSeq >= target.seq) return;
-    const acked = await new Promise<boolean>((resolve) => {
-      const off = control.onAnchorAck(() => {
-        if (services.anchor().ackedSeq >= target.seq) done(true);
-      });
-      const timer = setTimeout(() => done(false), options.finalAnchorWaitMs ?? 1_500) as unknown as NodeJS.Timeout; // opaque handle under Code OSS's typings (ADR 0005)
-      timer.unref();
-      function done(ok: boolean): void {
-        clearTimeout(timer);
-        off();
-        resolve(ok);
-      }
-    });
-    if (!acked) throw new AxisError("E_UNAVAILABLE", "The final audit anchor was not acknowledged", { reason: "final_anchor_unacked" });
+    await confirmFinalAnchor(control, { anchor: () => services.anchor(), head: () => services.auditRead.head() }, options.finalAnchorWaitMs ?? 1_500);
   }
 
   function stop(): Promise<DisposeResult> {

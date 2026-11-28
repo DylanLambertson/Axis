@@ -11,12 +11,15 @@ import { SECRET_NAME_RE, type SecretMeta, type SecretsValue } from "./control/se
  * strict schemas; failures are one fixed `AxisError` (`E_UNAVAILABLE`, "The secret broker did not complete the request") with
  * a closed `reason` only, never main's text, a name or a value. The vault replaces any throw with its own `backend_failed`.
  *
- * - Ordering: a `put` or `remove` for ONE name leaves only after the previous `put` or `remove` for it settled, so a rollback
- *   `remove` never overtakes the `put` it undoes; a `get` or `meta` waits only behind such a mutation (it must see its
- *   outcome) and otherwise goes straight to main, which orders requests by name itself. Other names are never held up.
- * - Bounds (gate 6; review n0c1-2a SF-1): at most 4 requests wait per name, more fail `busy` at once; a waiting request's
- *   deadline runs from when it was asked, not from when it leaves, so with main hung on a name every caller fails within one
- *   timeout. What leaves counts against the control client's 8 outstanding.
+ * - Ordering: a `put` or `remove` for ONE name leaves only after every earlier `put` or `remove` for it settled, so a rollback
+ *   `remove` never overtakes the `put` it undoes. One that gave up waiting (and so never left) does not let a later one pass:
+ *   the chain's tail waits for its predecessor too (review n0c1-2a r2 NIT-A). A `get` or `meta` waits only behind such a
+ *   mutation (it must see its outcome) and otherwise goes straight to main, which orders requests by name itself. Other names
+ *   are never held up.
+ * - Bounds (gate 6; review n0c1-2a SF-1): per name, at most 4 reads and, separately, 4 mutations wait, so reads can never
+ *   make a `put` or a rollback `remove` busy (r2 NIT-C); more fail `busy` at once. A waiting request's deadline runs from when
+ *   it was asked, not from when it leaves, so with main hung on a name every caller fails within one timeout. What leaves
+ *   counts against the control client's 8 outstanding.
  * - A `put` that main answered `failed`, that timed out, whose answer was refused, or that was cut off after it was SENT
  *   (dispose, channel close) is UNKNOWN: main's late operation may still write the record. The backend reconciles with ONE
  *   `get`, which main orders behind the late `put`. The same secret with the same `storedAt`, `label` and consent is this put:
@@ -74,7 +77,7 @@ export interface BrokerSecretBackendOptions {
   readonly onEvent?: (event: BrokerEvent) => void;
 }
 
-/** At most this many requests wait for one name (main keeps 4 queued in all, §3.4). */
+/** At most this many reads, and as many mutations, wait for one name (main keeps 4 queued in all, §3.4). */
 export const MAX_WAITING_PER_NAME = 4;
 
 /** Fixed UI text per backend id (the vault keeps a label only when it is plain ASCII). */
@@ -160,14 +163,15 @@ function build(options: BrokerSecretBackendOptions, timeoutsMs: { readonly slow:
     throw fail(answer.error);
   };
 
-  // Per name: the tail of its put/remove chain (a promise that never rejects) and how many requests wait for it.
+  // Per name: the tail of its put/remove chain (a promise that never rejects) and how many reads and mutations wait for it,
+  // keyed `r:<name>` and `m:<name>` (Maps: a name like `constructor` is an ordinary key).
   const mutations = new Map<string, Promise<void>>();
   const waiting = new Map<string, number>();
-  /** Wait until `before` settles or `deadline` passes; counted against the name's waiting bound. */
-  const waitFor = async (name: string, before: Promise<void>, deadline: number): Promise<void> => {
-    const n = waiting.get(name) ?? 0;
+  /** Wait until `before` settles or `deadline` passes; counted against the name's bound for its kind. */
+  const waitFor = async (key: string, before: Promise<void>, deadline: number): Promise<void> => {
+    const n = waiting.get(key) ?? 0;
     if (n >= MAX_WAITING_PER_NAME) throw fail("busy");
-    waiting.set(name, n + 1);
+    waiting.set(key, n + 1);
     let timer: NodeJS.Timeout | undefined;
     try {
       const timedOut = new Promise<"timeout">((r) => {
@@ -178,9 +182,9 @@ function build(options: BrokerSecretBackendOptions, timeoutsMs: { readonly slow:
       if ((await Promise.race([before.then(() => "settled" as const), timedOut])) === "timeout") throw fail("timeout");
     } finally {
       clearTimeout(timer);
-      const left = (waiting.get(name) ?? 1) - 1;
-      if (left === 0) waiting.delete(name);
-      else waiting.set(name, left);
+      const left = (waiting.get(key) ?? 1) - 1;
+      if (left === 0) waiting.delete(key);
+      else waiting.set(key, left);
     }
   };
   /** A put or remove: after the name's previous mutation, and the next one's predecessor. */
@@ -188,13 +192,11 @@ function build(options: BrokerSecretBackendOptions, timeoutsMs: { readonly slow:
     const deadline = performance.now() + budget(a);
     const before = mutations.get(name);
     const mine = (async () => {
-      if (before !== undefined) await waitFor(name, before, deadline);
+      if (before !== undefined) await waitFor(`m:${name}`, before, deadline);
       return run(deadline);
     })();
-    const tail = mine.then(
-      () => undefined,
-      () => undefined,
-    );
+    // Settles when this one AND every earlier one settled: a request that gave up waiting never lets the next one pass.
+    const tail = Promise.all([before, mine.catch(() => undefined)]).then(() => undefined);
     mutations.set(name, tail);
     void tail.then(() => {
       if (mutations.get(name) === tail) mutations.delete(name);
@@ -205,7 +207,7 @@ function build(options: BrokerSecretBackendOptions, timeoutsMs: { readonly slow:
   const read = async <T>(name: string, a: SecretsAsk, run: (deadline: number) => Promise<T>): Promise<T> => {
     const deadline = performance.now() + budget(a);
     const before = mutations.get(name);
-    if (before !== undefined) await waitFor(name, before, deadline);
+    if (before !== undefined) await waitFor(`r:${name}`, before, deadline);
     return run(deadline);
   };
 

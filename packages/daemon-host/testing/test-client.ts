@@ -75,13 +75,13 @@ export class TestClient {
     }
   }
 
-  /** One request. `key` is the idempotency key (`true` makes a fresh one). */
-  call(contract: string, method: string, payload: unknown, key?: string | true): Promise<Answer> {
+  /** One request. `key` is the idempotency key (`true` makes a fresh one); `boundMs` replaces the 30 s bound for a slow case. */
+  call(contract: string, method: string, payload: unknown, key?: string | true, boundMs = CALL_BOUND_MS): Promise<Answer> {
     const id = `r${++this.#n}`;
     const idempotencyKey = key === true ? newKey() : key;
     const spec = lookupMethod(contract, 1, method);
     return new Promise<Answer>((resolve, reject) => {
-      const timer = setTimeout(() => (this.#pending.delete(id), reject(new Error(`${contract}.${method}: no answer within ${CALL_BOUND_MS} ms`))), CALL_BOUND_MS);
+      const timer = setTimeout(() => (this.#pending.delete(id), reject(new Error(`${contract}.${method}: no answer within ${boundMs} ms`))), boundMs);
       timer.unref();
       this.#pending.set(id, (raw) => {
         clearTimeout(timer);

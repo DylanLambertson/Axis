@@ -5,7 +5,10 @@
 // order they were made, so a rollback `remove` is never sent before the `put` (and its reconciliation) it undoes has settled.
 // Tested with delayed writes in the fake main, not inferred from timer settings.
 import assert from "node:assert/strict";
+import { readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { test } from "node:test";
+import { fileURLToPath } from "node:url";
 import { META, SECRET, secretsRig as rig } from "../testing/secrets-rig.js";
 
 const OLD = "test-credential-value-0000";
@@ -163,4 +166,46 @@ test("same name: a failed put does not block the next request for that name, whi
   await assert.rejects(put);
   assert.equal(await meta, undefined);
   assert.deepEqual(r.ops(), ["put:c1", "get:c1", "meta:c1"]);
+});
+
+test("a put that gave up waiting never lets a later put pass the one still pending (review r2 NIT-A)", async () => {
+  const r = rig({ budgetMs: { put: 60_000, get: 60_000 } }, { slow: 300, fast: 300 });
+  r.main.workMs = (op) => (op === "put" ? 1_000 : 0); // main holds the name for 1 s
+  const first = r.backend.put("c1", SECRET, META); // sent; unknown at 300 ms, its reconciling get settles about 600 ms
+  const second = r.backend.put("c1", "test-credential-value-0002", META); // waits, gives up at 300 ms, never sent
+  first.catch(() => undefined);
+  await assert.rejects(second, (e: Error & { detail?: Record<string, unknown> }) => e.detail?.["reason"] === "timeout");
+  await new Promise((res) => setTimeout(res, 50));
+  const third = r.backend.put("c1", "test-credential-value-0003", META);
+  third.catch(() => undefined);
+  await new Promise((res) => setTimeout(res, 100));
+  assert.deepEqual(r.ops().filter((o) => o === "put:c1").length, 1, "the third put has not left while the first is unsettled");
+  await Promise.allSettled([first, third]);
+});
+
+test("reads and mutations have their own waiting slots per name: four waiting reads never make a put or remove busy (r2 NIT-C)", async () => {
+  for (const name of ["c1", "constructor"]) {
+    const r = rig({ budgetMs: { put: 60_000 } }, { slow: 2_000, fast: 400 });
+    r.main.workMs = (op) => (op === "put" ? Infinity : 0);
+    const put = r.backend.put(name, SECRET, META);
+    put.catch(() => undefined);
+    await new Promise((res) => setTimeout(res, 5));
+    const reads = Array.from({ length: 4 }, () => r.backend.meta(name));
+    for (const p of reads) p.catch(() => undefined);
+    await assert.rejects(r.backend.meta(name), (e: Error & { detail?: Record<string, unknown> }) => e.detail?.["reason"] === "busy", `${name}: a fifth read is busy (the count is per name in a Map)`);
+    const removes = Array.from({ length: 4 }, () => r.backend.remove(name));
+    for (const p of removes) p.catch(() => undefined);
+    await new Promise((res) => setTimeout(res, 5));
+    await assert.rejects(r.backend.remove(name), (e: Error & { detail?: Record<string, unknown> }) => e.detail?.["reason"] === "busy", `${name}: a fifth mutation is busy`);
+    for (const p of removes) await assert.rejects(p, (e: Error & { detail?: Record<string, unknown> }) => e.detail?.["reason"] !== "busy", `${name}: the four removes were queued, not busy`);
+    await Promise.allSettled([put, ...reads]);
+  }
+});
+
+test("no production file uses the test-only factory (only the test rig does)", () => {
+  const src = fileURLToPath(new URL("../../src/", import.meta.url));
+  const users = readdirSync(src, { recursive: true, encoding: "utf8" })
+    .filter((f) => f.endsWith(".ts") && f !== "secrets-backend.ts")
+    .filter((f) => readFileSync(join(src, f), "utf8").includes("createBrokerSecretBackendForTest"));
+  assert.deepEqual(users, []);
 });

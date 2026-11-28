@@ -47,6 +47,11 @@ export interface AnthropicConnectionOptions {
    */
   readonly fetch?: FetchLike;
   readonly pricing?: (model: string) => Pricing | undefined;
+  /**
+   * The vault's policy under the secret broker (PV-N0c-1, `compose-secrets.ts`): `refuse` (no weak store, and provider reveals
+   * gated on the entry's own metadata, `weak_entry`) with the rollback of a timed-out `put` raised to 65 s. Default: `consent`.
+   */
+  readonly vault?: { readonly weakPolicy: "refuse"; readonly rollbackTimeoutMs: number };
   /** Wire caps (`@axis/anthropic` `DEFAULT_LIMITS`): body, event and line bytes, event counts, JSON depth. */
   readonly limits?: Partial<AnthropicLimits>;
   /** The guard's request and idle timeouts and stream limits (`@axis/providers` defaults). */
@@ -57,6 +62,11 @@ export interface ProvidersBindingDeps {
   /** The host's redactor: every key read is registered with it before use. */
   readonly redactor: Redactor;
   readonly audit: AuditSink;
+  /**
+   * TEST ONLY (never set by the composition, a pinned test; review n0c1-b S1): the binding's own vault's `store` and the outcomes
+   * of its change events, so a test proves the vault USES the wiring's rollback timeout. Nothing in production stores here.
+   */
+  readonly observeVault?: (seam: { readonly store: (connectionId: string, secret: string) => Promise<unknown>; readonly outcomes: readonly string[] }) => void;
   readonly anthropic?: AnthropicConnectionOptions;
 }
 
@@ -67,7 +77,20 @@ export interface ProvidersBinding {
   cachedModels(connectionId: string): readonly ModelInfo[] | undefined;
   /** Where a connection's key is stored (PRV-1); undefined for a connection this binding does not hold. */
   credential(connectionId: string, signal: AbortSignal): Promise<ProviderCredential | undefined>;
+  /**
+   * The startup reveal (secret-broker.md §3.5): every stored provider entry once with `validate_connection`, one after the
+   * other, each audited and its key registered with the redactor before anything else may use it. Integration entries are
+   * skipped. A failure is that entry's only (audited); nothing is retried. Never throws.
+   */
+  validateStored(signal?: AbortSignal): Promise<{ readonly listed: boolean; readonly validated: number; readonly failed: number }>;
 }
+
+/**
+ * How long a provider request waits for a running startup reveal (secret-broker.md §3.5, review n0c1-b S3): the redactor then
+ * knows every stored key before the first request is sent. Past it the request goes on: its own key is registered before use
+ * anyway, and a hung broker fails that request's own read; the gap left is another stored key echoing in that first output.
+ */
+export const STARTUP_WAIT_MS = 10_000;
 
 /** Audit payload keys of the vault reads (DMN-5): why the key was read and what came of it (`ok`, `unusable` or the vault's code). Never the key. */
 export const PROVIDERS_PAYLOAD_ALLOWLIST: Readonly<Record<string, readonly string[]>> = Object.freeze({ "provider.credential": Object.freeze(["purpose", "outcome"]) });
@@ -168,9 +191,10 @@ function pinned(g: GuardedProvider, leaks: (text: string) => boolean, onModels: 
  * The connection as the production composition may configure it: the name, the secret backend and pricing, copied field
  * by field, so no caller can hand the daemon its own `fetch` or looser wire caps (review c6 N5).
  */
-export function productionConnection(o: Pick<AnthropicConnectionOptions, "connectionId" | "backend" | "pricing"> | undefined): { anthropic?: AnthropicConnectionOptions } {
+export function productionConnection(o: Pick<AnthropicConnectionOptions, "connectionId" | "backend" | "pricing" | "vault"> | undefined): { anthropic?: AnthropicConnectionOptions } {
   if (o === undefined) return {};
-  return { anthropic: { connectionId: o.connectionId, backend: o.backend, ...(o.pricing === undefined ? {} : { pricing: o.pricing }) } };
+  const vault = o.vault === undefined ? {} : { vault: { weakPolicy: "refuse" as const, rollbackTimeoutMs: o.vault.rollbackTimeoutMs } };
+  return { anthropic: { connectionId: o.connectionId, backend: o.backend, ...(o.pricing === undefined ? {} : { pricing: o.pricing }), ...vault } };
 }
 
 /**
@@ -249,23 +273,37 @@ export function holdsKey(text: string, key: string): boolean {
 
 export function createProvidersBinding(deps: ProvidersBindingDeps): ProvidersBinding {
   const conn = deps.anthropic;
-  if (conn === undefined) return { providers: [], cachedModels: () => undefined, credential: async () => undefined };
+  if (conn === undefined) return { providers: [], cachedModels: () => undefined, credential: async () => undefined, validateStored: async () => ({ listed: false, validated: 0, failed: 0 }) };
   const connectionId = conn.connectionId;
-  const vault: ConnectionVault = createVault({ backend: conn.backend, weakPolicy: "consent" });
-  const target = `connection:${connectionId}`;
-
-  const audited = (purpose: KeyPurpose, outcome: string): void => {
-    deps.audit.append({ actor: "daemon", action: "provider.credential", target, outcome: outcome === "ok" ? "success" : "failure", payload: { purpose, outcome } });
+  const outcomes: string[] = [];
+  const vault: ConnectionVault = createVault({
+    backend: conn.backend,
+    ...(conn.vault === undefined ? { weakPolicy: "consent" } : { weakPolicy: "refuse", rollbackTimeoutMs: conn.vault.rollbackTimeoutMs }),
+    ...(deps.observeVault === undefined ? {} : { onChange: (e: { readonly outcome: string }) => void outcomes.push(e.outcome) }),
+  });
+  deps.observeVault?.({ store: (id, secret) => vault.store(id, secret), outcomes });
+  /** The startup reveal while it runs; a provider request waits for it, bounded (STARTUP_WAIT_MS). */
+  let startup: Promise<unknown> | undefined;
+  const afterStartup = async (): Promise<void> => {
+    if (startup === undefined) return;
+    let timer: NodeJS.Timeout | undefined;
+    await Promise.race([startup, new Promise((r) => (timer = setTimeout(r, STARTUP_WAIT_MS) as unknown as NodeJS.Timeout))]); // opaque handle under Code OSS's typings (ADR 0005)
+    clearTimeout(timer);
   };
 
-  /** One key read for one request. Throws a fixed error (the adapter makes it `no_credential`); never keeps the key. */
-  const apiKey = async (purpose: KeyPurpose): Promise<string> => {
+  const audited = (purpose: KeyPurpose, outcome: string, id: string = connectionId): void => {
+    deps.audit.append({ actor: "daemon", action: "provider.credential", target: `connection:${id}`, outcome: outcome === "ok" ? "success" : "failure", payload: { purpose, outcome } });
+  };
+
+  /** One key read for one request (or the startup validation of `id`). Throws a fixed error (the adapter makes it `no_credential`); never keeps the key. */
+  const apiKey = async (purpose: KeyPurpose, id: string = connectionId): Promise<string> => {
+    if (purpose === "provider_request") await afterStartup();
     let key: string;
     try {
-      key = await vault.reveal(connectionId, purpose);
+      key = await vault.reveal(id, purpose);
     } catch (e) {
       try {
-        audited(purpose, e instanceof VaultError ? e.code : "backend_failed");
+        audited(purpose, e instanceof VaultError ? e.code : "backend_failed", id);
       } catch {
         // The read failed anyway; the request is refused below.
       }
@@ -280,10 +318,10 @@ export function createProvidersBinding(deps: ProvidersBindingDeps): ProvidersBin
       deps.redactor.registerSecret(key);
     } catch {
       // Every read is audited (DMN-5), this one too; the key is not used.
-      audited(purpose, "unusable");
+      audited(purpose, "unusable", id);
       throw new Error("credential unusable");
     }
-    audited(purpose, "ok");
+    audited(purpose, "ok", id);
     return key;
   };
 
@@ -334,5 +372,31 @@ export function createProvidersBinding(deps: ProvidersBindingDeps): ProvidersBin
         void shared.then((c) => (signal.removeEventListener("abort", stop), resolve(c)));
       });
     },
+    validateStored(signal?: AbortSignal) {
+      const run = validateAll(signal);
+      startup = run.finally(() => (startup = undefined));
+      return run;
+    },
   };
+
+  /** The startup reveal; `signal` (shutdown) stops it before the next entry. */
+  async function validateAll(signal: AbortSignal | undefined): Promise<{ listed: boolean; validated: number; failed: number }> {
+    let ids: string[];
+    try {
+      ids = (await vault.list()).map((c) => c.connectionId).filter((id) => !id.startsWith("integration:"));
+    } catch {
+      return { listed: false, validated: 0, failed: 0 };
+    }
+    let validated = 0;
+    for (const id of ids) {
+      if (signal?.aborted === true) break; // shutdown: no read may start once the audit writers are about to be sealed
+      try {
+        await apiKey("validate_connection", id); // audited and registered; the key itself is dropped here
+        validated += 1;
+      } catch {
+        // audited by apiKey; that connection stays unvalidated, nothing is retried
+      }
+    }
+    return { listed: true, validated, failed: ids.length - validated };
+  }
 }
