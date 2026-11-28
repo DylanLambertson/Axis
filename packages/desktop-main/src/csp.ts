@@ -4,9 +4,12 @@
  * The Content Security Policy of every app-scheme response (ADR 0011 Decision 2 and Decision 5; threat model EL-1, EL-3). Sent as a
  * response header by the scheme handler, so it also covers workers, whose policy comes from their own response.
  *
- * - Nothing loads from anywhere but the app origin (`'self'`), and there is no `data:`, `blob:` or inline script.
+ * - Nothing loads from anywhere but the app origin (`'self'`), and there is no `data:`, `blob:` or inline script. `connect-src` is
+ *   `'none'` as ADR 0011 fixes it: `import()` is governed by `script-src` and workers by `worker-src` (measured on Electron
+ *   45.3.2); the renderer reaches the daemon only through the brokered port. `img-src` is `'self'`, without the ADR's `data:`.
  * - Trusted Types are required for every script sink. The policy names are listed exactly: no `*`, no `'allow-duplicates'`.
- *   With no names, `trusted-types 'none'` lets no policy be created. The editor kit (OS-18) adds Monaco's names at its pinned
+ *   With no names, `trusted-types 'none'` lets no policy be created. The name `default` is refused: a default policy is called
+ *   implicitly for every string that reaches a sink, so a pass-through one would disable the protection everywhere. The editor kit (OS-18) adds Monaco's names at its pinned
  *   version, with a test that fails when an upgrade adds or renames one.
  * - `style-src` keeps `'unsafe-inline'`: Monaco and xterm.js insert `<style>` elements at run time. A style cannot run script.
  * - No frames of any kind, no plugins, no forms, no `<base>`, and the window cannot be framed.
@@ -30,7 +33,7 @@ export const CSP_DIRECTIVES: ReadonlyArray<readonly [string, string]> = Object.f
   ["style-src", "'self' 'unsafe-inline'"],
   ["img-src", "'self'"],
   ["font-src", "'self'"],
-  ["connect-src", "'self'"],
+  ["connect-src", "'none'"],
   ["worker-src", "'self'"],
   ["child-src", "'none'"],
   ["frame-src", "'none'"],
@@ -50,6 +53,7 @@ export function buildCsp(options: CspOptions): string {
   const seen = new Set<string>();
   for (const n of names) {
     if (typeof n !== "string" || !POLICY_NAME.test(n)) throw new CspError("csp: a Trusted Types policy name is not allowed");
+    if (n === "default") throw new CspError("csp: the default Trusted Types policy is refused");
     if (seen.has(n)) throw new CspError("csp: a Trusted Types policy name is listed twice");
     seen.add(n);
   }

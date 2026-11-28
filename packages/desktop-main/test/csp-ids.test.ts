@@ -16,7 +16,7 @@ import {
 test("csp: the whole policy is pinned", () => {
   assert.equal(
     buildCsp({ trustedTypesPolicies: [] }),
-    "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self'; font-src 'self'; connect-src 'self'; " +
+    "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self'; font-src 'self'; connect-src 'none'; " +
       "worker-src 'self'; child-src 'none'; frame-src 'none'; object-src 'none'; media-src 'none'; manifest-src 'none'; base-uri 'none'; " +
       "form-action 'none'; frame-ancestors 'none'; require-trusted-types-for 'script'; trusted-types 'none'",
     "C1/C4",
@@ -29,6 +29,9 @@ test("csp: policy names are exact", () => {
     assert.throws(() => buildCsp({ trustedTypesPolicies: [bad] }), CspError, `C2: ${bad}`);
   }
   assert.throws(() => buildCsp({ trustedTypesPolicies: ["a", "a"] }), CspError, "C3");
+  assert.throws(() => buildCsp({ trustedTypesPolicies: ["default"] }), CspError, "C6: the implicit default policy");
+  assert.throws(() => buildCsp({ trustedTypesPolicies: ["monaco", "default"] }), CspError, "C6");
+  assert.match(buildCsp({ trustedTypesPolicies: ["Default"] }), /trusted-types Default$/, "names match case-sensitively");
   assert.throws(() => buildCsp({ trustedTypesPolicies: Array.from({ length: 17 }, (_, i) => `p${i}`) }), CspError);
   assert.throws(() => buildCsp({ trustedTypesPolicies: "a" as unknown as string[] }), CspError);
 });
@@ -71,6 +74,9 @@ test("stable ids: userData under appData, never overlapping the data roots", () 
   assert.equal(userDataOverlapsDataRoot("/a/Axis/profile", "/a/Axis", "linux"), true, "S3: userData inside the base");
   assert.equal(userDataOverlapsDataRoot("/a", "/a/Axis", "linux"), true, "S3: the base inside userData");
   assert.equal(userDataOverlapsDataRoot("/a/Axis-shell", "/a/Axis", "linux"), false, "a shared prefix is not nesting");
+  assert.equal(userDataOverlapsDataRoot("/x/y/../Axis/axis-shell", "/x/Axis", "linux"), true, "S3: dot segments resolved");
+  assert.equal(userDataOverlapsDataRoot("/x//Axis/./p/", "/x/Axis//", "linux"), true, "S3: repeated and trailing separators");
+  assert.equal(userDataOverlapsDataRoot("C:\\x\\y\\..\\Axis", "c:/x/axis", "win32"), true, "S3: Windows dot segments");
   assert.equal(userDataOverlapsDataRoot(userDataDir(mac, "darwin"), `${mac}/Axis`, "darwin"), false, "S1: the real values do not overlap");
 });
 

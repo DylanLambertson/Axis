@@ -5,6 +5,7 @@ import { isAppOrigin } from "./stable-ids.js";
  * The `webRequest` scheme filter of the app windows' session (ADR 0011 Decision 2): every request is cancelled unless it is for the
  * app origin, so the renderer has no network at all. Egress stays the daemon's (NET-GATE, the egress client). The CSP refuses the
  * same loads first; this filter is the second, independent layer, and it also covers what the CSP does not name.
+ * `data:`, `blob:` and `filesystem:` never reach `onBeforeRequest` (they are not network): the CSP alone covers them.
  *
  * Only an unpackaged build may also allow `devtools:` (the DevTools front end); a packaged build has no DevTools (G-28,
  * `appWebPreferences`).

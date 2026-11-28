@@ -2,7 +2,8 @@
 // G-28 and the preload contract. Mutants each test kills:
 //   G1 a refused switch missed in any form (`--x`, `--x=v`, `-x`, `/x` on Windows, upper case, after `--`); G2 the check run in
 //   an unpackaged build, or skipped in a packaged one; G3 argv[0] (the executable) judged; G4 ELECTRON_RUN_AS_NODE or
-//   NODE_OPTIONS missed (also in another case on Windows); G5 a switch value in the result; G6 an ordinary switch refused;
+//   NODE_OPTIONS missed (also in another case on Windows); G5 a switch value in the result; G6 an allowed switch or a positional
+//   argument refused; G7 a switch outside the allow-list accepted (`--inspect-brk-node`, any unknown one), or its name echoed raw;
 //   P1 the global, a function or a channel renamed or added (pinned); P2 a payload with an extra, missing, accessor, symbol or
 //   inherited key accepted; P3 a bad nonce, action, project id or terminal id accepted; P4 a project id on any action but open,
 //   or open without one.
@@ -10,7 +11,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   DEBUG_FLAG_EXIT, IPC_CHANNELS, IPC_REPLY_CHANNELS, PRELOAD_FUNCTIONS, PRELOAD_GLOBAL, debugFlagRefusals, parseConnect, parseOpenExternal,
-  parseProjectAction, parseTerminalPort, switchName,
+  PACKAGED_ALLOWED_SWITCHES, REFUSED_SWITCHES, parseProjectAction, parseTerminalPort, switchName,
 } from "../src/index.js";
 
 const packaged = { packaged: true, platform: "linux" };
@@ -27,7 +28,19 @@ test("G-28: every form of a refused switch, packaged only", () => {
   assert.deepEqual(debugFlagRefusals([exe, "--inspect", "--remote-debugging-port=1"], {}, { packaged: false, platform: "linux" }), [], "G2");
   assert.deepEqual(debugFlagRefusals(["--inspect"], {}, packaged), [], "G3");
   assert.deepEqual(debugFlagRefusals([exe, "--remote-debugging-port=9222", "--inspect=0.0.0.0:9229"], {}, packaged), ["--inspect", "--remote-debugging-port"], "G5: names only, sorted");
-  assert.deepEqual(debugFlagRefusals([exe, "--enable-logging", "--lang=en", "project", "--no-sandbox-ish"], {}, packaged), [], "G6");
+  assert.deepEqual(debugFlagRefusals([exe, "--ozone-platform=wayland", "--ozone-platform-hint=auto", "project", "-", "--"], {}, packaged), [], "G6: the allow-list and positional arguments");
+});
+
+test("G-28: a packaged build refuses every switch outside the allow-list", () => {
+  const exe = "/opt/axis/axis";
+  const packaged = { packaged: true, platform: "linux" };
+  assert.deepEqual(debugFlagRefusals([exe, "--enable-logging", "--lang=en", "--no-sandbox-ish"], {}, packaged), ["--enable-logging", "--lang", "--no-sandbox-ish"], "G7: unknown switches");
+  for (const a of ["--inspect-brk-node=0", "--INSPECT-BRK-NODE", "-inspect-brk-node=127.0.0.1:1", "--remote-debugging-targets=x", "--auto-open-devtools-for-tabs", "--some-future-debug-switch"]) {
+    assert.notDeepEqual(debugFlagRefusals([exe, a], {}, packaged), [], `G7: ${a}`);
+  }
+  assert.deepEqual(debugFlagRefusals([exe, "/inspect-brk-node"], {}, { packaged: true, platform: "win32" }), ["--inspect-brk-node"], "G7: Windows prefix");
+  assert.deepEqual(debugFlagRefusals([exe, "--x\u202ey"], {}, packaged), ["--(unprintable)"], "G7: an unknown name is never echoed raw");
+  for (const n of REFUSED_SWITCHES) assert.equal(PACKAGED_ALLOWED_SWITCHES.has(n), false, `G7: ${n} is never allowed`);
 });
 
 test("G-28: environment", () => {

@@ -28,6 +28,10 @@ test("decideExternal: characters, length, credentials and hosts", () => {
   assert.deepEqual(decideExternal("https://bank.example@evil.example/"), { ok: false, reason: "credentials" }, "E4");
   assert.deepEqual(decideExternal("https://u:p@evil.example/"), { ok: false, reason: "credentials" }, "E4");
   assert.deepEqual(decideExternal("mailto:"), { ok: false, reason: "no_host" });
+  assert.equal(decideExternal("mailto:a@b.example?subject=hi&body=x&cc=c@d.example&bcc=e@f.example&to=g@h.example&SUBJECT=x").ok, true, "E11: the five fields");
+  for (const q of ["attach=/home/u/.ssh/id_ed25519", "attachment=x", "ATTACH=x", "subject=hi&attach=x", "x-header=1", "in-reply-to=x"]) {
+    assert.deepEqual(decideExternal(`mailto:a@b.example?${q}`), { ok: false, reason: "mailto_field" }, `E11: ${q}`);
+  }
   assert.deepEqual(decideExternal("not a url"), { ok: false, reason: "bad_chars" });
   assert.deepEqual(decideExternal("nourl"), { ok: false, reason: "bad_url" });
   for (const v of [undefined, null, 1, {}, ""]) assert.deepEqual(decideExternal(v), { ok: false, reason: "not_string" });

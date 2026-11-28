@@ -1,4 +1,5 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
+import { posix, win32 } from "node:path";
 
 /**
  * The fixed internal ids of the desktop app's main process (ADR 0011 Decision 2, "Stable ids"). None of them is derived from
@@ -15,6 +16,13 @@ export const APP_HOST = "shell";
 export const APP_ORIGIN = `${APP_SCHEME}://${APP_HOST}`;
 /** The one document main loads into an app window. A sender frame must have exactly this URL (window-registry.ts). */
 export const APP_URL = `${APP_ORIGIN}/index.html`;
+
+/**
+ * The app windows' session partition: their own, in memory (no `persist:`), so the scheme filter, the permission policy and the
+ * spell-checker setting never touch `defaultSession` (main's own `net`, any other web contents), and nothing a page stores
+ * outlives the run. Durable state lives in the daemon.
+ */
+export const APP_PARTITION = "axis-shell";
 
 /**
  * The Electron app name, set with `app.setName` before `ready`. Lower case and distinct from the data roots' `Axis` directory
@@ -67,8 +75,10 @@ export function userDataDir(appData: string, platform: DesktopPlatform): string 
  * daemon's data, the anchor and the worktrees must never sit in Chromium's profile, nor the profile in them.
  */
 export function userDataOverlapsDataRoot(userData: string, dataBase: string, platform: DesktopPlatform): boolean {
+  // `.` and `..` segments and repeated or trailing separators are resolved first; links and Windows short names are main's to
+  // resolve (realpath) before it calls this.
   const norm = (p: string): string => {
-    const s = (platform === "win32" ? p.replace(/\//g, "\\") : p).replace(/[\\/]+$/, "");
+    const s = (platform === "win32" ? win32.normalize(p) : posix.normalize(p)).replace(/[\\/]+$/, "");
     return platform === "linux" ? s : s.toLowerCase();
   };
   const sep = platform === "win32" ? "\\" : "/";

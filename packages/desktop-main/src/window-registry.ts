@@ -52,7 +52,9 @@ export class WindowRegistry {
   #next = 1;
 
   constructor(options: { readonly maxWindows?: number; readonly appUrl?: string } = {}) {
-    this.#max = options.maxWindows ?? DEFAULT_MAX_WINDOWS;
+    const max = options.maxWindows ?? DEFAULT_MAX_WINDOWS;
+    if (!Number.isSafeInteger(max) || max < 1) throw new Error("WindowRegistry: maxWindows must be an integer of at least 1");
+    this.#max = max;
     this.#appUrl = options.appUrl ?? APP_URL;
   }
 

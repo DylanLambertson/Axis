@@ -1,5 +1,5 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
-import { isAppOrigin } from "./stable-ids.js";
+import { APP_PARTITION, isAppOrigin } from "./stable-ids.js";
 
 /**
  * The app window's web preferences and its navigation, window-open and permission policy (ADR 0011 Decision 2; threat model EL-1,
@@ -24,6 +24,7 @@ export function appWebPreferences(options: { readonly preload: string; readonly 
   }
   return Object.freeze({
     preload: options.preload,
+    partition: APP_PARTITION,
     sandbox: true,
     contextIsolation: true,
     nodeIntegration: false,
@@ -58,7 +59,7 @@ export interface WebContentsLike {
 /** The part of Electron's `Session` the policy uses. Optional members are older or platform-specific Electron APIs. */
 export interface SessionLike {
   setPermissionRequestHandler(handler: ((webContents: unknown, permission: string, callback: (granted: boolean) => void, details: { requestingUrl?: string; isMainFrame?: boolean }) => void) | null): void;
-  setPermissionCheckHandler(handler: ((webContents: unknown, permission: string, requestingOrigin: string, details: { requestingUrl?: string; isMainFrame?: boolean }) => boolean) | null): void;
+  setPermissionCheckHandler(handler: ((webContents: unknown, permission: string, requestingOrigin: string, details: { requestingUrl?: string; isMainFrame?: boolean; embeddingOrigin?: string }) => boolean) | null): void;
   setDevicePermissionHandler?(handler: (details: unknown) => boolean): void;
   setDisplayMediaRequestHandler?(handler: ((request: unknown, callback: (streams: Record<string, never>) => void) => void) | null): void;
   setSpellCheckerEnabled?(enabled: boolean): void;
@@ -90,9 +91,10 @@ export function hardenSession(session: SessionLike, onRefused: (what: PolicyRefu
     if (!ok) onRefused("permission");
     callback(ok);
   });
-  // A check has no frame flag that means "main frame" on every version, so only the origin is required; the request (which is
-  // what actually grants a write) also needs the main frame.
-  session.setPermissionCheckHandler((_wc, permission, requestingOrigin) => permissionAllowed(permission, requestingOrigin, undefined));
+  // A check (Electron 45.3.2) carries isMainFrame and, for a cross-origin subframe, embeddingOrigin: it needs the app origin and
+  // the main frame, like the request.
+  session.setPermissionCheckHandler((_wc, permission, requestingOrigin, details) =>
+    permissionAllowed(permission, requestingOrigin, details?.isMainFrame === true) && (details?.embeddingOrigin === undefined || isAppOrigin(details.embeddingOrigin)));
   session.setDevicePermissionHandler?.(() => false);
   session.setDisplayMediaRequestHandler?.((_request, callback) => {
     onRefused("permission");

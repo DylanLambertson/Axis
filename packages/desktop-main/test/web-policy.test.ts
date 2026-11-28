@@ -15,7 +15,7 @@ import {
 
 test("web preferences are pinned", () => {
   const base = {
-    preload: "/opt/app/preload.js", sandbox: true, contextIsolation: true, nodeIntegration: false, nodeIntegrationInWorker: false,
+    preload: "/opt/app/preload.js", partition: "axis-shell", sandbox: true, contextIsolation: true, nodeIntegration: false, nodeIntegrationInWorker: false,
     nodeIntegrationInSubFrames: false, webviewTag: false, webSecurity: true, allowRunningInsecureContent: false, experimentalFeatures: false,
     navigateOnDragDrop: false, spellcheck: false, safeDialogs: true,
   };
@@ -86,9 +86,13 @@ test("hardenSession installs every handler", () => {
   request({}, "clipboard-sanitized-write", (g) => answers.push(g), { requestingUrl: "axis-app://shell/index.html" });
   request({}, "clipboard-read", (g) => answers.push(g), { requestingUrl: "axis-app://shell/index.html", isMainFrame: true });
   assert.deepEqual(answers, [true, false, false], "W6/W7: a request without the main-frame flag is refused");
-  assert.equal(check(null, "clipboard-sanitized-write", "axis-app://shell", {}), true);
-  assert.equal(check(null, "clipboard-read", "axis-app://shell", {}), false, "W6");
-  assert.equal(check(null, "clipboard-sanitized-write", "https://x", {}), false, "W7");
+  assert.equal(check(null, "clipboard-sanitized-write", "axis-app://shell/", { isMainFrame: true, requestingUrl: "axis-app://shell/index.html" }), true);
+  assert.equal(check(null, "clipboard-sanitized-write", "axis-app://shell", {}), false, "W7: a check without the main-frame flag");
+  assert.equal(check(null, "clipboard-sanitized-write", "axis-app://shell", { isMainFrame: false }), false, "W7: a subframe's check");
+  assert.equal(check(null, "clipboard-sanitized-write", "axis-app://shell", { isMainFrame: true, embeddingOrigin: "https://x" }), false, "W7: embedded elsewhere");
+  assert.equal(check(null, "clipboard-sanitized-write", "axis-app://shell", { isMainFrame: true, embeddingOrigin: "axis-app://shell" }), true);
+  assert.equal(check(null, "clipboard-read", "axis-app://shell", { isMainFrame: true }), false, "W6");
+  assert.equal(check(null, "clipboard-sanitized-write", "https://x", { isMainFrame: true }), false, "W7");
   assert.equal((got["device"] as () => boolean)(), false, "W8");
   let streams: unknown = "unset";
   (got["display"] as (r: unknown, cb: (s: unknown) => void) => void)({}, (s) => void (streams = s));

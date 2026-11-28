@@ -58,6 +58,7 @@ test("bounds and duplicates", () => {
   assert.equal(r.add(3), undefined, "R9");
   assert.equal(r.size, 2);
   for (const bad of [-1, 1.5, Number.NaN, 2 ** 53]) assert.equal(new WindowRegistry().add(bad), undefined, String(bad));
+  for (const bad of [Number.NaN, 0, -1, 1.5, Infinity]) assert.throws(() => new WindowRegistry({ maxWindows: bad }), /maxWindows/, `R11: ${bad}`);
   const e = r.get(1);
   assert.ok(e);
   assert.equal(Object.isFrozen(e), true);

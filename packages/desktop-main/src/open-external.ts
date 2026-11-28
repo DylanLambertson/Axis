@@ -9,6 +9,8 @@
  * - The raw text must be printable ASCII without spaces, at most 2048 characters: no control, bidirectional or look-alike
  *   characters can reach the dialog. A renderer passes `new URL(x).href`, which is already ASCII (punycode hosts, percent-encoded
  *   paths).
+ * - `mailto:` takes only the query fields `to`, `subject`, `body`, `cc` and `bcc` (any case). Anything else, `attach=` and
+ *   `attachment=` above all (some mail clients attach the local file named there), is refused as `mailto_field`.
  * - `http(s)` needs a host and no user name or password (`https://bank.example@evil.example/` is refused).
  * - The dialog shows the normalised `href`, the one string that is then opened.
  * - One confirmation per window at a time; a second request while one waits is `busy`. The window must still be registered when
@@ -21,12 +23,13 @@
 export const EXTERNAL_PROTOCOLS: ReadonlySet<string> = new Set(["http:", "https:", "mailto:"]);
 export const MAX_EXTERNAL_URL = 2048;
 
-export const EXTERNAL_REFUSALS = ["not_string", "too_long", "bad_chars", "bad_url", "scheme", "credentials", "no_host", "busy", "no_window", "declined", "failed"] as const;
+export const EXTERNAL_REFUSALS = ["not_string", "too_long", "bad_chars", "bad_url", "scheme", "credentials", "no_host", "mailto_field", "busy", "no_window", "declined", "failed"] as const;
 export type ExternalRefusal = (typeof EXTERNAL_REFUSALS)[number];
 
 export type ExternalDecision = { readonly ok: true; readonly href: string } | { readonly ok: false; readonly reason: ExternalRefusal };
 
 const PRINTABLE = /^[\x21-\x7e]+$/;
+const MAILTO_FIELDS: ReadonlySet<string> = new Set(["to", "subject", "body", "cc", "bcc"]);
 
 /** Pure: is this a link main may offer to open, and the exact text to show and open. */
 export function decideExternal(input: unknown): ExternalDecision {
@@ -42,6 +45,7 @@ export function decideExternal(input: unknown): ExternalDecision {
   if (!EXTERNAL_PROTOCOLS.has(u.protocol)) return { ok: false, reason: "scheme" };
   if (u.protocol === "mailto:") {
     if (u.pathname === "") return { ok: false, reason: "no_host" };
+    for (const key of new URLSearchParams(u.search).keys()) if (!MAILTO_FIELDS.has(key.toLowerCase())) return { ok: false, reason: "mailto_field" };
   } else {
     if (u.username !== "" || u.password !== "") return { ok: false, reason: "credentials" };
     if (u.hostname === "") return { ok: false, reason: "no_host" };

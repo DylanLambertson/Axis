@@ -4,15 +4,16 @@
  * The options main passes to `utilityProcess.fork` for the daemon and the pty process (ADR 0003 D1 and D6; the overlay's
  * `axisMainSeam.ts` and `axisMainPty.ts` did the same inline). The entry path is main's own, never from a renderer.
  *
- * - `execArgv` is exactly `["--disable-sigusr1"]`. Node's bootstrap starts the inspector on a SIGUSR1 that arrives before any
- *   user code runs, so a check inside the entry cannot close that window; only this flag does. The daemon and pty entries
- *   accept exactly this `execArgv` and refuse anything else (audit C, `fix/credential-audit-c`).
+ * - `execArgv` is exactly `["--disable-sigusr1"]`, the one argument the daemon and pty entries accept (audit C). Measured on
+ *   Electron 45.3.2, a utility process receives the flag but does not honour it: a SIGUSR1 still opens an inspector. So the
+ *   control is the entries' own SIGUSR1 listener, installed as their first statement; the flag is kept because it costs
+ *   nothing and holds wherever an entry runs under plain Node (`docs/design/own-shell-main-hardening.md` section 3, item 5).
  * - The environment is the caller's allow-listed one (`daemonEnvironment` for the daemon, the pty launch environment for the pty
- *   process), copied and frozen here, never main's own `process.env`.
+ *   process), copied and frozen here, never main's own `process.env`. What is enforced here: every `NODE_*` and `ELECTRON_*`
+ *   name is refused (case-insensitively: Windows environment names are), so `NODE_OPTIONS`, `NODE_PATH`,
+ *   `NODE_EXTRA_CA_CERTS` and `ELECTRON_RUN_AS_NODE` can never reach a child Node.
+ * - The working directory is main's choice, absolute (the child never inherits main's own).
  * - stdio is piped, so nothing reaches a terminal; main drains both pipes.
- *
- * [I] Electron's `utilityProcess.fork` documents `execArgv`; that the pinned version passes `--disable-sigusr1` to the child's Node
- * is checked in the second PR and again on the packaged build (a SIGUSR1 sent to the child at start leaves no inspector listening).
  */
 
 export const UTILITY_EXEC_ARGV: readonly string[] = Object.freeze(["--disable-sigusr1"]);
@@ -24,16 +25,22 @@ export interface UtilityForkOptions {
   readonly env: Readonly<Record<string, string>>;
   readonly execArgv: readonly string[];
   readonly stdio: "pipe";
+  readonly cwd: string;
 }
 
-/** Throws on an unknown service name or an environment value that is not a string. */
-export function utilityForkOptions(serviceName: UtilityServiceName, env: Readonly<Record<string, string | undefined>>): UtilityForkOptions {
+/** Environment names no child may get: Node's and Electron's own controls. */
+export const REFUSED_CHILD_ENV = /^(NODE_|ELECTRON_)/i;
+
+/** Throws on an unknown service name, a refused or malformed environment entry, or a relative working directory. */
+export function utilityForkOptions(serviceName: UtilityServiceName, env: Readonly<Record<string, string | undefined>>, cwd: string): UtilityForkOptions {
   if (!(UTILITY_SERVICE_NAMES as readonly string[]).includes(serviceName)) throw new Error("utilityForkOptions: unknown service");
   const copy: Record<string, string> = Object.create(null) as Record<string, string>;
   for (const [k, v] of Object.entries(env)) {
     if (v === undefined) continue;
     if (typeof v !== "string" || k === "" || k.includes("=") || k.includes("\0") || v.includes("\0")) throw new Error("utilityForkOptions: bad environment entry");
+    if (REFUSED_CHILD_ENV.test(k)) throw new Error("utilityForkOptions: a NODE_ or ELECTRON_ environment name is refused");
     copy[k] = v;
   }
-  return Object.freeze({ serviceName, env: Object.freeze(copy), execArgv: UTILITY_EXEC_ARGV, stdio: "pipe" as const });
+  if (typeof cwd !== "string" || cwd.includes("\0") || !(cwd.startsWith("/") || /^[A-Za-z]:\\/.test(cwd))) throw new Error("utilityForkOptions: cwd must be an absolute path");
+  return Object.freeze({ serviceName, env: Object.freeze(copy), execArgv: UTILITY_EXEC_ARGV, stdio: "pipe" as const, cwd });
 }
