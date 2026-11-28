@@ -2,6 +2,9 @@
 // Audit C M1, the startup window: under Electron's utilityProcess `--disable-sigusr1` is not honoured, so the SIGUSR1 listener is
 // the control, and the file the shell forks must install it before the pty module graph loads, not after. That file is the shell's
 // (OS-3); `testing/process-main-child.ts` has its required shape.
+// The behavioural test starts signalling at the child's marker, so it catches neither a static entry import (which moves the
+// marker past the graph load) nor a guard registered with `once` (the entry adds its own listener before the callback runs):
+// only the pins below do. Do not drop them as redundant; the shell's forked file (OS-3) needs the same pins.
 import assert from "node:assert/strict";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
