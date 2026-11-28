@@ -52,13 +52,15 @@ test("the renderer has no network, no inline or eval script, no frames, no new w
     assert.equal(r.inlineScript, "refused");
     assert.equal(r.eval, "refused");
     // No frame of the app inside the app, and nothing reachable through one.
+    assert.ok(["load", "error"].includes(r.subframeSettled), `the subframe settled (${r.subframeSettled})`);
     assert.equal(r.subframeLoaded, "blocked");
     assert.equal(r.subframeAxis, "none");
     // window.open is denied, also for the app URL.
     assert.equal(r.windowOpen, "denied");
     assert.equal(r.windowOpenHttps, "denied");
     // Permissions: a copy from a user gesture works; paste and everything else are refused.
-    assert.equal(r.clipboardWrite, "ok");
+    assert.equal(r.focused, true, "the window took focus within the bounded retry");
+    assert.equal(r.clipboardWrite, "ok", `copy (${r.clipboardFocusRetries})`);
     assert.equal(r.clipboardRead, "refused");
     assert.equal(r.geolocation, "refused");
     // The one frozen global, its four functions, and no Node.
@@ -71,7 +73,14 @@ test("the renderer has no network, no inline or eval script, no frames, no new w
     assert.deepEqual(JSON.parse(r.openExternalMailto), { ok: false, reason: "mailto_field" });
     // Navigation away (https, another app page, file) is refused: the window stays on the exact app URL.
     assert.equal(r.urlBefore, "axis-app://shell/index.html");
+    for (const [target, seen] of Object.entries(r.navigation)) {
+      // file: is refused by Chromium in the renderer before main sees it; everything else reaches main's will-frame-navigate.
+      const want = target.startsWith("file:") ? "renderer-refused" : "attempted";
+      assert.equal(seen, `${want}:axis-app://shell/index.html`, `navigation to ${target} was attempted and refused`);
+    }
     assert.equal(r.urlAfterNavigation, "axis-app://shell/index.html");
+    // The second window is hardened by the app-wide web-contents-created hook, not by openAppWindow.
+    assert.equal(r.secondNavigation, "attempted:axis-app://shell/index.html", "the unregistered window cannot navigate away either");
     // A window main did not register gets nothing over IPC, even on the same session, preload and URL.
     assert.deepEqual(JSON.parse(r.secondWindowOpenExternal), { ok: false, reason: "no_window" });
     assert.equal(code, 0, err);

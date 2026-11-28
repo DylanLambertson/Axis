@@ -21,15 +21,24 @@ export const PAGE_BOUNDARY = `(async () => {
   r.inlineScript = window.__axisInline === 1 ? "ran" : "refused";
   try { r.eval = (0, eval)("1") === 1 ? "ran" : "refused"; } catch { r.eval = "refused"; }
   const frame = document.createElement("iframe");
+  const frameDone = new Promise((res) => { frame.onload = () => res("load"); frame.onerror = () => res("error"); });
   frame.src = "axis-app://shell/index.html";
   document.body.append(frame);
-  await new Promise((res) => setTimeout(res, 1000));
+  r.subframeSettled = await settle(frameDone, 10000);
   try { r.subframeAxis = frame.contentWindow && frame.contentWindow.axis !== undefined ? "reachable" : "none"; } catch { r.subframeAxis = "none"; }
   try { r.subframeLoaded = frame.contentDocument && frame.contentDocument.documentElement.dataset.axisShell === "mounted" ? "mounted" : "blocked"; } catch { r.subframeLoaded = "blocked"; }
   frame.remove();
   r.windowOpen = window.open("axis-app://shell/index.html") === null ? "denied" : "opened";
   r.windowOpenHttps = window.open("https://example.com/") === null ? "denied" : "opened";
-  r.clipboardWrite = await navigator.clipboard.writeText("axis boundary probe").then(() => "ok", () => "refused");
+  // A copy needs a focused document. Retried (at most 3 times) only while the document lacks focus, so a refusal of a focused
+  // page still fails at once; clipboard-read is never retried.
+  r.clipboardWrite = "refused";
+  for (let i = 0; i < 3; i++) {
+    r.clipboardWrite = await navigator.clipboard.writeText("axis boundary probe").then(() => "ok", () => "refused");
+    if (r.clipboardWrite === "ok" || document.hasFocus()) break;
+    await new Promise((res) => setTimeout(res, 300));
+  }
+  r.clipboardFocusRetries = r.clipboardWrite === "ok" ? "settled" : (document.hasFocus() ? "focused" : "unfocused");
   r.clipboardRead = await navigator.clipboard.readText().then(() => "ok", () => "refused");
   r.geolocation = await settle(new Promise((res) => navigator.geolocation.getCurrentPosition(() => res("ok"), () => res("refused"))));
   const axis = window.axis;
@@ -43,10 +52,44 @@ export const PAGE_BOUNDARY = `(async () => {
 })()`;
 
 export interface BoundaryWindow {
+  focus?(): void;
   readonly webContents: {
     executeJavaScript(code: string, userGesture?: boolean): Promise<unknown>;
     getURL(): string;
+    on(event: "will-frame-navigate" | "console-message", listener: (...args: never[]) => void): unknown;
+    removeListener(event: "will-frame-navigate" | "console-message", listener: (...args: never[]) => void): unknown;
   };
+}
+
+const NAVIGATION_CAP_MS = 10_000;
+
+/**
+ * Asks the page to navigate to `target` and waits, up to a generous cap, for main to see the attempt (`will-frame-navigate`,
+ * which our policy prevents; Electron 45 may report `did-start-navigation` first, and that alone does not settle it). "none" (no
+ * attempt seen within the cap) fails the test: a slow run fails, it never passes falsely. The URL is read after a short settle.
+ */
+async function attemptNavigation(win: BoundaryWindow, target: string, wait: (ms: number) => Promise<void>): Promise<string> {
+  const seen = new Promise<string>((res) => {
+    const done = (what: string): void => {
+      win.webContents.removeListener("will-frame-navigate", onWill);
+      win.webContents.removeListener("console-message", onConsole);
+      res(what);
+    };
+    const onWill = (): void => done("attempted");
+    // Chromium refuses a file: navigation from the app origin in the renderer, so main never sees it; its console line is the proof.
+    const onConsole = (...args: never[]): void => {
+      const first = args[0] as unknown as { message?: unknown } | undefined;
+      const text = String(first?.message ?? args[2] ?? "");
+      if (text.includes("Not allowed to load local resource")) done("renderer-refused");
+    };
+    win.webContents.on("will-frame-navigate", onWill);
+    win.webContents.on("console-message", onConsole);
+    void wait(NAVIGATION_CAP_MS).then(() => done("none"));
+  });
+  await win.webContents.executeJavaScript(`setTimeout(() => { location.href = ${JSON.stringify(target)}; }, 0); 1`, true).catch(() => undefined);
+  const what = await seen;
+  await wait(500);
+  return `${what}:${win.webContents.getURL()}`;
 }
 
 export interface BoundaryDeps {
@@ -57,13 +100,19 @@ export interface BoundaryDeps {
 }
 
 export async function runBoundaryProbe(deps: BoundaryDeps): Promise<Record<string, unknown>> {
-  const page = (await deps.app.webContents.executeJavaScript(PAGE_BOUNDARY, true)) as Record<string, unknown>;
-  const urlBefore = deps.app.webContents.getURL();
-  for (const target of ["https://example.com/", "axis-app://shell/other.html", "file:///etc/passwd"]) {
-    await deps.app.webContents.executeJavaScript(`location.href = ${JSON.stringify(target)}; 1`, true).catch(() => undefined);
-    await deps.wait(700);
+  // Focus first, bounded: under load another window can hold focus for a moment, and the copy check needs it.
+  let focused = false;
+  for (let i = 0; i < 20 && !focused; i++) {
+    deps.app.focus?.();
+    focused = (await deps.app.webContents.executeJavaScript("document.hasFocus()", false)) === true;
+    if (!focused) await deps.wait(100);
   }
+  const page = { focused, ...((await deps.app.webContents.executeJavaScript(PAGE_BOUNDARY, true)) as Record<string, unknown>) };
+  const urlBefore = deps.app.webContents.getURL();
+  const navigation: Record<string, string> = {};
+  for (const target of ["https://example.com/", "axis-app://shell/other.html", "file:///etc/passwd"]) navigation[target] = await attemptNavigation(deps.app, target, deps.wait);
   const second = await deps.unregistered();
   const secondAnswer = await second.webContents.executeJavaScript(`window.axis.openExternal("https://example.com/").then(JSON.stringify)`, true).catch(() => "threw");
-  return { ...page, urlBefore, urlAfterNavigation: deps.app.webContents.getURL(), secondWindowOpenExternal: secondAnswer };
+  const secondNavigation = await attemptNavigation(second, "https://example.com/", deps.wait);
+  return { ...page, urlBefore, navigation, urlAfterNavigation: deps.app.webContents.getURL(), secondWindowOpenExternal: secondAnswer, secondNavigation };
 }

@@ -1,15 +1,14 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
-// Electron main of the own shell. OS-1 scaffold; OS-2 wires the window and session hardening (main/hardening.ts over
-// @axis/desktop-main, docs/design/own-shell-main-hardening.md); the daemon seam is OS-3.
+// Electron main of the own shell, loaded by main/entry.ts only after the G-28 check. OS-1 scaffold; OS-2 wires the window and
+// session hardening (main/hardening.ts over @axis/desktop-main, docs/design/own-shell-main-hardening.md); the daemon seam is OS-3.
 import { app, BrowserWindow, dialog, ipcMain, nativeTheme, protocol, session, shell } from "electron";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { axisDataRoots } from "@axis/daemon-host";
-import { APP_PARTITION, APP_URL, WindowRegistry, createExternalOpener, hardenWebContents, type DesktopPlatform } from "@axis/desktop-main";
-import { hardenAppSession, openAppWindow, prepareBeforeReady, refuseDebugging, registerOpenExternal, type AppSessionLike, type HardeningEvent } from "./hardening.js";
+import { APP_PARTITION, APP_URL, WindowRegistry, type DesktopPlatform } from "@axis/desktop-main";
+import { createMainExternalOpener, hardenAppSession, installAppHardening, openAppWindow, prepareBeforeReady, registerOpenExternal, type AppSessionLike, type HardeningEvent } from "./hardening.js";
 import { mainWindowOptions } from "./window.js";
 import { PAGE_PROBE, smokeLine, smokeReport } from "./smoke.js";
-import { BOUNDARY_MARKER, runBoundaryProbe } from "./boundary-probe.js";
 
 const PLATFORM = process.platform as DesktopPlatform;
 const PACKAGED = app.isPackaged;
@@ -40,7 +39,7 @@ function start(): void {
     dataBase: dirname(axisDataRoots(PLATFORM, process.env, homedir()).dataDir),
     ...(userDataOverride() === undefined ? {} : { userDataOverride: userDataOverride() as string }),
   });
-  app.on("web-contents-created", (_event, contents) => hardenWebContents(contents, (what) => log({ kind: "policy", what })));
+  installAppHardening(app as unknown as Parameters<typeof installAppHardening>[0], log);
   app.on("window-all-closed", () => app.quit());
   app.whenReady().then(ready).catch((error: unknown) => {
     process.stderr.write(`main window failed: ${error instanceof Error ? error.message : String(error)}\n`);
@@ -54,15 +53,14 @@ async function ready(): Promise<void> {
   const registry = new WindowRegistry();
   const windows = new Map<number, BrowserWindow>();
   registry.onClosed((id) => windows.delete(id));
-  const opener = createExternalOpener({
-    confirm: async (id, c) => {
+  const opener = createMainExternalOpener({
+    registry,
+    windowFor: (id) => {
       const win = windows.get(id);
-      if (win === undefined || win.isDestroyed()) return false;
-      const answer = await dialog.showMessageBox(win, { type: "question", message: c.message, detail: c.detail, buttons: [...c.buttons], defaultId: c.defaultId, cancelId: c.cancelId, noLink: c.noLink });
-      return answer.response === 1;
+      return win === undefined || win.isDestroyed() ? undefined : win;
     },
-    open: (href) => shell.openExternal(href),
-    isWindow: (id) => registry.has(id),
+    showMessageBox: (win, options) => dialog.showMessageBox(win, options),
+    openExternal: (href) => shell.openExternal(href),
   });
   registerOpenExternal({ ipcMain, registry, opener });
   const { id, window: win } = await openAppWindow({
@@ -81,13 +79,14 @@ async function ready(): Promise<void> {
   const report = await smokeReport({ title: () => win.getTitle(), probe: () => win.webContents.executeJavaScript(PAGE_PROBE, false) as Promise<unknown>, wait });
   process.stdout.write(`${smokeLine(report)}\n`);
   if (SMOKE === "boundary") {
-    win.focus(); // the clipboard write needs a focused document
+    const { BOUNDARY_MARKER, runBoundaryProbe } = await import("./boundary-probe.js");
+    type Probed = Parameters<typeof runBoundaryProbe>[0]["app"];
     const result = await runBoundaryProbe({
-      app: win,
+      app: win as unknown as Probed,
       unregistered: async () => {
         const second = new BrowserWindow({ ...mainWindowOptions(dir, "dark", PACKAGED), show: false });
         await second.loadURL(APP_URL);
-        return second;
+        return second as unknown as Probed;
       },
       wait,
     });
@@ -96,7 +95,4 @@ async function ready(): Promise<void> {
   app.exit(report.mounted && !report.nodeInPage ? 0 : 1);
 }
 
-// G-28 first: a packaged build given a debugging switch exits 64 before anything else is set up.
-if (!refuseDebugging({ argv: process.argv, env: process.env, packaged: PACKAGED, platform: PLATFORM }, (code) => process.exit(code), (line) => process.stderr.write(`${line}\n`))) {
-  start();
-}
+start();

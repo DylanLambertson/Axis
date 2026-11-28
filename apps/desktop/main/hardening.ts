@@ -6,22 +6,22 @@ import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import {
   APP_SCHEME,
   APP_URL,
-  DEBUG_FLAG_EXIT,
   INTERNAL_APP_NAME,
   IPC_CHANNELS,
   appSchemeRegistration,
   buildCsp,
   createAppSchemeHandler,
-  debugFlagRefusals,
   hardenSession,
   hardenWebContents,
   installSchemeFilter,
+  createExternalOpener,
   parseOpenExternal,
   userDataDir,
   userDataOverlapsDataRoot,
   utilityForkOptions,
   type AppSender,
   type DesktopPlatform,
+  type ExternalConfirmation,
   type ExternalOutcome,
   type SessionLike,
   type UtilityServiceName,
@@ -29,23 +29,6 @@ import {
   type WebRequestLike,
   type WindowRegistry,
 } from "@axis/desktop-main";
-
-/**
- * G-28: the first thing main does. A packaged build given a debugging switch (any form) or `ELECTRON_RUN_AS_NODE` or
- * `NODE_OPTIONS` exits 64 at once and names the switch, never its value. Returns true when it refused. `--inspect` opens before
- * this runs, so the `EnableNodeCliInspectArguments` fuse (OS-21) is what closes that one.
- */
-export function refuseDebugging(
-  facts: { readonly argv: readonly string[]; readonly env: Readonly<Record<string, string | undefined>>; readonly packaged: boolean; readonly platform: DesktopPlatform },
-  exit: (code: number) => void,
-  log: (line: string) => void,
-): boolean {
-  const refused = debugFlagRefusals(facts.argv, facts.env, { packaged: facts.packaged, platform: facts.platform });
-  if (refused.length === 0) return false;
-  log(`refused debugging switches in a packaged build: ${refused.join(", ")}`);
-  exit(DEBUG_FLAG_EXIT);
-  return true;
-}
 
 export interface AppPathsLike {
   setName(name: string): void;
@@ -149,8 +132,76 @@ export interface AppWindowLike {
   loadURL(url: string): Promise<void>;
 }
 
+export interface AppEventsLike {
+  on(event: "web-contents-created", listener: (event: unknown, contents: WebContentsLike & { listenerCount(event: string): number }) => void): unknown;
+  on(event: "select-client-certificate", listener: (event: { preventDefault(): void }, contents: unknown, url: string, list: unknown[], callback: (certificate?: unknown) => void) => void): unknown;
+  on(event: "login", listener: (event: { preventDefault(): void }, contents: unknown, details: unknown, authInfo: unknown, callback: (username?: string, password?: string) => void) => void): unknown;
+}
+
 /**
- * Creates a window, registers it, hardens its web contents and loads the app URL. A window the registry refuses (the cap) is
+ * App-wide, before `ready`: every web contents (app windows, any second window, DevTools in development) gets the navigation,
+ * redirect, webview and window-open policy and the startup checks; a client certificate is never chosen and an HTTP login is
+ * cancelled (both unreachable while the filter allows no network, refused anyway).
+ */
+export function installAppHardening(app: AppEventsLike, onEvent: (event: HardeningEvent) => void = () => {}): void {
+  app.on("web-contents-created", (_event, contents) => {
+    requireApis(contents, CONTENTS_APIS, "a web contents");
+    assertNoChoosers(contents, CONTENTS_CHOOSER_EVENTS, "a web contents");
+    hardenWebContents(contents, (what) => onEvent({ kind: "policy", what }));
+  });
+  app.on("select-client-certificate", (event, _contents, _url, _list, callback) => {
+    event.preventDefault();
+    callback();
+    onEvent({ kind: "policy", what: "client_certificate" });
+  });
+  app.on("login", (event, _contents, _details, _authInfo, callback) => {
+    event.preventDefault();
+    callback();
+    onEvent({ kind: "policy", what: "login" });
+  });
+}
+
+/** The index of the Open button; Cancel (0) is the default and the cancel answer. */
+export const OPEN_BUTTON = 1;
+
+/** Main's EL-5 dialog options, built from the opener's confirmation only. */
+export function externalDialogOptions(c: ExternalConfirmation): {
+  type: "question";
+  message: string;
+  detail: string;
+  buttons: string[];
+  defaultId: number;
+  cancelId: number;
+  noLink: boolean;
+} {
+  return { type: "question", message: c.message, detail: c.detail, buttons: [...c.buttons], defaultId: c.defaultId, cancelId: c.cancelId, noLink: c.noLink };
+}
+
+/**
+ * EL-5 in main: the confirmation is main's modal dialog on the asking window; only the Open button (`OPEN_BUTTON`) opens, and
+ * what opens is exactly the string the dialog showed. A window that is gone resolves false.
+ */
+export function createMainExternalOpener<W>(deps: {
+  readonly registry: WindowRegistry;
+  /** The live window for a registry id, or undefined when it is gone or destroyed. */
+  readonly windowFor: (id: number) => W | undefined;
+  readonly showMessageBox: (window: W, options: ReturnType<typeof externalDialogOptions>) => Promise<{ readonly response: number }>;
+  readonly openExternal: (href: string) => Promise<void>;
+}): ReturnType<typeof createExternalOpener> {
+  return createExternalOpener({
+    confirm: async (id, c) => {
+      const win = deps.windowFor(id);
+      if (win === undefined) return false;
+      const answer = await deps.showMessageBox(win, externalDialogOptions(c));
+      return answer?.response === OPEN_BUTTON;
+    },
+    open: (href) => deps.openExternal(href),
+    isWindow: (id) => deps.registry.has(id),
+  });
+}
+
+/**
+ * Creates a window, registers it and loads the app URL. A window the registry refuses (the cap) is
  * not loaded. The registry entry is pruned on `closed`.
  */
 export async function openAppWindow<W extends AppWindowLike, O>(deps: {
@@ -160,9 +211,10 @@ export async function openAppWindow<W extends AppWindowLike, O>(deps: {
   readonly onEvent?: (event: HardeningEvent) => void;
 }): Promise<{ readonly id: number; readonly window: W }> {
   const win = deps.create(deps.options);
+  // Its navigation and window-open policy came from installAppHardening's web-contents-created hook, which covers every web
+  // contents main or Chromium creates; here only the startup checks are repeated for the app window.
   requireApis(win.webContents, CONTENTS_APIS, "the window's web contents");
   assertNoChoosers(win.webContents, CONTENTS_CHOOSER_EVENTS, "the window's web contents");
-  hardenWebContents(win.webContents, (what) => deps.onEvent?.({ kind: "policy", what }));
   const entry = deps.registry.add(win.webContents.id);
   if (entry === undefined) throw new Error("the window registry is full");
   win.on("closed", () => deps.registry.close(entry.id));

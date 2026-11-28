@@ -7,14 +7,18 @@
 //   devtools in a packaged build; H6 a window created without the registry, the web contents policy or the app URL; H7 a
 //   closed window left in the registry; H8 the openExternal handler answering a sender that fails the checks, or opening
 //   without the confirmation; H9 the fork without the fixed options or with a relative entry; H10 a missing Electron API or a
-//   device chooser listener accepted at startup; H11 the overlap check fooled by a link.
+//   device chooser listener accepted at startup; H11 the overlap check fooled by a link; H12 a web contents created without the
+//   policy (the app-wide hook removed), or a client certificate chosen or a login answered; H13 the EL-5 dialog with another
+//   default or cancel answer, a link, another text than the confirmed URL, or opening on any answer but Open, or opening
+//   another string than the one shown.
 import { test } from "node:test";
 import { mkdtempSync, mkdirSync, realpathSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import assert from "node:assert/strict";
 import { APP_SCHEME, APP_SCHEME_PRIVILEGES, APP_URL, DEBUG_FLAG_EXIT, INTERNAL_APP_NAME, IPC_CHANNELS, UTILITY_EXEC_ARGV, WindowRegistry, createExternalOpener } from "@axis/desktop-main";
-import { forkUtility, hardenAppSession, openAppWindow, prepareBeforeReady, refuseDebugging, registerOpenExternal, requireApis, resolveExisting, senderOf } from "../main/hardening.js";
+import { OPEN_BUTTON, createMainExternalOpener, externalDialogOptions, forkUtility, hardenAppSession, installAppHardening, openAppWindow, prepareBeforeReady, registerOpenExternal, requireApis, resolveExisting, senderOf } from "../main/hardening.js";
+import { refuseDebugging } from "../main/g28.js";
 
 test("G-28: a packaged build with a debugging switch exits 64 before anything else; an unpackaged one runs", () => {
   const exits: number[] = [];
@@ -129,15 +133,14 @@ function fakeWindow(id: number) {
   return w;
 }
 
-test("a window: registered, its web contents hardened, loaded at the app URL, pruned on close", async () => {
+test("a window: registered, loaded at the app URL, pruned on close; its policy comes from the app-wide hook only", async () => {
   const registry = new WindowRegistry();
   const w = fakeWindow(41);
   const options: unknown[] = [];
   const opened = await openAppWindow({ create: (o) => (options.push(o), w), options: { show: false }, registry });
   assert.deepEqual(options, [{ show: false }]);
   assert.equal(registry.byWebContents(41)?.id, opened.id, "H6");
-  assert.deepEqual(w.contentsEvents.sort(), ["will-attach-webview", "will-frame-navigate", "will-navigate", "will-redirect"], "H6");
-  assert.ok(w.openHandler, "H6");
+  assert.deepEqual(w.contentsEvents, [], "N2: hardened once, by installAppHardening");
   assert.deepEqual(w.loaded, [APP_URL], "H6");
   w.emit("closed");
   assert.equal(registry.has(opened.id), false, "H7");
@@ -182,6 +185,28 @@ test("openExternal: only an app window's main frame is answered, and only throug
   assert.deepEqual(await handler!(ev(7), { url: "https://example.com/b" }), { ok: false, reason: "no_window" }, "H8: closed");
 });
 
+test("openExternal: a sender that fails the checks never reaches the opener", async () => {
+  const registry = new WindowRegistry();
+  registry.add(7);
+  const reached: unknown[] = [];
+  const spy = { open: async (id: number, input: unknown) => (reached.push([id, input]), { ok: true as const }), windowClosed: () => {} };
+  let handler: ((event: Parameters<typeof senderOf>[0], ...args: unknown[]) => Promise<unknown>) | undefined;
+  registerOpenExternal({ ipcMain: { handle: (_c, h) => void (handler = h) }, registry, opener: spy });
+  const frame = { url: APP_URL, parent: null };
+  for (const ev of [
+    { sender: { id: 8, isDestroyed: () => false }, senderFrame: frame },
+    { sender: { id: 7, isDestroyed: () => false }, senderFrame: { url: "axis-app://shell/", parent: null } },
+    { sender: { id: 7, isDestroyed: () => false }, senderFrame: { url: APP_URL, parent: frame } },
+    { sender: { id: 7, isDestroyed: () => true }, senderFrame: frame },
+    { sender: { id: 7, isDestroyed: () => false }, senderFrame: null },
+  ]) {
+    assert.deepEqual(await handler!(ev, { url: "https://example.com/" }), { ok: false, reason: "no_window" }, "H8");
+  }
+  assert.deepEqual(reached, [], "H8: the opener was never asked");
+  assert.deepEqual(await handler!({ sender: { id: 7, isDestroyed: () => false }, senderFrame: frame }, { url: "https://example.com/" }), { ok: true });
+  assert.equal(reached.length, 1);
+});
+
 test("fork: the fixed options, and an absolute entry only", () => {
   const forks: Array<[string, unknown[], Record<string, unknown>]> = [];
   const up = { fork: (e: string, a: unknown[], o: object) => (forks.push([e, a, o as Record<string, unknown>]), { pid: 1 }) };
@@ -224,4 +249,57 @@ test("the overlap check resolves links, also for directories not created yet", (
   assert.equal(resolveExisting(join(dir, "nope", "x", "..", "y"), realpathSync.native), join(dir, "nope", "y"));
   const f = fakeApp(join(dir, "appdata", "Axis"));
   assert.throws(() => prepareBeforeReady({ app: f.app, protocol: f.protocol, platform: "linux", dataBase: join(dir, "data", "Axis") }), /overlap/, "H11: through a link");
+});
+
+function fakeAppEvents() {
+  const handlers = new Map<string, (...a: unknown[]) => void>();
+  return { handlers, app: { on: (e: string, h: (...a: unknown[]) => void) => void handlers.set(e, h) } };
+}
+
+test("app-wide: every web contents gets the policy; no client certificate, no login", () => {
+  const events: string[] = [];
+  const { app, handlers } = fakeAppEvents();
+  installAppHardening(app as never, (e) => events.push(`${e.kind}:${"what" in e ? e.what : ""}`));
+  const w = fakeWindow(5);
+  handlers.get("web-contents-created")!({}, w.webContents);
+  assert.deepEqual(w.contentsEvents.sort(), ["will-attach-webview", "will-frame-navigate", "will-navigate", "will-redirect"], "H12");
+  assert.ok(w.openHandler, "H12");
+  const chooser = fakeWindow(6);
+  chooser.heard = "select-bluetooth-device";
+  assert.throws(() => handlers.get("web-contents-created")!({}, chooser.webContents), /device chooser/, "H12");
+  let prevented = 0;
+  const answers: unknown[][] = [];
+  handlers.get("select-client-certificate")!({ preventDefault: () => prevented++ }, {}, "https://x", [{ cert: 1 }], (...a: unknown[]) => answers.push(a));
+  handlers.get("login")!({ preventDefault: () => prevented++ }, {}, {}, {}, (...a: unknown[]) => answers.push(a));
+  assert.equal(prevented, 2, "H12");
+  assert.deepEqual(answers, [[], []], "H12: no certificate, no credentials");
+  assert.deepEqual(events.filter((e) => e.includes("client_certificate") || e.includes("login")), ["policy:client_certificate", "policy:login"]);
+});
+
+test("EL-5 dialog: Cancel the default, no link, the confirmed URL; only Open opens exactly what was shown", async () => {
+  const registry = new WindowRegistry();
+  const entry = registry.add(11)!;
+  const shown: Array<{ win: string; options: ReturnType<typeof externalDialogOptions> }> = [];
+  const opened: string[] = [];
+  let response = OPEN_BUTTON;
+  const opener = createMainExternalOpener({
+    registry,
+    windowFor: (id) => (id === entry.id ? "win" : undefined),
+    showMessageBox: async (win, options) => (shown.push({ win, options }), { response }),
+    openExternal: async (href) => void opened.push(href),
+  });
+  assert.deepEqual(await opener.open(entry.id, "HTTPS://Example.COM/a b".replace(" ", "%20")), { ok: true });
+  assert.equal(shown.length, 1);
+  assert.deepEqual(shown[0], {
+    win: "win",
+    options: { type: "question", message: "Open this link in your browser?", detail: "https://example.com/a%20b", buttons: ["Cancel", "Open link"], defaultId: 0, cancelId: 0, noLink: true },
+  }, "H13");
+  assert.equal(shown[0]!.options.buttons[OPEN_BUTTON], "Open link", "H13");
+  assert.deepEqual(opened, ["https://example.com/a%20b"], "H13: exactly the shown string");
+  for (const r of [0, 2, -1, Number.NaN]) {
+    response = r;
+    assert.deepEqual(await opener.open(entry.id, "https://example.com/"), { ok: false, reason: "declined" }, `H13: response ${r}`);
+  }
+  assert.deepEqual(opened.length, 1, "H13: nothing else opened");
+  assert.deepEqual(await opener.open(99, "https://example.com/"), { ok: false, reason: "no_window" });
 });
