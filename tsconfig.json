@@ -7,6 +7,7 @@
     { "path": "packages/challenge" },
     { "path": "packages/daemon" },
     { "path": "packages/daemon-host" },
+    { "path": "packages/desktop-main" },
     { "path": "packages/providers" },
     { "path": "packages/git-ops" },
     { "path": "packages/audit" },
