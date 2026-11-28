@@ -19,6 +19,10 @@
     "./config": {
       "types": "./dist/src/config.d.ts",
       "default": "./dist/src/config.js"
+    },
+    "./signal-guard": {
+      "types": "./dist/src/signal-guard.d.ts",
+      "default": "./dist/src/signal-guard.js"
     }
   },
   "scripts": {
