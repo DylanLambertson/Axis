@@ -7,7 +7,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { refreshIndex } from "../src/index.js";
 import { commitOnTop, entries, indexBytes, indexPath } from "./indexFixture.js";
 import { fixture, stage, type Fixture } from "./realFixture.js";
@@ -59,4 +59,31 @@ test("a private copy that reads as empty although the index has entries is refus
   assert.deepEqual(r, { skipped: "unreadable" });
   assert.deepEqual(indexBytes(f), before);
   assert.equal(existsSync(lockOf(f)), false, "Axis's own lock is removed");
+});
+
+test("lock guard review 1 B1: a result that comes out short is never renamed over the index (kills no completeness check)", { skip: !posix }, async () => {
+  const { f, old, next } = setup();
+  const before = indexBytes(f);
+  const r = await refreshIndex(f.deps, f.wt, old, next, {
+    afterUpdate: (result) => {
+      const bytes = readFileSync(result);
+      writeFileSync(result, bytes.subarray(0, bytes.length - 37)); // a write that stopped short, as on a nearly full disk
+    },
+  });
+  assert.deepEqual(r, { skipped: "failed" });
+  assert.deepEqual(indexBytes(f), before);
+  assert.equal(existsSync(lockOf(f)), false, "Axis's own lock is removed");
+  assert.deepEqual(readdirSync(f.wt.gitDir).filter((n) => n.startsWith("index.axis-")), [], "no private copy is left in the git directory");
+});
+
+test("lock guard review 1 S1: the private copy lives in the git directory, the result replaces the index, and our lock is removed after", { skip: !posix }, async () => {
+  const { f, old, next } = setup();
+  const seen: string[] = [];
+  const r = await refreshIndex(f.deps, f.wt, old, next, { afterCopy: (copy) => void seen.push(copy) });
+  assert.deepEqual(r, { refreshed: 1 });
+  assert.equal(seen.length, 1);
+  assert.match(seen[0] ?? "", /\/index\.axis-[0-9a-f]{16}$/);
+  assert.equal((seen[0] ?? "").startsWith(f.wt.gitDir), true, "same filesystem as the index, no copy in a shared temp directory");
+  assert.equal(existsSync(lockOf(f)), false);
+  assert.deepEqual(readdirSync(f.wt.gitDir).filter((n) => n.startsWith("index.axis-")), []);
 });
