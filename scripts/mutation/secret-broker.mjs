@@ -28,8 +28,8 @@ const T = {
   v: [`${V}/test/provider-reveal.test.js`, `${V}/test/integration-reveal.test.js`, `${V}/test/vault.test.js`],
   b: BT,
   c: [`${H}/test/secrets-client.test.js`, ...BT, `${H}/test/control-client.test.js`],
-  w: [SLICE, `${H}/test/compose.test.js`],
-  s: [SLICE, `${H}/test/compose.test.js`],
+  w: [SLICE, `${H}/test/compose.test.js`, `${H}/test/integrations/handlers.test.js`],
+  s: [SLICE, `${H}/test/compose.test.js`, PROVIDERS],
   p: [PROVIDERS, SLICE],
 };
 const M = [
@@ -72,8 +72,13 @@ const M = [
   // Slice 2 (b): the option's guard (zero sends when off), the one backend for both bindings, the startup reveal.
   ["w", "the wiring built with the option off", "secretBrokerWiring(options.secretBroker, control, logger)", 'secretBrokerWiring(options.secretBroker ?? { connectionId: "anthropic-main" }, control, logger)'],
   ["s", "the wiring's own guard dropped", "if (option === undefined)\n        return undefined;", 'if (option === undefined)\n        option = { connectionId: "anthropic-main" };'],
-  ["w", "the startup reveal never started", "void broker.startup(() => providers.validateStored());", ";"],
-  ["w", "the integrations binding without the broker backend", "backend: broker === undefined ? options.integrations?.vaultBackend : asVaultBackend(broker.backend)", "backend: options.integrations?.vaultBackend"],
+  ["w", "the startup reveal never started", "void broker.startup((signal) => providers.validateStored(signal));", ";"],
+  ["w", "the integrations binding without the broker backend", "backend: viaBroker ?? options.integrations?.vaultBackend", "backend: options.integrations?.vaultBackend"],
+  // Review b: the rollback the vault uses, the bounded startup wait, and the stop at shutdown.
+  ["p", "the broker vault's rollback back to 5 s", "rollbackTimeoutMs: conn.vault.rollbackTimeoutMs", "rollbackTimeoutMs: 5000"],
+  ["p", "provider requests do not wait for the startup reveal", 'if (purpose === "provider_request")\n            await afterStartup();', ""],
+  ["p", "the startup reveal ignores shutdown", "if (signal?.aborted === true)\n", "if (false)\n"],
+  ["s", "stop does not tell the reveal", "halt.abort();", ";"],
   ["w", "a second backend beside the broker accepted", 'refuseComposition("secret_broker_conflict");', ";"],
   ["p", "provider reveals under consent (the weak-entry refusal off)", '...(conn.vault === undefined ? { weakPolicy: "consent" } : { weakPolicy: "refuse", rollbackTimeoutMs: conn.vault.rollbackTimeoutMs })', '...{ weakPolicy: "consent" }'],
   ["p", "the composition's vault policy dropped on the way in", "...(o.pricing === undefined ? {} : { pricing: o.pricing }), ...vault }", "...(o.pricing === undefined ? {} : { pricing: o.pricing }) }"],

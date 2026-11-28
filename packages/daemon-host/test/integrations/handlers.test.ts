@@ -138,4 +138,10 @@ test("the daemon entry never turns the secret broker wiring on (secret-broker.md
   const wiring = readFileSync(join(src, "compose-secrets.ts"), "utf8");
   assert.equal(wiring.split("createBrokerSecretBackend(").length - 1, 1, "ONE backend, handed to both bindings");
   assert.equal(/ForTest/.test(wiring), false, "the composition never takes the test-only timeouts");
+  const compose = readFileSync(join(src, "compose.ts"), "utf8");
+  assert.equal(compose.split("asVaultBackend(broker.backend)").length - 1, 1, "the composition converts the backend once (review n0c1-b S2)");
+  assert.match(compose, /backend: viaBroker \?\? options\.integrations\?\.vaultBackend/, "the integrations binding gets that one");
+  assert.match(compose, /backend: viaBroker, vault: broker\.vault/, "and the providers binding the same");
+  assert.match(compose, /await broker\?\.stop\(\);/, "shutdown stops the startup reveal before the writers are sealed");
+  assert.equal(/observeVault/.test(compose), false, "the composition never takes the vault test seam");
 });

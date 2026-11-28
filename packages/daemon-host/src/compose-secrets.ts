@@ -32,27 +32,49 @@ export interface SecretBrokerWiring {
   readonly backend: BrokerSecretBackend;
   /** The providers binding's vault policy under the broker. */
   readonly vault: { readonly weakPolicy: "refuse"; readonly rollbackTimeoutMs: number };
-  /** The startup reveal: `validate` is the providers binding's `validateStored`. Never throws. */
-  startup(validate: () => Promise<{ readonly listed: boolean; readonly validated: number; readonly failed: number }>): Promise<void>;
+  /** The startup reveal: `validate` is the providers binding's `validateStored`, stopped through `signal` at shutdown. Never throws. */
+  startup(validate: (signal: AbortSignal) => Promise<{ readonly listed: boolean; readonly validated: number; readonly failed: number }>): Promise<void>;
+  /**
+   * Shutdown, before the audit writers are sealed: no further entry is read, and the read in flight gets up to STOP_WAIT_MS to
+   * settle (and write its audit row). One still hung after that may complete at main with no row: an accepted residual.
+   */
+  stop(): Promise<void>;
 }
+
+/** How long shutdown waits for a startup read in flight. */
+export const STOP_WAIT_MS = 1_000;
 
 /** The wiring, or `undefined` when the option is off: the ONLY place a broker backend is built. */
 export function secretBrokerWiring(option: SecretBrokerOption | undefined, control: ControlClient, logger: Logger | undefined): SecretBrokerWiring | undefined {
   if (option === undefined) return undefined;
   const backend = createBrokerSecretBackend({ client: control, onEvent: (e) => logger?.warn("secrets.broker", { reason: e.event.slice("secrets.".length) }) });
+  const halt = new AbortController();
+  let running: Promise<void> | undefined;
   return Object.freeze({
     connectionId: option.connectionId,
     backend,
     vault: Object.freeze({ weakPolicy: "refuse" as const, rollbackTimeoutMs: BROKER_ROLLBACK_MS }),
-    async startup(validate: () => Promise<{ readonly listed: boolean; readonly validated: number; readonly failed: number }>): Promise<void> {
-      try {
-        const r = await validate();
-        if (!r.listed) logger?.warn("secrets.startup", { reason: "list_failed" });
-        else logger?.info("secrets.startup", { reason: "validated", count: r.validated });
-        if (r.failed > 0) logger?.warn("secrets.startup", { reason: "failed", count: r.failed });
-      } catch {
-        logger?.warn("secrets.startup", { reason: "internal" });
-      }
+    startup(validate: (signal: AbortSignal) => Promise<{ readonly listed: boolean; readonly validated: number; readonly failed: number }>): Promise<void> {
+      running ??= reveal(validate);
+      return running;
+    },
+    async stop(): Promise<void> {
+      halt.abort();
+      if (running === undefined) return;
+      let timer: NodeJS.Timeout | undefined;
+      await Promise.race([running, new Promise((r) => (timer = setTimeout(r, STOP_WAIT_MS) as unknown as NodeJS.Timeout))]); // opaque handle under Code OSS's typings (ADR 0005)
+      clearTimeout(timer);
     },
   });
+
+  async function reveal(validate: (signal: AbortSignal) => Promise<{ readonly listed: boolean; readonly validated: number; readonly failed: number }>): Promise<void> {
+    try {
+      const r = await validate(halt.signal);
+      if (!r.listed) logger?.warn("secrets.startup", { reason: "list_failed" });
+      else logger?.info("secrets.startup", { reason: "validated", count: r.validated });
+      if (r.failed > 0) logger?.warn("secrets.startup", { reason: "failed", count: r.failed });
+    } catch {
+      logger?.warn("secrets.startup", { reason: "internal" });
+    }
+  }
 }

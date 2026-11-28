@@ -8,6 +8,7 @@ import { createSecretScanner, type ScanMode } from "@axis/secret-scan";
 import { anchorPreflight } from "./anchor/preflight.js";
 import { createAgentBinding, type AgentBinding } from "./bindings/agent.js";
 import { asVaultBackend, createProvidersBinding, productionConnection, type AnthropicConnectionOptions, type ProvidersBinding } from "./bindings/providers.js";
+import { awaitAnchorAck } from "./compose-anchor.js";
 import { secretBrokerWiring, type SecretBrokerOption } from "./compose-secrets.js";
 import { selectPtyGitRunner } from "./bindings/pty-git.js";
 import { createRunsBinding, type RunsBinding } from "./bindings/runs.js";
@@ -172,6 +173,7 @@ export function composeDaemonHost(options: ComposeOptions): ComposedHost {
   const scanner = createSecretScanner({ mode: options.scanMode ?? "refuse" });
   if (options.secretBroker !== undefined && (options.composer?.anthropic !== undefined || options.integrations?.vaultBackend !== undefined)) refuseComposition("secret_broker_conflict");
   const broker = secretBrokerWiring(options.secretBroker, control, logger); // undefined unless the option is set: no backend, no send
+  const viaBroker = broker === undefined ? undefined : asVaultBackend(broker.backend); // the ONE backend both bindings get
   // Closed when the final anchor is taken: no composer or challenge row may land after it (review r1 S1).
   const auditSeal = createAuditSeal();
   // The host windows' lifetimes (PV-K2 K2-g4b, plugin-grant-contract.md section 8.4): fed by the daemon's session lifecycle and
@@ -268,8 +270,8 @@ export function composeDaemonHost(options: ComposeOptions): ComposedHost {
         forwarder.bind(runs.service);
         const projectPaths = (): string[] => parts.journal.listProjects().map((p) => p.path);
         // Composer runs: the broker's audit rows mark the anchor batch dirty like every other writer.
-        const providers = createProvidersBinding({ redactor: ports.redactor, audit: composerWriter, ...productionConnection(broker === undefined ? options.composer?.anthropic : { connectionId: broker.connectionId, backend: asVaultBackend(broker.backend), vault: broker.vault }) });
-        if (broker !== undefined) void broker.startup(() => providers.validateStored()); // the startup reveal, under the option only
+        const providers = createProvidersBinding({ redactor: ports.redactor, audit: composerWriter, ...productionConnection(broker === undefined || viaBroker === undefined ? options.composer?.anthropic : { connectionId: broker.connectionId, backend: viaBroker, vault: broker.vault }) });
+        if (broker !== undefined) void broker.startup((signal) => providers.validateStored(signal)); // the startup reveal, under the option only
         // axis.messages/1 (PV-M3): service, settings and delivery into runs; its rows go through the sealed composer writer.
         const messagingDeps = hostMessagingDeps({ journal: parts.journal, audit: composerWriter, monotonic: () => ports.clock.monotonic(), scan: (text) => scanner.scan(text, { part: "message" }), logger, holdsSecret: messageSecretCheck(ports.redactor), enabled: options.messaging?.enabled === true });
         const messaging = createMessagingBinding(messagingDeps);
@@ -376,7 +378,7 @@ export function composeDaemonHost(options: ComposeOptions): ComposedHost {
     if (writable) {
       const egress = options.integrations?.client ?? createEgressClient();
       cleanups.push(() => egress.close());
-      const integrations = { sender: egress, backend: broker === undefined ? options.integrations?.vaultBackend : asVaultBackend(broker.backend) };
+      const integrations = { sender: egress, backend: viaBroker ?? options.integrations?.vaultBackend };
       registerServing(registrar, services, { built, config, control, ports, pty, scanner, ptyGitRunnerFor, logger, runHooks: options.runHooks ?? false, sshSpawn: options.sshSpawn, pluginGrants: options.pluginGrants === true, stopProjectRuns, minter: createRunTrustMinter(ports.clock), hostWindows: windowLifetimes, integrations, terminals });
     }
     if (events !== undefined) {
@@ -445,6 +447,7 @@ export function composeDaemonHost(options: ComposeOptions): ComposedHost {
     offConnect?.();
     services.haltAnchor();
     built.runs?.dispose();
+    await broker?.stop(); // the startup reveal starts no read the sealed writers could not audit (review n0c1-b nit)
     // Composer loops stop and write nothing more to the journal; what was running gets a bounded moment to record its result,
     // then the composer and challenge writers are sealed, so the final checkpoint below covers the last row (review r1 S1).
     if (!(await settleComposer(built.composer, auditSeal, options.composerSettleMs ?? 1_000))) logger?.warn("request.failed", { reason: "composer_unsettled" });
@@ -457,18 +460,7 @@ export function composeDaemonHost(options: ComposeOptions): ComposedHost {
       throw new AxisError("E_UNAVAILABLE", "The final audit anchor could not be sent", { reason: "final_anchor_unsent" });
     }
     if (target === undefined || target === null || services.anchor().ackedSeq >= target.seq) return;
-    const acked = await new Promise<boolean>((resolve) => {
-      const off = control.onAnchorAck(() => {
-        if (services.anchor().ackedSeq >= target.seq) done(true);
-      });
-      const timer = setTimeout(() => done(false), options.finalAnchorWaitMs ?? 1_500) as unknown as NodeJS.Timeout; // opaque handle under Code OSS's typings (ADR 0005)
-      timer.unref();
-      function done(ok: boolean): void {
-        clearTimeout(timer);
-        off();
-        resolve(ok);
-      }
-    });
+    const acked = await awaitAnchorAck(control, () => services.anchor().ackedSeq >= target.seq, options.finalAnchorWaitMs ?? 1_500);
     if (!acked) throw new AxisError("E_UNAVAILABLE", "The final audit anchor was not acknowledged", { reason: "final_anchor_unacked" });
   }
 

@@ -62,6 +62,11 @@ export interface ProvidersBindingDeps {
   /** The host's redactor: every key read is registered with it before use. */
   readonly redactor: Redactor;
   readonly audit: AuditSink;
+  /**
+   * TEST ONLY (never set by the composition, a pinned test; review n0c1-b S1): the binding's own vault's `store` and the outcomes
+   * of its change events, so a test proves the vault USES the wiring's rollback timeout. Nothing in production stores here.
+   */
+  readonly observeVault?: (seam: { readonly store: (connectionId: string, secret: string) => Promise<unknown>; readonly outcomes: readonly string[] }) => void;
   readonly anthropic?: AnthropicConnectionOptions;
 }
 
@@ -77,8 +82,15 @@ export interface ProvidersBinding {
    * other, each audited and its key registered with the redactor before anything else may use it. Integration entries are
    * skipped. A failure is that entry's only (audited); nothing is retried. Never throws.
    */
-  validateStored(): Promise<{ readonly listed: boolean; readonly validated: number; readonly failed: number }>;
+  validateStored(signal?: AbortSignal): Promise<{ readonly listed: boolean; readonly validated: number; readonly failed: number }>;
 }
+
+/**
+ * How long a provider request waits for a running startup reveal (secret-broker.md §3.5, review n0c1-b S3): the redactor then
+ * knows every stored key before the first request is sent. Past it the request goes on: its own key is registered before use
+ * anyway, and a hung broker fails that request's own read; the gap left is another stored key echoing in that first output.
+ */
+export const STARTUP_WAIT_MS = 10_000;
 
 /** Audit payload keys of the vault reads (DMN-5): why the key was read and what came of it (`ok`, `unusable` or the vault's code). Never the key. */
 export const PROVIDERS_PAYLOAD_ALLOWLIST: Readonly<Record<string, readonly string[]>> = Object.freeze({ "provider.credential": Object.freeze(["purpose", "outcome"]) });
@@ -263,7 +275,21 @@ export function createProvidersBinding(deps: ProvidersBindingDeps): ProvidersBin
   const conn = deps.anthropic;
   if (conn === undefined) return { providers: [], cachedModels: () => undefined, credential: async () => undefined, validateStored: async () => ({ listed: false, validated: 0, failed: 0 }) };
   const connectionId = conn.connectionId;
-  const vault: ConnectionVault = createVault({ backend: conn.backend, ...(conn.vault === undefined ? { weakPolicy: "consent" } : { weakPolicy: "refuse", rollbackTimeoutMs: conn.vault.rollbackTimeoutMs }) });
+  const outcomes: string[] = [];
+  const vault: ConnectionVault = createVault({
+    backend: conn.backend,
+    ...(conn.vault === undefined ? { weakPolicy: "consent" } : { weakPolicy: "refuse", rollbackTimeoutMs: conn.vault.rollbackTimeoutMs }),
+    ...(deps.observeVault === undefined ? {} : { onChange: (e: { readonly outcome: string }) => void outcomes.push(e.outcome) }),
+  });
+  deps.observeVault?.({ store: (id, secret) => vault.store(id, secret), outcomes });
+  /** The startup reveal while it runs; a provider request waits for it, bounded (STARTUP_WAIT_MS). */
+  let startup: Promise<unknown> | undefined;
+  const afterStartup = async (): Promise<void> => {
+    if (startup === undefined) return;
+    let timer: NodeJS.Timeout | undefined;
+    await Promise.race([startup, new Promise((r) => (timer = setTimeout(r, STARTUP_WAIT_MS) as unknown as NodeJS.Timeout))]); // opaque handle under Code OSS's typings (ADR 0005)
+    clearTimeout(timer);
+  };
 
   const audited = (purpose: KeyPurpose, outcome: string, id: string = connectionId): void => {
     deps.audit.append({ actor: "daemon", action: "provider.credential", target: `connection:${id}`, outcome: outcome === "ok" ? "success" : "failure", payload: { purpose, outcome } });
@@ -271,6 +297,7 @@ export function createProvidersBinding(deps: ProvidersBindingDeps): ProvidersBin
 
   /** One key read for one request (or the startup validation of `id`). Throws a fixed error (the adapter makes it `no_credential`); never keeps the key. */
   const apiKey = async (purpose: KeyPurpose, id: string = connectionId): Promise<string> => {
+    if (purpose === "provider_request") await afterStartup();
     let key: string;
     try {
       key = await vault.reveal(id, purpose);
@@ -345,23 +372,31 @@ export function createProvidersBinding(deps: ProvidersBindingDeps): ProvidersBin
         void shared.then((c) => (signal.removeEventListener("abort", stop), resolve(c)));
       });
     },
-    async validateStored() {
-      let ids: string[];
-      try {
-        ids = (await vault.list()).map((c) => c.connectionId).filter((id) => !id.startsWith("integration:"));
-      } catch {
-        return { listed: false, validated: 0, failed: 0 };
-      }
-      let validated = 0;
-      for (const id of ids) {
-        try {
-          await apiKey("validate_connection", id); // audited and registered; the key itself is dropped here
-          validated += 1;
-        } catch {
-          // audited by apiKey; that connection stays unvalidated, nothing is retried
-        }
-      }
-      return { listed: true, validated, failed: ids.length - validated };
+    validateStored(signal?: AbortSignal) {
+      const run = validateAll(signal);
+      startup = run.finally(() => (startup = undefined));
+      return run;
     },
   };
+
+  /** The startup reveal; `signal` (shutdown) stops it before the next entry. */
+  async function validateAll(signal: AbortSignal | undefined): Promise<{ listed: boolean; validated: number; failed: number }> {
+    let ids: string[];
+    try {
+      ids = (await vault.list()).map((c) => c.connectionId).filter((id) => !id.startsWith("integration:"));
+    } catch {
+      return { listed: false, validated: 0, failed: 0 };
+    }
+    let validated = 0;
+    for (const id of ids) {
+      if (signal?.aborted === true) break; // shutdown: no read may start once the audit writers are about to be sealed
+      try {
+        await apiKey("validate_connection", id); // audited and registered; the key itself is dropped here
+        validated += 1;
+      } catch {
+        // audited by apiKey; that connection stays unvalidated, nothing is retried
+      }
+    }
+    return { listed: true, validated, failed: ids.length - validated };
+  }
 }

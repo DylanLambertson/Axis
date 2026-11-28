@@ -67,13 +67,19 @@ Daemon → main requests, each with a `requestId`, strict schemas, closed types;
   5. Each budget starts when main accepts the request; at most 4 wait and 8 are outstanding (timed-out operations that have not settled included); `info` never queues; at most 2 file operations run at once.
   6. `get`, `meta` and `list` report each entry's protection from its ciphertext, not from the metadata stored beside it.
   7. No shared object reference inside an answer (the channel refuses non-plain data).
+  8. Every daemon start sends a `list`, then an `info` and a `get` for each provider entry (the startup reveal, §3.5); the `list` includes integration entries.
+  9. A weak record's plaintext reaches the daemon on every start (the vault refuses it there, §3.5), so main's share of the canary gate (gate 7) covers that read too.
 - **The daemon side** is a `SecretBackend` over the control client (`daemon-host/src/secrets-backend.ts`), validating every answer field by field (the vault treats backend data as untrusted [V, `anthropic-adapter.md` §10.2]). The ADR 0003 sketch `secrets.decrypt(handle, purpose)` maps to `secrets.get { name }`: the purpose is checked and audited by the vault in the daemon, not by main.
 
 ### 3.5 Wiring [D]
 
 - The daemon entry passes the control-channel backend to the composition (`composer.anthropic.backend`), and the integrations binding gets the same backend (PV-N1f). Until PV-N0c-2 this is behind a composition option that production does not set (§6.1).
 - **Integration names.** The vault's name rule has no `:`, so an `integration:<id>` name would fail it. PV-N1c changes the rule (the `integration:` prefix plus the existing id rule, within the 100-character cap) together with the namespaces; until then no such entry can be stored. Independently, PV-N0c makes the startup listing tolerate a bad name: the vault's `list` throws on any bad name [V, `vault/src/vault.ts` `list`], so the daemon's control-channel backend filters the answer **before** the vault sees it, dropping each name that fails the vault's rule and reporting it with a closed event; one bad file never fails the whole list. Main's own name rule (3.1, 3.4) widens with the vault's in PV-N1c, or main's `list` would ignore integration entries.
-- **At start** the daemon lists the entries and reveals each **provider** entry once with `validate_connection`, so the redactor knows every stored key before any request (`anthropic-adapter.md` §10.2, `knownSecrets`); a failure leaves that connection unusable, never the daemon. Each reveal is audited, one row per provider entry per start: that volume is accepted. Integration entries are **not** revealed at start; PV-N1f registers them with the redactor when it first reads them.
+- **At start** the daemon lists the entries and reveals each **provider** entry once with `validate_connection`, one after another, so the redactor knows every stored key before any request (`anthropic-adapter.md` §10.2, `knownSecrets`). Each reveal is audited, one row per provider entry per start (purpose and outcome only, never a value or its length): that volume is accepted. Integration entries are **not** revealed at start; PV-N1f registers them with the redactor when it first reads them. [D, PV-N0c-1 review b S3]:
+  - **Requests wait, bounded.** The reveal runs in the background, so `ready` is not held up by a slow keyring. A provider request waits for it, up to `STARTUP_WAIT_MS` (10 s), and then goes on. Past the bound the exposure is small: the request's own key is registered before use as always, and a hung broker fails that request's own read; what remains is ANOTHER stored provider key echoing in that first output, before the reveal reached it.
+  - **A failure is that entry's only.** It is audited, and nothing is retried at start. The connection is not blocked for good: each later request reads its key again under the vault's gates (a weak entry stays refused), which is the user's action, not a loop.
+  - **Shutdown stops it** before the audit writers are sealed: no further entry is read, and the read in flight gets up to 1 s to settle and write its row. One still hung after that may complete at main with no audit row: an accepted residual.
+  - **A weak entry's plaintext crosses into the daemon** before the vault refuses it (the backend reports the record, the vault judges it). The refused secret is never kept, registered or returned. Accepted by design; main's share of gate 7 covers the read (handoff item 9).
 - **Out of scope:** storing a key over the bridge (the "connect" flow with its tier and dialog), the consent grantor, and the UI; separate tickets.
 
 ## 4. Threats
@@ -170,9 +176,16 @@ Each is a large-builder slice with an independent security review and mutation t
 | 3 | N0a: frame and name binding. N0c-2: the real cipher and app path |
 | 4 | N0a: weak and prefix refusal logic. N0c-2: the Linux built-app refusal and its visible reason, restated as above |
 | 5 | N0a: the prefix reported truthfully. N0c-1: the vault's provider reveal gate. N0c-2: the real Linux, macOS and Windows behaviour |
-| 6 | N0c-1: a bounded hung `get` with other connections usable, and a locked-after-store answer giving "needs reconnect" with the record kept, at daemon level. The test supervisor is not a real keyring |
+| 6 | N0c-1: a bounded hung `get` with other connections usable (at composition level too, with the real budgets), and a locked-after-store answer giving "needs reconnect" with the record kept, at daemon level. The test supervisor is not a real keyring. Accepted residual: the 8 outstanding secrets requests are shared by every connection, so 8 hung names make the rest `busy` for up to 65 s (a jammed broker, as on main's side) |
 | 7 | N0a: main's pure-module errors and events. N0c-1: the daemon's logs and errors. N0c-2: main's adapter, before the flip |
 | 8 | N0a: folder, file and canonical-name logic. N0c-1: answer validation, the oversized refusal and the tolerant startup list. N0c-2: the adapter's path selection, with gates 1 and 2 |
+
+**What PV-N0c-2 must still prove before the option goes on in production** (PV-N0c-1 review b):
+- main's adapter meets the nine guarantees of §3.4 against the real store;
+- gate lines 1 to 5 in a built app;
+- main's share of gate 7: a canary through the real main-to-daemon path, with a leak mutant at the adapter's boundary;
+- the one-line flip in the entry, with the pins that keep the option out of the entry inverted on purpose in the same change;
+- the startup wait of §3.5 and the shutdown stop, as built in PV-N0c-1, kept.
 
 **EXT-4.** The residual of §3.2 (any renderer can decrypt any `safeStorage` ciphertext through upstream's `encryption` channel) stands only while the Code OSS shell ships. The own shell's renderer has no such channel (ADR 0011 Decision 5 item 1), so PV-N0c-2's built-app evidence is taken in a shell without it.
 
