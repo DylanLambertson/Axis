@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
-// OS-5 review B2 and S2 through the reconnecting client: nested status changes reach a listener in order, and a call
-// that throws, or an error or answer whose fields throw, settles once with a closed code and leaves nothing pending.
+// OS-5 review B2 and S2 (and review 2 SF1) through the reconnecting client: nested status changes reach a listener in
+// order, and a call that throws, or an error or answer whose fields throw, settles once with a closed code and leaves
+// nothing pending; no getter, inherited field or `then` of what the connection returns is run.
 
 import assert from 'node:assert';
 import { suite, test } from 'node:test';
@@ -22,9 +23,9 @@ function timers() {
 }
 
 /** A client whose non-audit calls do what `call` says. */
-function connected(call: () => Promise<never> | never): IAxisConnectedClient {
+function connected(call: () => unknown): IAxisConnectedClient {
 	return {
-		call: (contract) => contract === 'axis.audit' ? Promise.resolve({ ok: true, result: { degraded: null } }) : call(),
+		call: (contract) => (contract === 'axis.audit' ? Promise.resolve({ ok: true, result: { degraded: null } }) : call()) as ReturnType<IAxisConnectedClient['call']>,
 		close: () => {},
 	};
 }
@@ -37,6 +38,13 @@ async function readyClient(c: IAxisConnectedClient) {
 	await flush();
 	assert.strictEqual(client.status.kind, 'ready');
 	return { client, t, connects, pendingSize: () => (client as unknown as { pending: Set<unknown> }).pending.size };
+}
+
+async function closedCode(p: Promise<unknown>): Promise<string> {
+	const e = await rejection(p);
+	assert.ok(e instanceof AxisDaemonCallError, `a closed error, not ${String(e)}`);
+	assert.ok(!String((e as Error).message).includes(MARKER) && (e as Error).cause === undefined);
+	return (e as AxisDaemonCallError).code;
 }
 
 async function rejection(p: Promise<unknown>): Promise<unknown> {
@@ -106,10 +114,88 @@ suite('Axis reconnecting client boundaries (review B2, S2)', () => {
 
 	test('S2: an answer whose fields throw is an invalid reply, settled once', async () => {
 		const answer = { get ok(): boolean { throw new Error(MARKER); } };
-		const r = await readyClient(connected(() => Promise.resolve(answer) as Promise<never>));
+		const r = await readyClient(connected(() => Promise.resolve(answer)));
 		const e = await rejection(r.client.request('axis.projects', 'list', {}));
 		assert.strictEqual((e as AxisDaemonCallError).code, 'invalid_reply');
 		assert.strictEqual(r.pendingSize(), 0);
+		r.client.dispose();
+	});
+
+	test('SF1: an answer read through accessors is an invalid reply, and no getter runs', async () => {
+		let reads = 0;
+		const accessor = { get ok(): boolean { reads++; return true; }, get result(): number { reads++; return 42; } };
+		const r = await readyClient(connected(() => Promise.resolve(accessor)));
+		assert.strictEqual(await closedCode(r.client.request('axis.projects', 'list', {})), 'invalid_reply');
+		assert.strictEqual(reads, 0, 'neither getter ran');
+		assert.strictEqual(r.pendingSize(), 0);
+		r.client.dispose();
+	});
+
+	test('SF1: an inherited answer is an invalid reply', async () => {
+		const r = await readyClient(connected(() => Promise.resolve(Object.create({ ok: true, result: 42 }))));
+		assert.strictEqual(await closedCode(r.client.request('axis.projects', 'list', {})), 'invalid_reply');
+		const r2 = await readyClient(connected(() => Promise.resolve({ ok: true, result: Object.create({ secret: 1 }) })));
+		assert.strictEqual(await closedCode(r2.client.request('axis.projects', 'list', {})), 'invalid_reply', 'a result with a prototype is not wire data');
+		assert.strictEqual(r.pendingSize() + r2.pendingSize(), 0);
+		r.client.dispose();
+		r2.client.dispose();
+	});
+
+	test('SF1: a result with a throwing then getter is a closed invalid reply, not the raw error', async () => {
+		let reads = 0;
+		const result = { get then(): never { reads++; throw new Error(MARKER); } };
+		const r = await readyClient(connected(() => Promise.resolve({ ok: true, result })));
+		assert.strictEqual(await closedCode(r.client.request('axis.projects', 'list', {})), 'invalid_reply');
+		assert.strictEqual(reads, 0);
+		assert.strictEqual(r.pendingSize(), 0);
+		r.client.dispose();
+	});
+
+	test('SF1: a native promise with a throwing then getter settles with a closed code and leaves nothing pending', async () => {
+		const hostile = () => Object.defineProperty(Promise.resolve({ ok: true, result: 42 }), 'then', { get() { throw new Error(MARKER); } });
+		const r = await readyClient(connected(hostile));
+		assert.strictEqual(await closedCode(r.client.request('axis.projects', 'list', {})), 'E_INTERNAL');
+		assert.strictEqual(r.pendingSize(), 0, 'not held until disconnect');
+		r.client.dispose();
+	});
+
+	test('SF1: an error code getter is never invoked', async () => {
+		let reads = 0;
+		const error = { get code(): string { reads++; return 'E_TIMEOUT'; } };
+		const r = await readyClient(connected(() => Promise.reject(error)));
+		assert.strictEqual(await closedCode(r.client.request('axis.projects', 'list', {})), 'E_INTERNAL');
+		const r2 = await readyClient(connected(() => Promise.resolve({ ok: false, error })));
+		assert.strictEqual(await closedCode(r2.client.request('axis.projects', 'list', {})), 'E_INTERNAL');
+		assert.strictEqual(reads, 0);
+		r.client.dispose();
+		r2.client.dispose();
+	});
+
+	test('SF1: plain answers keep working, and the result handed out is a fresh copy', async () => {
+		const result = { projects: [{ id: 'p1', tags: ['a'] }] };
+		const r = await readyClient(connected(() => Promise.resolve({ ok: true, result })));
+		const got = await r.client.request('axis.projects', 'list', {});
+		assert.deepStrictEqual(got, result);
+		assert.notStrictEqual(got, result, 'a copy, not the connection\'s object');
+		const r2 = await readyClient(connected(() => Promise.resolve({ ok: false, error: { code: 'E_NOT_FOUND' } })));
+		assert.strictEqual(await closedCode(r2.client.request('axis.projects', 'list', {})), 'E_NOT_FOUND');
+		const r3 = await readyClient(connected(() => Promise.resolve({ result: 42 })));
+		assert.strictEqual(await closedCode(r3.client.request('axis.projects', 'list', {})), 'invalid_reply', 'no ok at all');
+		assert.strictEqual(r.pendingSize() + r2.pendingSize() + r3.pendingSize(), 0);
+		r.client.dispose();
+		r2.client.dispose();
+		r3.client.dispose();
+	});
+
+	test('SF1: the audit read runs no getter on its answer and reads an accessor answer as not degraded', async () => {
+		let reads = 0;
+		const c: IAxisConnectedClient = {
+			call: () => Promise.resolve({ get ok(): boolean { reads++; return true; }, result: { degraded: {} } }) as ReturnType<IAxisConnectedClient['call']>,
+			close: () => {},
+		};
+		const r = await readyClient(c);
+		assert.strictEqual(r.client.status.kind, 'ready');
+		assert.strictEqual(reads, 0);
 		r.client.dispose();
 	});
 

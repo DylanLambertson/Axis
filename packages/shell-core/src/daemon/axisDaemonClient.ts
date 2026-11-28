@@ -23,7 +23,7 @@ export type AxisDaemonStatus =
 
 const FAILURE_REASONS: ReadonlySet<string> = new Set<AxisDaemonFailureReason>(['lock_held', 'bad_config', 'pty_required', 'degraded', 'crash_loop']);
 
-/** An own data property of `value`, or undefined: a getter is never run, and a throwing Proxy trap reads as undefined. */
+/** An own data property of `value`, or undefined: a getter is never run. A Proxy trap that throws throws here; the caller catches it. */
 function ownData(value: object, key: string): unknown {
 	const d = Object.getOwnPropertyDescriptor(value, key);
 	return d !== undefined && 'value' in d ? d.value : undefined;
