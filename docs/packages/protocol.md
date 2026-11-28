@@ -56,7 +56,7 @@ Commit and push are a contract of their own, not `axis.worktrees/1.commit` and `
   - `finalise`: a finalise that discards work needs a challenge WITH a native confirmation, so it is tier 4 (the package's `daemonConfirm.ts` says "approved with a native confirmation (B4)", and the host mints a discard token only for a challenge issued at tier 4 or above; a tier 3 approval has no dialog). P1d (merged) made `finalise` tier 4 with `approval`, and added `discard` and `setUserEditing`; the earlier decision of tier 3 is superseded. Design: `docs/design/worktrees-tier4.md`.
   - `remove` and `finalise` replies must carry facts about data deleted without a backup.
   - `status` needs the drift fields.
-  - `list` must be able to represent the main checkout.
+  - `list` must be able to represent the main checkout: done by DC-7 (`docs/design/worktrees-local-checkout.md`). `list { projectId, includeLocal: true }` starts the reply with one `origin: "local"` row (no id, state, base, counts or lock); without the flag the reply never holds that value, so a client that does not know it never receives it.
   - The id pattern must reject a leading `-` or `_` (done here for the existing ids; check the package's own rule).
   - The `list` cap of 1000 is unreachable: about 550 entries fit one message.
   - The daemon handler must map `E_POLICY_DENIED` from the package, or it becomes `E_INTERNAL`.
