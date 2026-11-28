@@ -103,6 +103,7 @@ Each slice is its own PR with its own security review. **OS-3p** (the terminal b
   - On macOS a dialog is a sheet per window.
 - The orphaned openExternal confirmation is aborted when its window closes.
 - `trust.check` answered as "the window is live".
+- **The end-to-end interim proof slice 3.1 could not give:** a daemon started by main answers a tier-4 operation from a real client connection with its closed refusal, not a hang. Slice 3.1 proves only main's side: its answers refuse `native.confirm` in the same tick and answer `trust.check` false. Daemon-host's own test proves that a native refusal is a refusal. Main carries no test-only connect hook: it would be an attack surface of its own.
 
 ## 6a. OS-3p: the terminal backend
 
@@ -113,7 +114,7 @@ Each slice is its own PR with its own security review. **OS-3p** (the terminal b
 - **The Electron 45.3.2 ABI.** Prebuilt binaries or a rebuild step, whichever is safer and reproducible, and the note says what runs at install time. The repo installs with `--ignore-scripts`, so the native build is an explicit, pinned, auditable step in the bundle or CI script, never a `postinstall`.
 - **The notices.** `THIRD-PARTY-NOTICES.txt` generation includes it, and its test still passes.
 - **CI.** The desktop smoke job, and any macOS and Windows jobs: what builds the native module on each runner, and what happens on a runner without a toolchain.
-- **A smoke test.** A real pty spawns `/bin/sh` in the packaged-shaped layout.
+- **A smoke test.** A real pty spawns `/bin/sh` in the packaged-shaped layout, with its own explicit `cwd` (never the bundle directory). Slice 3.1 could not show this: its spawn refuses.
 - **Alternatives considered** are recorded with the ticket: `node-pty` against a PTY through a small helper process, and why `node-pty`.
 
 ## 6. Slice 3.3 in outline: the handoff from N0c-1
