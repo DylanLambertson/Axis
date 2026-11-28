@@ -12,6 +12,14 @@ export interface TrustSubject {
  * subject is untrusted. There is no project level: a connection identity carries no project id, so the policy could
  * never name one (the supervisor's `trust.set` is `{ windowId, workspaceId?, trusted }`).
  */
+/** DC-3c: the level a recorded revoke named, or `all` when it latched the registry saturated (every subject is then revoked). */
+export type TrustRevocation = { readonly kind: "window"; readonly windowId: string } | { readonly kind: "subject"; readonly id: string } | { readonly kind: "all" };
+
+/** DC-3c (terminal-trust-revocation.md section 2): told synchronously after each recorded revoke. The disposer is idempotent. */
+export interface TrustRevocationSource {
+  onRevoked(listener: (revocation: TrustRevocation) => void): { dispose(): void };
+}
+
 export interface TrustRegistry {
   isTrusted(subject: TrustSubject): boolean;
   /** Has the supervisor explicitly withdrawn trust at any level of `subject`? A revoke refuses the next run start (TRU-2). */

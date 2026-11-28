@@ -79,3 +79,19 @@ test("review N1: finalise waits, boundedly, for a killed group that goes shortly
   assert.equal(done.ok, true, JSON.stringify(done.error));
   assert.equal(s.registry.get(h.terminalId), undefined, "closed and forgotten once its group was gone");
 });
+
+test("review 2 nit 4: the wait for a killed group honours the request's cancellation", { skip }, async (t) => {
+  const s = await setup(t);
+  assert.equal((await finaliseApproved(s.r, s.user, s.id, "archived")).ok, true);
+  const op = s.registry.reserve(s.id, String(s.r.journal.getWorkspace(s.id)?.projectId));
+  assert.ok(op !== undefined);
+  const late = new FakeHandle();
+  late.survives = true;
+  s.registry.failed(op, { definitive: false });
+  s.registry.late(op, { kind: "spawned", handle: late });
+  const ctl = new AbortController();
+  setTimeout(() => ctl.abort(), 100);
+  const started = Date.now();
+  await assert.rejects(s.r.binding.service.remove({ id: s.id }, { ...svcCtx, signal: ctl.signal }));
+  assert.ok(Date.now() - started < 1_500, "it did not wait the full bound");
+});

@@ -52,6 +52,12 @@ export const RULES: Readonly<Record<string, Rule>> = Object.freeze({
   "axis.audit/1.verify": userRule(1),
   "axis.cli-runs/1.start": userRule(2, "per-start"),
   "axis.cli-runs/1.stop": userRule(2),
+  // DC-3a/DC-3c (terminals-contract.md section 1): moved from planned.ts unchanged; never a web client (WEB_ALLOWED) or a plugin
+  // (the deny list); served only when the pty port and the trust-registry routing allow (the composition drops it otherwise).
+  "axis.terminals/1.open": userRule(2, "per-start"),
+  "axis.terminals/1.list": userRule(0),
+  "axis.terminals/1.close": userRule(2),
+  "axis.terminals/1.attach": userRule(2),
   "axis.cli-runs/1.get": userRule(0),
   "axis.cli-runs/1.list": userRule(0),
   "axis.providers/1.list": userRule(0),
