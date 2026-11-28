@@ -82,7 +82,8 @@ export function wireDataCopy(value: unknown): unknown {
 }
 
 /**
- * Reads an answer `{ ok: true, result }` or `{ ok: false, error: { code } }`. The result comes back as a fresh copy, so resolving
+ * Reads an answer `{ ok: true, result }` (`result` an own data property, present even when its value is undefined) or
+ * `{ ok: false, error: { code } }`. The result comes back as a fresh copy, so resolving
  * a promise with it runs nothing of the connection's. Never throws: anything that is not such an answer is `invalid_reply`.
  */
 export function readReply(answer: unknown): AxisReply {
@@ -92,6 +93,11 @@ export function readReply(answer: unknown): AxisReply {
 		}
 		const ok = dataField(answer, 'ok');
 		if (ok === true) {
+			// The connection always sends `result` with `ok: true` (@axis/protocol's client), so an answer without it as own
+			// data, missing or inherited, is not one.
+			if (Object.getOwnPropertyDescriptor(answer, 'result') === undefined) {
+				return { ok: false, code: 'invalid_reply' };
+			}
 			return { ok: true, result: wireDataCopy(dataField(answer, 'result')) };
 		}
 		if (ok !== false) {

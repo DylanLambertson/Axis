@@ -67,7 +67,10 @@ suite('Axis wire data (review 2 SF1)', () => {
 
 	test('readReply reads own data only and never throws', () => {
 		assert.deepStrictEqual(readReply({ ok: true, result: { x: 1 } }), { ok: true, result: { x: 1 } });
-		assert.deepStrictEqual(readReply({ ok: true }), { ok: true, result: undefined });
+		assert.deepStrictEqual(readReply({ ok: true, result: undefined }), { ok: true, result: undefined }, 'an own result, even undefined');
+		assert.deepStrictEqual(readReply({ ok: true }), INVALID, 'ok without a result');
+		const inherited = Object.assign(Object.create({ result: 42 }) as object, { ok: true });
+		assert.deepStrictEqual(readReply(inherited), INVALID, 'an own ok with an inherited result');
 		assert.deepStrictEqual(readReply({ ok: false, error: { code: 'E_TIMEOUT' } }), { ok: false, code: 'E_TIMEOUT' });
 		assert.deepStrictEqual(readReply({ ok: false }), { ok: false, code: undefined });
 		for (const bad of [undefined, null, 5, 'ok', { ok: 'true' }, { result: 1 }, Object.create({ ok: true, result: 1 })]) {
