@@ -20,7 +20,8 @@ export function chromiumLicences(root = appDir) {
 export async function bundle(out = join(appDir, "dist", "app")) {
   rmSync(out, { recursive: true, force: true });
   mkdirSync(join(out, "renderer"), { recursive: true });
-  const common = { bundle: true, metafile: true, logLevel: "warning", legalComments: "linked", sourcemap: false };
+  // absWorkingDir: the path comments esbuild writes are relative to the app, not to `out`, so the output is the same wherever it is built.
+  const common = { bundle: true, metafile: true, logLevel: "warning", legalComments: "linked", sourcemap: false, absWorkingDir: appDir };
   const node = { ...common, platform: "node", format: "cjs", target: "node24", external: ["electron"] };
   const meta = {};
   meta.main = (await build({ ...node, entryPoints: [join(appDir, "main", "entry.ts")], outfile: join(out, "main.cjs") })).metafile;

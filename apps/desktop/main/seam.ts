@@ -107,7 +107,8 @@ export function childStderrLines(service: "axis-daemon" | "axis-pty", chunk: unk
   const raw = chunk instanceof Uint8Array ? Buffer.from(chunk).toString("utf8") : String(chunk);
   const lines = raw.split(/\r\n|\r|\n/).filter((l) => l.trim() !== "");
   const escape = (l: string): string => [...l].map((c) => (/^[\x20-\x7e]$/.test(c) ? c : `\\u{${c.codePointAt(0)?.toString(16)}}`)).join("");
-  const out = lines.slice(0, MAX_STDERR_LINES).map((l) => `[${service} stderr] ${escape(l).slice(0, MAX_STDERR_LINE)}`);
+  // Cut to MAX_STDERR_LINE characters BEFORE escaping, so a flood line costs main only a bounded amount of work.
+  const out = lines.slice(0, MAX_STDERR_LINES).map((l) => `[${service} stderr] ${escape(l.slice(0, MAX_STDERR_LINE))}`);
   if (lines.length > MAX_STDERR_LINES) out.push(`[${service} stderr] (${lines.length - MAX_STDERR_LINES} more lines dropped)`);
   return out;
 }

@@ -7,7 +7,8 @@
 //   before the daemon, or the shutdown unbounded; S7 native.confirm answered with anything but a refusal, or not at once; S8
 //   trust.check answered true; S9 the control hand-over not given to both children; S10 a child's stderr reaching the log raw (a
 //   forged line of main's, an escape sequence); S11 settings answered with anything but unset; S12 the daemon killed by SIGTERM
-//   only; S13 a quit during start still spawning the daemon; S14 a dead daemon left in the control hand-over.
+//   only; S13 a quit during start still spawning the daemon; S14 a dead daemon left in the control hand-over; S15 a stderr line
+//   escaped before it is cut (a flood line's whole length escaped on main's thread).
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
@@ -291,4 +292,9 @@ test("KNOWN OPEN DEFECT (OS-3h): the hand-over counts two posted ports as done, 
   for (const f of r.forks) assert.equal(f.child.posted.filter((m) => (m.message as { type?: string })?.type === "pty-control").length, 1);
   assert.equal(r.lines.filter((l) => l === "axis pty: handed_over").length, 1, "counted as done without any acknowledgement");
   await r.seam!.shutdown();
+});
+
+test("a flood line is cut before it is escaped, so main's work per line is bounded", () => {
+  const [line] = childStderrLines("axis-pty", "x".repeat(100) + "\u0001".repeat(131_072));
+  assert.equal(line, `[axis-pty stderr] ${"x".repeat(100)}${"\\u{1}".repeat(412)}`, "S15: the first 512 characters, then escaped");
 });

@@ -5,6 +5,8 @@ import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { spawnSync } from "node:child_process";
+import { pathToFileURL } from "node:url";
 import { appDir, bundle } from "../scripts/bundle.mjs";
 
 const out = mkdtempSync(join(tmpdir(), "axis-desktop-bundle-"));
@@ -93,5 +95,23 @@ test("the forked files reach only their guard, and load their entry bundle by im
     assert.ok(inputs.some((i) => i.endsWith("signal-guard.js")), `${name}: the guard`);
     const imports = Object.values(meta[name].outputs).flatMap((o) => o.imports);
     assert.deepEqual(imports.map((i) => [i.path, i.kind, i.external]), [[`./${name}-entry.cjs`, "dynamic-import", true]], name);
+  }
+});
+
+test("the bundle is the same whatever directory it is built from (absWorkingDir)", async () => {
+  const here = mkdtempSync(join(tmpdir(), "b-"));
+  const elsewhere = mkdtempSync(join(tmpdir(), "axis-desktop-bundle-a-much-longer-directory-name-to-move-the-cwd-"));
+  try {
+    await bundle(here);
+    // esbuild's service keeps the working directory it started with, so the second build runs in a child started elsewhere.
+    const script = `import(${JSON.stringify(pathToFileURL(join(appDir, "scripts", "bundle.mjs")).href)}).then((m) => m.bundle(${JSON.stringify(join(elsewhere, "out"))}))`;
+    const r = spawnSync(process.execPath, ["--input-type=module", "-e", script], { cwd: elsewhere, encoding: "utf8", timeout: 120_000 });
+    assert.equal(r.status, 0, r.stderr);
+    for (const f of ["main.cjs", "daemon.cjs", "pty.cjs", "preload.cjs"]) {
+      assert.equal(readFileSync(join(here, f)).length, readFileSync(join(elsewhere, "out", f)).length, f);
+    }
+  } finally {
+    rmSync(here, { recursive: true, force: true });
+    rmSync(elsewhere, { recursive: true, force: true });
   }
 });
