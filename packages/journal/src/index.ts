@@ -100,3 +100,5 @@ export {
   type UnknownReason,
 } from "./idempotency-store.js";
 export { type ProjectUsage, type UsageTotals } from "./usage-totals.js";
+export { INDEX_LOCKS_MIGRATION } from "./schema-index-locks.js";
+export { IndexLockRecords, type IndexLockRecord } from "./index-lock-store.js";
