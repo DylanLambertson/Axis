@@ -1,5 +1,5 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
-import type { TrustRegistry, TrustSubject } from "../ports/trust.js";
+import type { TrustRegistry, TrustRevocation, TrustRevocationSource, TrustSubject } from "../ports/trust.js";
 
 /** Bound on remembered decisions. */
 export const MAX_TRUST_ENTRIES = 4096;
@@ -35,9 +35,51 @@ function levels(s: TrustSubject): string[] | null {
  * (which cannot be recorded) latches the registry saturated: every subject is then untrusted and revoked and every
  * `set` throws, until the host restarts. Revoking never touches a running run (Q6): nothing here holds a run.
  */
-export class InMemoryTrustRegistry implements TrustRegistry {
+export class InMemoryTrustRegistry implements TrustRegistry, TrustRevocationSource {
   readonly #entries = new Map<string, boolean>();
   #saturated = false;
+  /** DC-3c: the revocation listeners, in registration order; `live` is cleared by the disposer. */
+  #listeners: Array<{ readonly fn: (r: TrustRevocation) => void; live: boolean }> = [];
+  #dispatching = false;
+  readonly #onListenerError: (() => void) | undefined;
+
+  constructor(options: { readonly onListenerError?: () => void } = {}) {
+    this.#onListenerError = options.onListenerError;
+  }
+
+  /**
+   * DC-3c (terminal-trust-revocation.md section 2): told synchronously after each recorded revoke, at its level, and `all` when a
+   * revoke latches saturation. A listener may only make bounded synchronous authority changes, and never calls `set` (refused).
+   */
+  onRevoked(listener: (revocation: TrustRevocation) => void): { dispose(): void } {
+    const entry = { fn: listener, live: true };
+    this.#listeners = [...this.#listeners, entry];
+    return {
+      dispose: () => {
+        if (!entry.live) return;
+        entry.live = false;
+        this.#listeners = this.#listeners.filter((e) => e !== entry);
+      },
+    };
+  }
+
+  /** A snapshot of the listeners at the start; one disposed before its turn is skipped; each throw is caught on its own. */
+  #notify(revocation: TrustRevocation): void {
+    const snapshot = this.#listeners;
+    this.#dispatching = true;
+    try {
+      for (const e of snapshot) {
+        if (!e.live) continue;
+        try {
+          e.fn(revocation);
+        } catch {
+          this.#onListenerError?.();
+        }
+      }
+    } finally {
+      this.#dispatching = false;
+    }
+  }
 
   get size(): number {
     return this.#entries.size;
@@ -67,14 +109,20 @@ export class InMemoryTrustRegistry implements TrustRegistry {
   }
 
   set(subject: TrustSubject, trusted: boolean): void {
+    // DC-3c: no decision is taken while a revoke is being delivered, so none can overtake it, and nothing recurses.
+    if (this.#dispatching) throw new RangeError("trust registry is notifying");
     if (this.#saturated) throw new RangeError("trust registry is saturated");
     const keys = levels(subject);
     if (keys === null || typeof trusted !== "boolean") throw new RangeError("invalid trust subject");
     const key = keys[keys.length - 1] as string;
     if (!this.#entries.has(key) && this.#entries.size >= MAX_TRUST_ENTRIES) {
-      if (!trusted) this.#saturated = true;
+      if (!trusted) {
+        this.#saturated = true;
+        this.#notify({ kind: "all" }); // the latch first, then the event, then the throw as before
+      }
       throw new RangeError(trusted ? "trust registry is full" : "trust registry is saturated");
     }
     this.#entries.set(key, trusted);
+    if (!trusted) this.#notify(subject.workspaceId === undefined ? { kind: "window", windowId: subject.windowId } : { kind: "subject", id: subject.workspaceId });
   }
 }
