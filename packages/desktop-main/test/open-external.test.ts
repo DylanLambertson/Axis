@@ -32,6 +32,12 @@ test("decideExternal: characters, length, credentials and hosts", () => {
   for (const q of ["attach=/home/u/.ssh/id_ed25519", "attachment=x", "ATTACH=x", "subject=hi&attach=x", "x-header=1", "in-reply-to=x"]) {
     assert.deepEqual(decideExternal(`mailto:a@b.example?${q}`), { ok: false, reason: "mailto_field" }, `E11: ${q}`);
   }
+  for (const u of ["mailto:a@b.example#attach=/x", "mailto:a@b.example?subject=x#y", "mailto:a@b.example?body=x%26attach%3D/etc/passwd", "mailto:c%3Fattach%3Dx", "mailto:a@b.example?to=c%3Fattach%3Dx", "mailto:a@b.example?body=%23x"]) {
+    assert.deepEqual(decideExternal(u), { ok: false, reason: "mailto_field" }, `E12: ${u}`);
+  }
+  assert.equal(decideExternal("mailto:a@b.example?body=Tom%20%26%20Jerry%3F%20x%3Dy").ok, false, "E12: fail closed on a value that reads as a field");
+  assert.equal(decideExternal("mailto:a@b.example?body=a%26b&subject=x%3F").ok, true, "E12: separators without a field name stay");
+  assert.equal(decideExternal("mailto:a@b.example?body=x%26subject%3Dy").ok, true, "E12: an allowed field name is not smuggling");
   assert.deepEqual(decideExternal("not a url"), { ok: false, reason: "bad_chars" });
   assert.deepEqual(decideExternal("nourl"), { ok: false, reason: "bad_url" });
   for (const v of [undefined, null, 1, {}, ""]) assert.deepEqual(decideExternal(v), { ok: false, reason: "not_string" });

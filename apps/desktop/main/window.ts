@@ -1,12 +1,13 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
-// The main window's construction options, kept pure (no Electron at run time) so they are tested without Electron.
-// OS-2 adds the session hardening (the app scheme, CSP header, navigation, window-open and permission policy).
-import type { BrowserWindowConstructorOptions } from "electron";
+// The main window's construction options, kept pure (no Electron at run time) so they are tested without Electron. The web
+// preferences are @axis/desktop-main's (OS-2): sandboxed, isolated, the app partition, DevTools only unpackaged.
+import type { BrowserWindowConstructorOptions, WebPreferences } from "electron";
 import { join } from "node:path";
+import { appWebPreferences } from "@axis/desktop-main";
 import { PALETTES, windowTitle, type ThemeKind } from "@axis/ui";
 
 /** `bundleDir` is the bundle's root (dist/app), which holds preload.cjs. */
-export function mainWindowOptions(bundleDir: string, theme: ThemeKind): BrowserWindowConstructorOptions {
+export function mainWindowOptions(bundleDir: string, theme: ThemeKind, packaged: boolean): BrowserWindowConstructorOptions {
   return {
     title: windowTitle(),
     width: 1280,
@@ -15,18 +16,6 @@ export function mainWindowOptions(bundleDir: string, theme: ThemeKind): BrowserW
     minHeight: 480,
     show: false,
     backgroundColor: PALETTES[theme].canvas,
-    webPreferences: {
-      preload: join(bundleDir, "preload.cjs"),
-      sandbox: true,
-      contextIsolation: true,
-      nodeIntegration: false,
-      nodeIntegrationInWorker: false,
-      nodeIntegrationInSubFrames: false,
-      webSecurity: true,
-      allowRunningInsecureContent: false,
-      webviewTag: false,
-      navigateOnDragDrop: false,
-      spellcheck: false,
-    },
+    webPreferences: { ...appWebPreferences({ preload: join(bundleDir, "preload.cjs"), packaged }) } as WebPreferences,
   };
 }

@@ -10,7 +10,9 @@
  *   characters can reach the dialog. A renderer passes `new URL(x).href`, which is already ASCII (punycode hosts, percent-encoded
  *   paths).
  * - `mailto:` takes only the query fields `to`, `subject`, `body`, `cc` and `bcc` (any case). Anything else, `attach=` and
- *   `attachment=` above all (some mail clients attach the local file named there), is refused as `mailto_field`.
+ *   `attachment=` above all (some mail clients attach the local file named there), is refused as `mailto_field`, and so is a
+ *   fragment (RFC 6068 gives mailto none) or a decoded address or value that carries another field (`body=x%26attach%3D/x`,
+ *   `mailto:c%3Fattach%3Dx`): a client that decodes before it splits would see that field.
  * - `http(s)` needs a host and no user name or password (`https://bank.example@evil.example/` is refused).
  * - The dialog shows the normalised `href`, the one string that is then opened.
  * - One confirmation per window at a time; a second request while one waits is `busy`. The window must still be registered when
@@ -30,6 +32,8 @@ export type ExternalDecision = { readonly ok: true; readonly href: string } | { 
 
 const PRINTABLE = /^[\x21-\x7e]+$/;
 const MAILTO_FIELDS: ReadonlySet<string> = new Set(["to", "subject", "body", "cc", "bcc"]);
+/** True when decoded text holds `?name=` or `&name=` (or `#`) for a field that is not allowed. */
+const smuggled = (text: string): boolean => text.includes("#") || [...text.matchAll(/[?&]\s*([^=&?#\s]*)\s*=/g)].some((m) => !MAILTO_FIELDS.has((m[1] ?? "").toLowerCase()));
 
 /** Pure: is this a link main may offer to open, and the exact text to show and open. */
 export function decideExternal(input: unknown): ExternalDecision {
@@ -45,7 +49,17 @@ export function decideExternal(input: unknown): ExternalDecision {
   if (!EXTERNAL_PROTOCOLS.has(u.protocol)) return { ok: false, reason: "scheme" };
   if (u.protocol === "mailto:") {
     if (u.pathname === "") return { ok: false, reason: "no_host" };
-    for (const key of new URLSearchParams(u.search).keys()) if (!MAILTO_FIELDS.has(key.toLowerCase())) return { ok: false, reason: "mailto_field" };
+    if (u.hash !== "") return { ok: false, reason: "mailto_field" };
+    let address: string;
+    try {
+      address = decodeURIComponent(u.pathname);
+    } catch {
+      return { ok: false, reason: "bad_url" };
+    }
+    if (smuggled(`?${address}`)) return { ok: false, reason: "mailto_field" };
+    for (const [key, value] of new URLSearchParams(u.search)) {
+      if (!MAILTO_FIELDS.has(key.toLowerCase()) || smuggled(value)) return { ok: false, reason: "mailto_field" };
+    }
   } else {
     if (u.username !== "" || u.password !== "") return { ok: false, reason: "credentials" };
     if (u.hostname === "") return { ok: false, reason: "no_host" };
