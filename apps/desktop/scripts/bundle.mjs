@@ -1,5 +1,5 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
-// Bundles the own shell with the pinned esbuild into dist/app: main.cjs and preload.cjs (Node, CommonJS, Electron
+// Bundles the own shell with the pinned esbuild into dist/app: main.cjs, preload.cjs, daemon.cjs and pty.cjs (Node, CommonJS, Electron
 // external), renderer/renderer.js (browser, one classic script), the page and its stylesheet, and the notices:
 // THIRD-PARTY-NOTICES.txt (generated from the lockfile, scripts/notices.mjs) and, when the Electron runtime is
 // installed, its LICENSES.chromium.html (the Chromium licences), which ship next to the app.
@@ -20,11 +20,18 @@ export function chromiumLicences(root = appDir) {
 export async function bundle(out = join(appDir, "dist", "app")) {
   rmSync(out, { recursive: true, force: true });
   mkdirSync(join(out, "renderer"), { recursive: true });
-  const common = { bundle: true, metafile: true, logLevel: "warning", legalComments: "linked", sourcemap: false };
+  // absWorkingDir: the path comments esbuild writes are relative to the app, not to `out`, so the output is the same wherever it is built.
+  const common = { bundle: true, metafile: true, logLevel: "warning", legalComments: "linked", sourcemap: false, absWorkingDir: appDir };
   const node = { ...common, platform: "node", format: "cjs", target: "node24", external: ["electron"] };
   const meta = {};
   meta.main = (await build({ ...node, entryPoints: [join(appDir, "main", "entry.ts")], outfile: join(out, "main.cjs") })).metafile;
   meta.preload = (await build({ ...node, entryPoints: [join(appDir, "preload", "preload.ts")], outfile: join(out, "preload.cjs") })).metafile;
+  // The two files main forks (OS-3.1): each is tiny, the guard and then its entry bundle by import(), so V8 parses next to nothing
+  // before the SIGUSR1 listener exists. The entry bundles are separate files beside them.
+  for (const [name, dir] of [["daemon", "daemon"], ["pty", "pty"]]) {
+    meta[name] = (await build({ ...node, entryPoints: [join(appDir, dir, `${name}-main.ts`)], outfile: join(out, `${name}.cjs`), external: ["electron", `./${name}-entry.cjs`] })).metafile;
+    meta[`${name}Entry`] = (await build({ ...node, entryPoints: [join(appDir, dir, `${name}-entry.ts`)], outfile: join(out, `${name}-entry.cjs`) })).metafile;
+  }
   meta.renderer = (
     await build({
       ...common,
