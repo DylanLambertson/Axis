@@ -13,7 +13,7 @@ export type IndexRefreshOutcome =
   | { readonly refreshed: number }
   | { readonly skipped: IndexRefreshSkip };
 
-/** Why the refresh did nothing: the committed paths then show as staged reversions until the user resets them. */
+/** Why the refresh did nothing. The real index keeps what it held: old copies of the committed paths, or the user's own staging. */
 export const INDEX_REFRESH_SKIPS = ["locked", "head_moved", "split_index", "sparse", "unmerged", "symlink", "unreadable", "lock_lost", "rename_failed", "failed"] as const;
 export type IndexRefreshSkip = (typeof INDEX_REFRESH_SKIPS)[number];
 
@@ -137,8 +137,9 @@ function asText(latin1: string): string | undefined {
  *   `core.fsmonitor=false`; there is no `--refresh`, so no clean filter runs and stat data stays zero. The index file's mode
  *   is kept. A gitlink is updated by the same rule, never recursed into. With fsmonitor off the copy loses any fsmonitor
  *   extension, so the user's next `git status` rebuilds that state once (slower once, nothing else).
- * - **A skip is reported**, never silent: the caller carries the outcome to the user, because the committed paths then show
- *   as staged reversions, and a plain `git commit` would undo the Axis commit until they reset those paths.
+ * - **A skip is reported**, never silent: the caller carries the outcome to the user, because staged entries for the
+ *   committed paths may then be old copies or the user's own staging. What the UI says is in `GIT_INDEX_REFRESH_SKIPS`
+ *   (`@axis/protocol`): inspect before committing in a terminal, and no blanket reset.
  * - **A crash** while the lock is held (one copy and rewrite of the index, longer for a large index) leaves a stale
  *   `index.lock` that blocks the user's git. With `deps.indexLockLedger` (DC-0b) the lock's dev, inode and ctime are recorded
  *   right after the open, and the host's startup sweep removes it only when it is still exactly that file (RR-98).

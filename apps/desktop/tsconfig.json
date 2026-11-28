@@ -6,10 +6,11 @@
     "lib": ["ES2023", "DOM", "DOM.Iterable"],
     "jsx": "react-jsx"
   },
-  "include": ["main", "preload", "renderer", "test"],
+  "include": ["main", "preload", "renderer", "test", "daemon", "pty"],
   "references": [
     { "path": "../../packages/daemon-host" },
     { "path": "../../packages/desktop-main" },
+    { "path": "../../packages/pty-process" },
     { "path": "../../packages/shell-core" },
     { "path": "../../packages/shell-sdk" },
     { "path": "../../packages/ui" },

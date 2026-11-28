@@ -237,9 +237,13 @@ export const gitCommitRequestSchema = guarded(
 );
 /**
  * What the narrow refresh of the person's own index did after the commit (DC-0, ADR 0011 Decision 3): `refreshed` entries
- * moved to the new commit, or `skipped` with a closed reason. **On a skip the UI must say so:** the committed paths then show
- * as staged reversions in `git status`, and a plain `git commit` in a terminal would undo the Axis commit until those paths
- * are reset (`git reset -q -- <paths>`) or the index refreshed. Absent from a reply made before the refresh existed.
+ * moved to the new commit, or `skipped` with a closed reason. **On a skip the UI must say so, conditionally:** the commit
+ * succeeded and the real index was not refreshed. Staged entries for the committed paths MAY be old copies (old HEAD) or the
+ * person's own staging; personal staging, another writer or a HEAD move change what is there, so no consequence is universal.
+ * Before committing in a terminal, inspect `git status` and `git diff --cached`. Never advise a blanket reset: a reset of a
+ * path discards the person's own staging on it. Reset only entries positively verified as stale old-HEAD copies, with
+ * personal staging preserved. For `locked`, let the running git finish; never suggest deleting a lock. Absent from a reply
+ * made before the refresh existed.
  */
 export const GIT_INDEX_REFRESH_SKIPS = ["locked", "head_moved", "split_index", "sparse", "unmerged", "symlink", "unreadable", "lock_lost", "rename_failed", "failed"] as const;
 export const gitIndexRefreshSchema = z.union([
