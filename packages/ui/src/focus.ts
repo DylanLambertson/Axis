@@ -7,10 +7,18 @@
  * an unknown place), F6 goes to the first region and Shift+F6 to the last. No regions: undefined.
  */
 export function nextRegion(regions: readonly string[], current: string | undefined, backwards: boolean): string | undefined {
-  if (regions.length === 0) return undefined;
-  const at = current === undefined ? -1 : regions.indexOf(current);
-  if (at === -1) return backwards ? regions[regions.length - 1] : regions[0];
-  return regions[(at + (backwards ? regions.length - 1 : 1)) % regions.length];
+  const at = nextRegionIndex(regions.length, current === undefined ? -1 : regions.indexOf(current), backwards);
+  return at === undefined ? undefined : regions[at];
+}
+
+/**
+ * The same rule by position, for a page where two regions can share a name (the state gallery's samples): `current` is
+ * the index of the focused region, or -1 for none.
+ */
+export function nextRegionIndex(count: number, current: number, backwards: boolean): number | undefined {
+  if (count <= 0) return undefined;
+  if (current < 0 || current >= count) return backwards ? count - 1 : 0;
+  return (current + (backwards ? count - 1 : 1)) % count;
 }
 
 export type Orientation = "vertical" | "horizontal";

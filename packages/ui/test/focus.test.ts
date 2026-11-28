@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { nextRegion, rovingIndex } from "../src/index.js";
+import { nextRegion, nextRegionIndex, rovingIndex } from "../src/index.js";
 
 const REGIONS = ["top", "nav", "main", "side"];
 
@@ -17,6 +17,19 @@ test("from no region or an unknown one, F6 goes to the first and Shift+F6 to the
   assert.equal(nextRegion(REGIONS, "elsewhere", true), "side");
   assert.equal(nextRegion([], "top", false), undefined);
   assert.equal(nextRegion(["only"], "only", false), "only");
+});
+
+test("by index: duplicate names do not trap focus, and an index out of range starts over", () => {
+  assert.equal(nextRegionIndex(3, 1, false), 2, "the second of two same-named regions moves on");
+  assert.equal(nextRegionIndex(3, 2, false), 0);
+  assert.equal(nextRegionIndex(3, 0, true), 2);
+  assert.equal(nextRegionIndex(3, 2, true), 1);
+  assert.equal(nextRegionIndex(3, -1, false), 0);
+  assert.equal(nextRegionIndex(3, -1, true), 2);
+  assert.equal(nextRegionIndex(3, 3, false), 0);
+  assert.equal(nextRegionIndex(3, 7, true), 2);
+  assert.equal(nextRegionIndex(0, 0, false), undefined);
+  assert.equal(nextRegionIndex(1, 0, false), 0);
 });
 
 test("roving index: arrows step and stop at the ends, Home and End jump, other keys are not handled", () => {

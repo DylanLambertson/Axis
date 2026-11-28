@@ -3,7 +3,7 @@
 // Shift+F6 move focus between the frame's regions (`[data-region]`, in document order). The approval shortcut is not
 // here: only a decision card handles it, through its own gate.
 
-import { CommandRegistry, nextRegion, type Platform } from "@axis/ui";
+import { CommandRegistry, nextRegionIndex, type Platform } from "@axis/ui";
 
 export function platformOf(nav: { readonly platform?: string; readonly userAgent: string }): Platform {
   return /Mac|iPhone|iPad/.test(nav.platform || nav.userAgent) ? "mac" : "other";
@@ -16,13 +16,15 @@ function isEditable(node: Element | null): boolean {
   return node instanceof HTMLElement && node.isContentEditable;
 }
 
-/** Moves focus to the next (or previous) visible region; a region is focusable itself (`tabIndex=-1`). */
+/**
+ * Moves focus to the next (or previous) visible region; a region is focusable itself (`tabIndex=-1`). Regions are
+ * taken by position, not by name, so two regions that share a name cannot trap F6 on the first.
+ */
 export function cycleRegion(doc: Document, backwards: boolean): void {
   const regions = [...doc.querySelectorAll<HTMLElement>("[data-region]")].filter((r) => r.getClientRects().length > 0 || r.offsetParent !== null);
-  const names = regions.map((r) => r.dataset.region ?? "");
-  const current = doc.activeElement?.closest<HTMLElement>("[data-region]")?.dataset.region;
-  const target = nextRegion(names, current, backwards);
-  const element = regions[names.indexOf(target ?? "")];
+  const current = doc.activeElement?.closest<HTMLElement>("[data-region]");
+  const at = nextRegionIndex(regions.length, current ? regions.indexOf(current) : -1, backwards);
+  const element = at === undefined ? undefined : regions[at];
   if (element === undefined) return;
   if (element.tabIndex < 0 && !element.hasAttribute("tabindex")) element.tabIndex = -1;
   element.focus();

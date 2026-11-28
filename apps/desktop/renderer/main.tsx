@@ -17,14 +17,15 @@ const dark = window.matchMedia("(prefers-color-scheme: dark)");
 applyTokens(dark.matches ? "dark" : "light");
 dark.addEventListener("change", (e) => applyTokens(e.matches ? "dark" : "light"));
 document.title = windowTitle();
-installKeyboard(window, new CommandRegistry());
+const commands = new CommandRegistry();
+installKeyboard(window, commands);
 
 /** Marks the page once React has committed the frame (the smoke test waits for it). */
 function Root() {
   useEffect(() => {
     document.documentElement.dataset.axisShell = "mounted";
   }, []);
-  return <App initialHash={window.location.hash} isMac={platformOf(navigator) === "mac"} />;
+  return <App initialHash={window.location.hash} isMac={platformOf(navigator) === "mac"} commands={commands} />;
 }
 
 const root = document.getElementById("root");

@@ -64,8 +64,8 @@ export function Gallery({ isMac }: { readonly isMac: boolean }) {
         />
       </Item>
       <Item name="Terminal">
-        <TerminalPane state={{ kind: "unavailable" }} />
-        <TerminalPane state={{ kind: "exited", code: 1 }} onRestart={() => {}} />
+        <TerminalPane state={{ kind: "unavailable" }} region={false} />
+        <TerminalPane state={{ kind: "exited", code: 1 }} onRestart={() => {}} region={false} />
       </Item>
       <Item name="Review layout">
         <ReviewLayout title="Changes in fix/proration-rounding" files={FILES} selectedId={selected} onSelect={setSelected}>

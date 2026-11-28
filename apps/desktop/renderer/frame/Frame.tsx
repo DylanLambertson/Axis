@@ -1,11 +1,13 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 // The own shell's frame (OS-6, direction C): the top bar, the labelled navigation rail and the main region, each a
 // landmark and an F6 region (`data-region`), and one polite live region for announcements. The rail is one tab stop:
-// arrows move within it (roving tabindex) and the current page carries `aria-current="page"`.
+// arrows move within it (roving tabindex) and the current page carries `aria-current="page"`. The top bar opens the
+// command palette, with the chord's keycaps on the button.
 
 import { useRef, type KeyboardEvent, type ReactNode } from "react";
 import type { IAxisNotice } from "@axis/shell-core";
 import { BRAND, rovingIndex } from "@axis/ui";
+import { Keycaps } from "../components/Keycaps.js";
 import { Notices } from "../components/Notice.js";
 import { NAV_ROUTES, type NavRouteId, type RouteId } from "./routes.js";
 
@@ -18,6 +20,10 @@ export interface FrameProps {
   readonly notices: readonly IAxisNotice[];
   readonly announcement: string;
   readonly onNavigate: (route: NavRouteId) => void;
+  /** The palette trigger: its keycaps and `aria-keyshortcuts` come from the registry's chord. */
+  readonly palette: { readonly keys: readonly string[]; readonly aria: string; readonly onOpen: () => void };
+  /** While a modal (the palette) is open, the frame behind it takes no focus or input. */
+  readonly inert?: boolean;
   readonly children: ReactNode;
 }
 
@@ -58,13 +64,16 @@ function Rail({ route, onNavigate }: { readonly route: RouteId; readonly onNavig
 
 export function Frame(props: FrameProps) {
   return (
-    <div className="axis-frame">
+    <div className="axis-frame" inert={props.inert === true}>
       <header className="axis-top" data-region="top" tabIndex={-1}>
         <span className="axis-top__brand">{BRAND.productName}</span>
         <nav className="axis-top__crumb" aria-label="Breadcrumb">
           <span aria-current="page">{props.title}</span>
         </nav>
         <span className="axis-top__gap" />
+        <button type="button" className="axis-btn axis-btn--secondary axis-top__cmd" aria-haspopup="dialog" aria-keyshortcuts={props.palette.aria} onClick={props.palette.onOpen}>
+          Commands <Keycaps keys={props.palette.keys} />
+        </button>
         {props.readOnly && <span className="axis-tag axis-tag--warn">Read only</span>}
         <span className="axis-top__activity">{props.activity}</span>
       </header>

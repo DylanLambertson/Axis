@@ -7,9 +7,17 @@ export type TerminalPaneState =
   | { readonly kind: "connecting" }
   | { readonly kind: "exited"; readonly code: number };
 
-export function TerminalPane({ state, onRestart }: { readonly state: TerminalPaneState; readonly onRestart?: () => void }) {
+export interface TerminalPaneProps {
+  readonly state: TerminalPaneState;
+  readonly onRestart?: () => void;
+  /** False for a sample (the state gallery): no landmark and no F6 region, so a page of samples has one of neither. */
+  readonly region?: boolean;
+}
+
+export function TerminalPane({ state, onRestart, region = true }: TerminalPaneProps) {
+  const Root = region ? "section" : "div";
   return (
-    <section className="axis-terminal" aria-label="Terminal" data-region="terminal" tabIndex={-1}>
+    <Root className="axis-terminal" {...(region ? { "aria-label": "Terminal", "data-region": "terminal", tabIndex: -1 } : {})}>
       <header className="axis-terminal__head">
         <span className="axis-label">Terminal</span>
       </header>
@@ -25,6 +33,6 @@ export function TerminalPane({ state, onRestart }: { readonly state: TerminalPan
           </>
         )}
       </div>
-    </section>
+    </Root>
   );
 }
