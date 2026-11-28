@@ -2,8 +2,9 @@
 // The narrow refresh of the real index after an Axis commit (DC-0 slice 2, ADR 0011 Decision 3). The commit never stages into
 // the real index (slice 1), so without this `git status` would show the committed paths as staged reversions. It is the only
 // write Axis makes to `.git/index`, and it is a compare-and-swap under git's own lock.
-import { chmod, copyFile, lstat, open, rename as fsRename, rm, stat, utimes } from "node:fs/promises";
-import { isAbsolute } from "node:path";
+import { copyFile, lstat, mkdtemp, open, readFile, rename as fsRename, rm, stat, utimes, type FileHandle } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { isAbsolute, join } from "node:path";
 import { daemonGitFor, OBJECT_ID } from "./args.js";
 import type { GitOpsDeps, WorktreeRef } from "./types.js";
 
@@ -12,7 +13,7 @@ export type IndexRefreshOutcome =
   | { readonly skipped: IndexRefreshSkip };
 
 /** Why the refresh did nothing: the committed paths then show as staged reversions until the user resets them. */
-export const INDEX_REFRESH_SKIPS = ["locked", "head_moved", "split_index", "sparse", "unmerged", "symlink", "unreadable", "rename_failed", "failed"] as const;
+export const INDEX_REFRESH_SKIPS = ["locked", "head_moved", "split_index", "sparse", "unmerged", "symlink", "unreadable", "lock_lost", "rename_failed", "failed"] as const;
 export type IndexRefreshSkip = (typeof INDEX_REFRESH_SKIPS)[number];
 
 /** How long the one retry waits after `locked` (another git, such as an IDE's background status, held the lock). */
@@ -24,6 +25,11 @@ export interface IndexRefreshHooks {
   readonly afterLock?: () => void | Promise<void>;
   readonly rename?: (from: string, to: string) => Promise<void>;
   readonly wait?: (ms: number) => Promise<void>;
+  /** Run once the index was copied to the private copy git reads and edits; it gets that copy's path. */
+  readonly afterCopy?: (copy: string) => void | Promise<void>;
+  /** Run just before git edits the private copy, and just before the result is renamed over the index. */
+  readonly beforeUpdate?: () => void | Promise<void>;
+  readonly beforeRename?: () => void | Promise<void>;
 }
 
 const NO_MODE = "000000";
@@ -141,8 +147,33 @@ export async function refreshIndex(deps: GitOpsDeps, w: WorktreeRef, oldHead: st
   return refreshOnce(deps, w, oldHead, newHead, hooks);
 }
 
+/** The file at `path` is still the very lock Axis created (same device and inode, a regular file). */
+async function stillOurs(path: string, mine: { readonly dev: bigint; readonly ino: bigint }): Promise<boolean> {
+  try {
+    const st = await lstat(path, { bigint: true });
+    return st.isFile() && st.dev === mine.dev && st.ino === mine.ino;
+  } catch {
+    return false;
+  }
+}
+
+/** The entry count of an index file's header (`DIRC`, version, count), or undefined when it is not an index. */
+async function headerCount(path: string): Promise<number | undefined> {
+  const fh = await open(path, "r");
+  try {
+    const head = Buffer.alloc(12);
+    const { bytesRead } = await fh.read(head, 0, 12, 0);
+    return bytesRead === 12 && head.toString("latin1", 0, 4) === "DIRC" ? head.readUInt32BE(8) : undefined;
+  } finally {
+    await fh.close();
+  }
+}
+
 async function refreshOnce(deps: GitOpsDeps, w: WorktreeRef, oldHead: string, newHead: string, hooks: IndexRefreshHooks): Promise<IndexRefreshOutcome> {
   let lock: string | undefined;
+  let held: FileHandle | undefined;
+  let mine: { readonly dev: bigint; readonly ino: bigint } | undefined;
+  let scratch: string | undefined;
   let renamed = false;
   try {
     if (!OBJECT_ID.test(oldHead) || !OBJECT_ID.test(newHead)) return { skipped: "failed" };
@@ -162,19 +193,29 @@ async function refreshOnce(deps: GitOpsDeps, w: WorktreeRef, oldHead: string, ne
 
     await hooks.beforeLock?.();
     try {
-      await (await open(`${index}.lock`, "wx")).close();
+      held = await open(`${index}.lock`, "wx");
     } catch (e) {
       return (e as { code?: unknown }).code === "EEXIST" ? { skipped: "locked" } : { skipped: "failed" };
     }
     lock = `${index}.lock`;
+    const own = await held.stat({ bigint: true });
+    mine = { dev: own.dev, ino: own.ino };
     await hooks.afterLock?.();
+    // DC-0b review 1 B1(a): git never reads or writes the lock path. It works on a PRIVATE copy outside the repository, and
+    // the result is written through the lock Axis holds open. A lock removed meanwhile (the user's `rm`, as git's message
+    // suggests) can then not be read as an empty index, and the lock's identity is checked before every step below.
     // The copy keeps the index's own times (review 2 S1): git marks "racily clean" entries for a content re-check relative to
     // the index file's mtime, and a copy stamped "now" would make such an entry look clean for good after the rename.
     const st = await stat(index);
-    await copyFile(index, lock);
-    await utimes(lock, st.atime, st.mtime);
+    const counted = await headerCount(index);
+    if (counted === undefined) return { skipped: "unreadable" };
+    scratch = await mkdtemp(join(tmpdir(), "axis-index-"));
+    const copyPath = join(scratch, "index");
+    await copyFile(index, copyPath);
+    await utimes(copyPath, st.atime, st.mtime);
+    await hooks.afterCopy?.(copyPath);
     // No `core.splitIndex` pin here: a pin of `false` would hide a split index from the check below (git drops it on read).
-    const copy = await daemonGitFor(w, deps, { GIT_INDEX_FILE: lock });
+    const copy = await daemonGitFor(w, deps, { GIT_INDEX_FILE: copyPath });
 
     const head = await copy(["rev-parse", "--verify", "--quiet", "--end-of-options", "HEAD^{commit}"]);
     if (head.code !== 0 || head.stdout.trim() !== newHead) return { skipped: "head_moved" };
@@ -184,6 +225,8 @@ async function refreshOnce(deps: GitOpsDeps, w: WorktreeRef, oldHead: string, ne
     const listing = await copy(["ls-files", "-v", "-t", "--stage", "-z"], undefined, { raw: true });
     const entries = listing.code === 0 ? parseTaggedListing(listing.stdout) : undefined;
     if (entries === undefined) return { skipped: "unreadable" };
+    // A copy that reads as empty when the index counted entries is not the user's index: never written back.
+    if (entries.size === 0 && counted !== 0) return { skipped: "unreadable" };
     if ([...entries.values()].some((e) => e.stage !== 0)) return { skipped: "unmerged" };
     // Intent-to-add has no tag. Against the EMPTY tree, `diff-index` lists every entry when intent-to-add entries count as
     // present and all but those when they do not, so they are exactly the difference (git 2.17+). (Against HEAD, a path the
@@ -231,10 +274,21 @@ async function refreshOnce(deps: GitOpsDeps, w: WorktreeRef, oldHead: string, ne
     if (lines.length === 0) return { refreshed: 0 };
     // Written by a caller pinned to no split index, so no `sharedindex.*` file appears (`--index-info` drops the flags of an
     // entry it replaces, which is why flagged entries are never in `lines`).
-    const write = await daemonGitFor(w, deps, { GIT_INDEX_FILE: lock }, { config: ["core.splitIndex=false"] });
+    await hooks.beforeUpdate?.();
+    // An early exit only: git edits the private copy, never the lock, so the check after the edit is the guard (a lost lock
+    // here is caught there too; no test can tell the two apart).
+    if (!(await stillOurs(lock, mine))) return { skipped: "lock_lost" };
+    const write = await daemonGitFor(w, deps, { GIT_INDEX_FILE: copyPath }, { config: ["core.splitIndex=false"] });
     const upd = await write(["update-index", "-z", "--index-info"], `${lines.join("\0")}\0`);
     if (upd.code !== 0) return { skipped: "failed" };
-    await chmod(lock, st.mode & 0o7777);
+    const result = await readFile(copyPath);
+    if (!(await stillOurs(lock, mine))) return { skipped: "lock_lost" };
+    await held.truncate(0);
+    await held.write(result, 0, result.length, 0);
+    await held.chmod(st.mode & 0o7777);
+    await held.sync();
+    await hooks.beforeRename?.();
+    if (!(await stillOurs(lock, mine))) return { skipped: "lock_lost" };
     try {
       await (hooks.rename ?? fsRename)(lock, index);
     } catch {
@@ -245,6 +299,9 @@ async function refreshOnce(deps: GitOpsDeps, w: WorktreeRef, oldHead: string, ne
   } catch {
     return { skipped: "failed" };
   } finally {
-    if (lock !== undefined && !renamed) await rm(lock, { force: true }).catch(() => undefined);
+    await held?.close().catch(() => undefined);
+    // Only Axis's own lock is ever removed: one another git created after the user removed ours stays.
+    if (lock !== undefined && mine !== undefined && !renamed && (await stillOurs(lock, mine))) await rm(lock, { force: true }).catch(() => undefined);
+    if (scratch !== undefined) await rm(scratch, { recursive: true, force: true }).catch(() => undefined);
   }
 }
