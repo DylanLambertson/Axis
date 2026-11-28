@@ -118,7 +118,8 @@ export function createWorktreesService(deps: WorktreesServiceDeps): WorktreesRun
       }
       const worktrees: (WorktreeInfo | LocalInfo)[] = [];
       const main = listed.find((e) => e.isMain);
-      if (req.includeLocal === true && main !== undefined && !main.bare) worktrees.push(localInfo(main, project.id));
+      const local = req.includeLocal === true && main !== undefined && !main.bare ? localInfo(main, project.id) : undefined;
+      if (local !== undefined) worktrees.push(local);
       for (const ws of journal.listWorkspaces().filter((w) => w.projectId === project.id && (w.state === "READY" || w.state === "FINALISED" || w.state === "REMOVING"))) {
         ctx.signal.throwIfAborted();
         if (worktrees.length >= MAX_LIST) break;

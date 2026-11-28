@@ -76,6 +76,26 @@ test("a bare repository has no local row; its linked worktree is still external"
   assert.deepEqual(list.map((w) => w["origin"]), ["external"], "kills a local row for a bare repository");
 });
 
+test("review 1 NIT-1: a branch name longer than the wire allows is cut with a marker, and the reply still conforms", { skip }, async (t) => {
+  const { r, user } = await setup(t);
+  const long = `${"a".repeat(200)}/${"b".repeat(200)}`;
+  r.git(r.repo, "checkout", "-q", "-b", long);
+  r.git(r.repo, "worktree", "add", "-q", "-b", `${"c".repeat(200)}/${"d".repeat(200)}`, path.join(r.tmp, "external-long"));
+  const list = rows(await user.call(WT, "list", { projectId: "proj-1", includeLocal: true }));
+  const branch = String(list[0]?.["branch"]);
+  assert.equal(branch.length, 256);
+  assert.equal(branch, `${long.slice(0, 255)}\u2026`, "kills dropping the whole reply for an over-long branch");
+  assert.equal(String(list.find((w) => w["origin"] === "external")?.["branch"]).length, 256, "an external row is cut the same way");
+});
+
+test("review 1 NIT-2: a project registered at a linked worktree gets the MAIN checkout as its local row, and its own path as external", { skip }, async (t) => {
+  const { r, user } = await setup(t);
+  const linked = path.join(r.tmp, "linked");
+  r.git(r.repo, "worktree", "add", "-q", "-b", "side", linked);
+  const list = rows(await user.call(WT, "list", { projectId: project(r, "proj-linked", linked), includeLocal: true }));
+  assert.deepEqual(list.map((w) => [w["origin"], w["path"]]), [["local", realpathSync(r.repo)], ["external", realpathSync(linked)]]);
+});
+
 test("an untrusted project gets its local row (list stays a tier 0 read)", { skip }, async (t) => {
   const { r, user } = await setup(t);
   const other = path.join(r.tmp, "other");
@@ -101,9 +121,17 @@ test("the local row costs no git process: the same count with and without includ
   assert.equal(count(), without, "kills a status (or any other git call) for the local row");
 });
 
+const entry = { path: "/r", head: "0".repeat(40), branch: "refs/heads/feature/x", locked: false, prunable: false, isMain: true, managed: false, external: false, id: null, bare: false };
+
 test("localInfo: refs/heads/ dropped, other refs kept, the zero id and a prunable entry mapped", () => {
-  const entry = { path: "/r", head: "0".repeat(40), branch: "refs/heads/feature/x", locked: false, prunable: false, isMain: true, managed: false, external: false, id: null, bare: false };
   assert.deepEqual(localInfo(entry, "p"), { origin: "local", projectId: "p", branch: "feature/x", head: null, path: "/r", locked: false, present: true });
-  assert.equal(localInfo({ ...entry, prunable: true }, "p").present, false);
-  assert.equal(localInfo({ ...entry, head: "a".repeat(64) }, "p").head, "a".repeat(64));
+  assert.equal(localInfo({ ...entry, prunable: true }, "p")?.present, false);
+  assert.equal(localInfo({ ...entry, head: "a".repeat(64) }, "p")?.head, "a".repeat(64));
+});
+
+test("review 1 NIT-3: a checkout path the shell could not show safely leaves the row out, never the whole reply", () => {
+  for (const p of ["/r/evil\nname", "/r/\u202ertl", "/r/zero\u200bwidth", "/r/line\u2028sep", `/${"p".repeat(4096)}`]) {
+    assert.equal(localInfo({ ...entry, path: p }, "p"), undefined, JSON.stringify(p));
+  }
+  assert.equal(localInfo({ ...entry, path: `/${"p".repeat(4095)}` }, "p")?.path.length, 4096, "the longest valid path is kept");
 });

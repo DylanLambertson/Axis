@@ -32,6 +32,14 @@ loader read the worktree files); the own shell has no such path, so the daemon m
 - `branch` is the entry's branch without `refs/heads/` (null when detached), `head` its object id (null on an unborn branch),
   `path` the entry's real path, for display and opening only, and never accepted back as input (as for every row).
 - `present` is false when git marks the entry prunable or its directory cannot be resolved.
+- **The MAIN checkout, not the registered path.** For a project registered at a linked worktree's path, the `"local"` row is
+  the common directory's main worktree (git lists it first), and the registered path itself comes back as an `"external"`
+  row, as before.
+- **Display text, bounded.** A branch name longer than the wire's 256 (git allows longer, such as `<200>/<200>`) is cut to 255
+  units plus `…` (U+2026), never splitting a surrogate pair; external rows are cut the same way. A checkout path with a
+  control, format or line-separator character, or longer than 4,096, leaves the `"local"` row out: the shell's reader refuses
+  such a path and would drop the whole reply. The path is otherwise untrusted display text, which the renderer escapes like
+  all daemon text.
 - **No row** for a bare repository (git lists the bare common directory first), or when the list cannot be read (the
   recorded workspaces are still returned, as today).
 - `locked` is always false: git cannot lock a main worktree.
@@ -61,6 +69,10 @@ loader read the worktree files); the own shell has no such path, so the daemon m
   - no extra git process: the same count with and without the flag (a git wrapper counts calls);
   - an untrusted project gets the row.
 - Daemon mapping (`localInfo`): `refs/heads/` dropped, the zero id read as null, a prunable entry `present: false`. That the
-  row comes first under the cap holds by construction (it is pushed before any other row); no test fills 1000 rows.
+  row comes first under the cap is tested with a fake manager listing 1,200 worktrees: the reply holds 1,000, the local
+  row first.
+- Review 1 nits: a 401-character branch is cut and the reply conforms (local and external rows); a project registered at a
+  linked worktree gets the main checkout as `"local"` and its own path as `"external"`; a path with a newline, a bidi or
+  zero-width character, a line separator, or over 4,096 characters leaves the row out.
 - `@axis/shell-core` reader: `"local"` read only when `listWorktrees(id, { includeLocal: true })` asked, only first, never in
   a status reply; a local row with workspace fields or `locked: true` refused; an unknown origin still refused.
