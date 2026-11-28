@@ -13,6 +13,7 @@ import { INTEGRATIONS_CONTRACT, INTEGRATIONS_VERSION, NET_CONTRACT, NET_VERSION,
 import { MESSAGES_CONTRACT, MESSAGES_VERSION, messagesMethods } from "./messages.js";
 import { PAGES_CONTRACT, PAGES_VERSION, pagesMethods } from "./pages.js";
 import { TASKS_CONTRACT, TASKS_VERSION, tasksMethods } from "./tasks.js";
+import { TERMINALS_CONTRACT, TERMINALS_VERSION, terminalsMethods } from "./terminals.js";
 import { PLUGINS_CONTRACT, PLUGINS_VERSION, pluginsMethods } from "./plugins.js";
 import { MAX_TIMEOUT_MS, methodNameSchema } from "./envelope.js";
 import { PROJECTS_CONTRACT, PROJECTS_VERSION, projectsMethods } from "./projects.js";
@@ -69,11 +70,13 @@ export const contracts: Table = Object.freeze({
  * (`axis.messages/1` moved with ticket PV-M3, `axis.forge/1` with PV-D2 slice 2, `axis.agents/1` and `axis.agent-groups/1`
  * with PV-G3, `axis.pages/1` with PV-Q1 slice 2, `axis.tasks/1` with PV-T1 slice 2a). A contract may also be split by method:
  * `axis.integrations/1` serves list, status and read (PV-N1f) and keeps connect, disconnect and write here; `axis.net/1`
- * (PV-N1a, ADR 0009) is wholly planned. A method is never in both tables.
+ * (PV-N1a, ADR 0009) is wholly planned, and so is `axis.terminals/1` (DC-3a) until DC-3c. A method is never in both tables.
  */
 export const plannedContracts: Table = Object.freeze({
   [`${INTEGRATIONS_CONTRACT}/${INTEGRATIONS_VERSION}`]: frozen(plannedIntegrations),
   [`${NET_CONTRACT}/${NET_VERSION}`]: frozen(netMethods),
+  // DC-3a: planned until DC-3c's trust-registry routing lands (docs/design/terminals-contract.md section 2 step 5).
+  [`${TERMINALS_CONTRACT}/${TERMINALS_VERSION}`]: frozen(terminalsMethods),
 });
 
 const SIDE_EFFECTS: ReadonlySet<unknown> = new Set(["none", "read", "write", "network", "destructive", "credential"]);
