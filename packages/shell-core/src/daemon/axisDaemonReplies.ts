@@ -112,10 +112,15 @@ function readWorktree(item: unknown): IAxisWorktreeInfo {
 	const w = record(item,
 		['id', 'origin', 'projectId', 'state', 'branch', 'baseRef', 'baseSha', 'head', 'path', 'locked', 'present', 'dirty', 'ahead', 'behind'],
 		['origin', 'projectId', 'branch', 'head', 'path', 'locked', 'present']);
+	const origin = oneOf(w.origin, ['axis', 'external', 'local'] as const);
+	// The local checkout (DC-7) carries no workspace fields and is never locked.
+	if (origin === 'local' && (['id', 'state', 'baseRef', 'baseSha', 'dirty', 'ahead', 'behind'].some(k => w[k] !== undefined) || w.locked !== false)) {
+		invalid();
+	}
 	const dirty = w.dirty === undefined ? undefined : record(w.dirty, ['staged', 'unstaged', 'untracked'], ['staged', 'unstaged', 'untracked']);
 	return {
 		...(w.id !== undefined && { id: id(w.id) }),
-		origin: oneOf(w.origin, ['axis', 'external'] as const),
+		origin,
 		projectId: id(w.projectId),
 		...(w.state !== undefined && { state: oneOf(w.state, WORKSPACE_STATES as ('READY' | 'FINALISED' | 'CLEANED')[]) }),
 		branch: nullable(w.branch, v => cleanDisplayText(text(v, MAX_REF), MAX_REF)),
@@ -131,9 +136,15 @@ function readWorktree(item: unknown): IAxisWorktreeInfo {
 	};
 }
 
-/** `axis.worktrees/1.list` reply (at most `max` worktrees, 1000 by default) and `status` reply (`max` = 100). */
-export function readWorktrees(reply: unknown, max: number = MAX_WORKTREES): IAxisWorktreeInfo[] {
+/**
+ * `axis.worktrees/1.list` reply (at most `max` worktrees, 1000 by default) and `status` reply (`max` = 100). A "local" row
+ * (DC-7) is read only with `local` (a list that asked for it) and only first; anywhere else the whole reply is refused.
+ */
+export function readWorktrees(reply: unknown, max: number = MAX_WORKTREES, options: { readonly local?: boolean } = {}): IAxisWorktreeInfo[] {
 	const worktrees = array(record(reply, ['worktrees'], ['worktrees']).worktrees, max).map(readWorktree);
+	if (worktrees.some((w, i) => w.origin === 'local' && (options.local !== true || i !== 0))) {
+		invalid();
+	}
 	// One workspace key per row: the journal id, else the path (ids and paths of id-less rows are told apart by prefix).
 	noDuplicates(worktrees.map(w => w.id !== undefined ? `id:${w.id}` : `path:${w.path}`));
 	return worktrees;

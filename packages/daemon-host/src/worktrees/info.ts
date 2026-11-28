@@ -3,7 +3,10 @@ import type { WorktreesResponse } from "@axis/protocol";
 import type { Workspace } from "@axis/journal";
 import type { DirtyEntry, ListedWorktree, ManagerStatus } from "./shapes.js";
 
-export type WorktreeInfo = WorktreesResponse<"list">["worktrees"][number];
+/** A workspace or external row (the shape `status` and `create` answer with). */
+export type WorktreeInfo = WorktreesResponse<"status">["worktrees"][number];
+/** The local checkout row a `list` with `includeLocal` starts with (DC-7). */
+export type LocalInfo = Extract<WorktreesResponse<"list">["worktrees"][number], { origin: "local" }>;
 
 /** Staged, unstaged and untracked counts from the porcelain codes (a file can count as both staged and unstaged). */
 export function dirtyCounts(dirty: readonly DirtyEntry[]): { staged: number; unstaged: number; untracked: number } {
@@ -29,6 +32,8 @@ export function wireState(state: Workspace["state"]): "READY" | "FINALISED" | "C
 
 const branchName = (ref: string | null): string | null => (ref === null ? null : ref.replace(/^refs\/heads\//, ""));
 const HEAD = /^[0-9a-f]{40,64}$/;
+/** A real object id: git lists an unborn branch's head as all zeros. */
+const realHead = (h: string | null): string | null => (h !== null && HEAD.test(h) && !/^0+$/.test(h) ? h : null);
 
 /**
  * One workspace as the contract describes it. The journal row is the authority for id, project, branch, base and
@@ -64,4 +69,12 @@ export function externalInfo(entry: ListedWorktree, projectId: string): Worktree
     locked: entry.locked,
     present: !entry.prunable,
   };
+}
+
+/**
+ * The repository's own checkout (DC-7, docs/design/worktrees-local-checkout.md): the main entry of the `git worktree list` the
+ * service already ran. No id, state or counts (no `status` runs in the user's checkout), never locked.
+ */
+export function localInfo(entry: ListedWorktree, projectId: string): LocalInfo {
+  return { origin: "local", projectId, branch: branchName(entry.branch), head: realHead(entry.head), path: entry.path, locked: false, present: !entry.prunable };
 }
