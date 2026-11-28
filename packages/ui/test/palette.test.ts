@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { filterCommands, paletteMove } from "../src/index.js";
+import { filterCommands, paletteKeyAction, paletteMove, type PaletteKey } from "../src/index.js";
 
 const ITEMS = [
   { id: "a.focusNext", title: "Focus next region" },
@@ -39,4 +39,26 @@ test("the active option: arrows wrap, nothing selected starts at an end, other k
   assert.equal(paletteMove(3, -1, "ArrowUp"), 2);
   assert.equal(paletteMove(3, 1, "Home"), undefined);
   assert.equal(paletteMove(0, 0, "ArrowDown"), undefined);
+});
+
+const press = (key: string, extra: Partial<PaletteKey> = {}): PaletteKey => ({ key, isComposing: false, repeat: false, ctrlKey: false, metaKey: false, altKey: false, shiftKey: false, ...extra });
+
+test("palette keys: only an unmodified, first Enter runs; input-method keys do nothing, not even Escape (review SF1)", () => {
+  assert.equal(paletteKeyAction(press("Enter")), "run");
+  assert.equal(paletteKeyAction(press("Enter", { isComposing: true })), "none", "Enter that completes IME text");
+  assert.equal(paletteKeyAction(press("Process")), "none", "Chromium's composition key");
+  assert.equal(paletteKeyAction(press("Escape", { isComposing: true })), "none");
+  assert.equal(paletteKeyAction(press("ArrowDown", { isComposing: true })), "none");
+  assert.equal(paletteKeyAction(press("Enter", { repeat: true })), "swallow", "a held Enter never chooses");
+  for (const m of ["ctrlKey", "metaKey", "altKey", "shiftKey"] as const) {
+    assert.equal(paletteKeyAction(press("Enter", { [m]: true })), "none", `${m}+Enter is another chord`);
+    assert.equal(paletteKeyAction(press("Escape", { [m]: true })), "none");
+    assert.equal(paletteKeyAction(press("ArrowDown", { [m]: true })), "none");
+  }
+  assert.equal(paletteKeyAction(press("Escape")), "close");
+  assert.equal(paletteKeyAction(press("Tab")), "hold");
+  assert.equal(paletteKeyAction(press("Tab", { shiftKey: true })), "hold");
+  assert.equal(paletteKeyAction(press("ArrowDown", { repeat: true })), "next", "arrows repeat on purpose");
+  assert.equal(paletteKeyAction(press("ArrowUp")), "previous");
+  assert.equal(paletteKeyAction(press("k")), "none");
 });

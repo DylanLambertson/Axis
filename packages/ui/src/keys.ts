@@ -65,6 +65,16 @@ export function sameChord(a: Chord, b: Chord): boolean {
   return a.mod === b.mod && a.ctrl === b.ctrl && a.alt === b.alt && a.shift === b.shift && a.key === b.key;
 }
 
+/**
+ * The same gesture on this platform: what the keyboard must press, after Mod becomes Cmd (macOS) or Ctrl (elsewhere).
+ * "Mod+K" and "Ctrl+K" are one gesture off macOS and two on it; so are "Mod+Ctrl+K" and "Ctrl+K".
+ */
+export function sameGesture(a: Chord, b: Chord, platform: Platform): boolean {
+  const ctrl = (c: Chord) => c.ctrl || (c.mod && platform === "other");
+  const meta = (c: Chord) => c.mod && platform === "mac";
+  return ctrl(a) === ctrl(b) && meta(a) === meta(b) && a.alt === b.alt && a.shift === b.shift && a.key === b.key;
+}
+
 const MAC_KEYS: Readonly<Record<string, string>> = { Enter: "↩", Escape: "⎋", ArrowUp: "↑", ArrowDown: "↓", ArrowLeft: "←", ArrowRight: "→" };
 const OTHER_KEYS: Readonly<Record<string, string>> = { Escape: "Esc", ArrowUp: "↑", ArrowDown: "↓", ArrowLeft: "←", ArrowRight: "→" };
 

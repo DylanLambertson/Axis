@@ -3,25 +3,32 @@
 // refused. Every one says in words what is true and what to do; none shows sample data. Loading is a static skeleton
 // (no spinner, no pulse: tokens.md section 5 has no loops), announced once as busy.
 
-import type { ReactNode } from "react";
+import { useId, type ReactNode } from "react";
 import { BRAND } from "@axis/ui";
 import { Glyph } from "./Glyph.js";
 
-export interface StateAction {
-  readonly label: string;
-  readonly onClick?: () => void;
-  /** Why the action is off; shown next to it, so a disabled button is never unexplained. */
-  readonly disabledReason?: string;
-}
+/** An action is either live (it has `onClick`) or off with the reason shown beside it: never off and unexplained. */
+export type StateAction =
+  | { readonly label: string; readonly onClick: () => void; readonly disabledReason?: undefined }
+  | { readonly label: string; readonly onClick?: undefined; readonly disabledReason: string };
+
+/** Shown when a caller passes neither (outside the types): the button is still never off without a word. */
+const UNEXPLAINED = "This is not available yet.";
 
 function Action({ action }: { readonly action: StateAction }) {
-  const off = action.disabledReason !== undefined || action.onClick === undefined;
+  const why = useId();
+  const onClick = action.disabledReason === undefined ? action.onClick : undefined;
+  const reason = onClick === undefined ? (action.disabledReason ?? UNEXPLAINED) : undefined;
   return (
     <div className="axis-state__action">
-      <button type="button" className="axis-btn axis-btn--primary" disabled={off} onClick={action.onClick}>
+      <button type="button" className="axis-btn axis-btn--primary" disabled={onClick === undefined} onClick={onClick} aria-describedby={reason === undefined ? undefined : why}>
         {action.label}
       </button>
-      {action.disabledReason !== undefined && <p className="axis-state__why">{action.disabledReason}</p>}
+      {reason !== undefined && (
+        <p id={why} className="axis-state__why">
+          {reason}
+        </p>
+      )}
     </div>
   );
 }

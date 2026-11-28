@@ -23,6 +23,45 @@ export function filterCommands<T extends PaletteItem>(items: readonly T[], query
   return [...hits.filter((i) => i.title.toLowerCase().startsWith(first)), ...hits.filter((i) => !i.title.toLowerCase().startsWith(first))];
 }
 
+/** The part of a DOM `KeyboardEvent` the palette reads. */
+export interface PaletteKey {
+  readonly key: string;
+  readonly isComposing: boolean;
+  readonly repeat: boolean;
+  readonly ctrlKey: boolean;
+  readonly metaKey: boolean;
+  readonly altKey: boolean;
+  readonly shiftKey: boolean;
+}
+
+/** What a key in the palette does: nothing (left to the input or the page), close, keep focus, run, swallow, move. */
+export type PaletteKeyAction = "none" | "close" | "hold" | "run" | "swallow" | "next" | "previous";
+
+/**
+ * The palette's reading of a key, before it acts. A key that completes or edits input-method text (`isComposing`)
+ * belongs to the input method, so nothing happens, not even Escape (Chromium's "Process" key is no palette key either). Only an unmodified Enter
+ * runs, and never a repeat: a held Enter that opened the palette must not also choose. Tab (with or without Shift) keeps
+ * focus in the input. Arrows move, repeats included.
+ */
+export function paletteKeyAction(event: PaletteKey): PaletteKeyAction {
+  if (event.isComposing) return "none";
+  const modified = event.ctrlKey || event.metaKey || event.altKey || event.shiftKey;
+  switch (event.key) {
+    case "Tab":
+      return "hold";
+    case "Escape":
+      return modified ? "none" : "close";
+    case "Enter":
+      return modified ? "none" : event.repeat ? "swallow" : "run";
+    case "ArrowDown":
+      return modified ? "none" : "next";
+    case "ArrowUp":
+      return modified ? "none" : "previous";
+    default:
+      return "none";
+  }
+}
+
 /**
  * The active option after a key in the palette's input, or undefined when the key does not move it. ArrowDown and
  * ArrowUp wrap (the list is short and the input keeps focus); Home and End stay with the input's text, so they are not

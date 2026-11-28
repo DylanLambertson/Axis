@@ -64,8 +64,3 @@ export function refusalText(source: AxisRefusalSource, reason: string | undefine
 	const sentence = reason !== undefined && Object.hasOwn(table, reason) ? table[reason] : undefined;
 	return sentence ? sentence() : localize('axis.refusal.unknown', "That was refused. Nothing changed.");
 }
-
-/** DC-0: a commit is built in a private index, so the user's own staging is never touched. Shown after a commit. */
-export function commitDoneText(): string {
-	return localize('axis.commit.done', "Committed without touching your staged changes.");
-}

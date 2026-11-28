@@ -2,6 +2,8 @@
 // The terminal pane's frame and its states (OS-6). The terminal itself arrives with DC-3a/b and OS-16; until then the
 // pane says so. The states that build will need exist now so the layout does not move when it lands.
 
+import { useId } from "react";
+
 export type TerminalPaneState =
   | { readonly kind: "unavailable" }
   | { readonly kind: "connecting" }
@@ -9,6 +11,7 @@ export type TerminalPaneState =
 
 export interface TerminalPaneProps {
   readonly state: TerminalPaneState;
+  /** Absent: the restart button is off and says why. */
   readonly onRestart?: () => void;
   /** False for a sample (the state gallery): no landmark and no F6 region, so a page of samples has one of neither. */
   readonly region?: boolean;
@@ -16,6 +19,7 @@ export interface TerminalPaneProps {
 
 export function TerminalPane({ state, onRestart, region = true }: TerminalPaneProps) {
   const Root = region ? "section" : "div";
+  const why = useId();
   return (
     <Root className="axis-terminal" {...(region ? { "aria-label": "Terminal", "data-region": "terminal", tabIndex: -1 } : {})}>
       <header className="axis-terminal__head">
@@ -27,9 +31,10 @@ export function TerminalPane({ state, onRestart, region = true }: TerminalPanePr
         {state.kind === "exited" && (
           <>
             <p role="status">Terminal process exited with code {state.code}.</p>
-            <button type="button" className="axis-btn axis-btn--secondary" onClick={onRestart} disabled={onRestart === undefined}>
+            <button type="button" className="axis-btn axis-btn--secondary" onClick={onRestart} disabled={onRestart === undefined} aria-describedby={onRestart === undefined ? why : undefined}>
               Restart terminal
             </button>
+            {onRestart === undefined && <p id={why}>A restart is not available here yet.</p>}
           </>
         )}
       </div>

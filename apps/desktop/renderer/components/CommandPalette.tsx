@@ -1,10 +1,11 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 // The command palette (OS-6): a modal dialog over a scrim with one combobox input and a listbox of the registry's
-// commands, each with its keycaps. Focus stays in the input (the active option is `aria-activedescendant`); Enter
-// runs the active command, Escape or a click on the scrim closes it, and the app returns focus to where it was.
+// commands, each with its keycaps. Focus stays in the input (the active option is `aria-activedescendant`); an
+// unmodified, non-repeated Enter runs the active command, Escape or a click on the scrim closes it, and the app returns
+// focus to where it was. Keys that belong to an input method (`paletteKeyAction`) are never read as palette keys.
 
 import { useEffect, useId, useRef, useState, type KeyboardEvent } from "react";
-import { chordKeys, filterCommands, paletteMove, type Command, type Platform } from "@axis/ui";
+import { chordKeys, filterCommands, paletteKeyAction, paletteMove, type Command, type Platform } from "@axis/ui";
 import { Keycaps } from "./Keycaps.js";
 
 export interface CommandPaletteProps {
@@ -33,24 +34,28 @@ export function CommandPalette(props: CommandPaletteProps) {
   }
 
   function onKeyDown(event: KeyboardEvent<HTMLDivElement>) {
-    if (event.key === "Escape") {
-      event.preventDefault();
-      props.onClose();
-      return;
+    const native = event.nativeEvent;
+    const action = paletteKeyAction({ key: event.key, isComposing: native.isComposing, repeat: event.repeat, ctrlKey: event.ctrlKey, metaKey: event.metaKey, altKey: event.altKey, shiftKey: event.shiftKey });
+    switch (action) {
+      case "none":
+        return;
+      case "close":
+        props.onClose();
+        break;
+      case "run":
+        run(shown[at]);
+        break;
+      case "next":
+      case "previous": {
+        const next = paletteMove(shown.length, at, action === "next" ? "ArrowDown" : "ArrowUp");
+        if (next !== undefined) setActive(next);
+        break;
+      }
+      case "hold": // the input is the dialog's only tab stop
+      case "swallow": // a held Enter neither chooses nor reaches the page
+        break;
     }
-    if (event.key === "Tab") {
-      event.preventDefault(); // the input is the dialog's only tab stop
-      return;
-    }
-    if (event.key === "Enter") {
-      event.preventDefault();
-      run(shown[at]);
-      return;
-    }
-    const next = paletteMove(shown.length, at, event.key);
-    if (next === undefined) return;
     event.preventDefault();
-    setActive(next);
   }
 
   return (

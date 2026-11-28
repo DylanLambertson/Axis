@@ -1,7 +1,8 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 // The frame's key handling (OS-6): one window listener resolves each key through the command registry, and F6 /
 // Shift+F6 move focus between the frame's regions (`[data-region]`, in document order). The approval shortcut is not
-// here: only a decision card handles it, through its own gate.
+// here: only a decision card handles it, through its own gate. While a modal is open it owns the keyboard: the
+// listener leaves its keys alone.
 
 import { CommandRegistry, nextRegionIndex, type Platform } from "@axis/ui";
 
@@ -31,8 +32,7 @@ export function cycleRegion(doc: Document, backwards: boolean): void {
 }
 
 /** The frame's commands and the window listener; returns the function that removes both. */
-export function installKeyboard(win: Window, registry: CommandRegistry): () => void {
-  const platform = platformOf(win.navigator);
+export function installKeyboard(win: Window, registry: CommandRegistry, platform: Platform = platformOf(win.navigator)): () => void {
   const removers = [
     registry.register({ id: "axis.region.next", title: "Focus next region", chord: "F6", run: () => cycleRegion(win.document, false) }),
     registry.register({ id: "axis.region.previous", title: "Focus previous region", chord: "Shift+F6", run: () => cycleRegion(win.document, true) }),
@@ -40,6 +40,7 @@ export function installKeyboard(win: Window, registry: CommandRegistry): () => v
   const onKeyDown = (event: KeyboardEvent) => {
     if (event.defaultPrevented || event.isComposing) return;
     const active = win.document.activeElement;
+    if (active?.closest('[aria-modal="true"]')) return; // an open modal (the palette) owns the keyboard
     const scopes = [...(active?.closest<HTMLElement>("[data-scope]") ? [active.closest<HTMLElement>("[data-scope]")!.dataset.scope ?? ""] : [])];
     const command = registry.resolve(event, { platform, activeScopes: scopes, inEditable: isEditable(active) });
     if (command === undefined) return;

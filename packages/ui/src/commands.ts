@@ -3,7 +3,7 @@
 // palette, the shortcut badges and the key handler all read the same entry. A command runs only through `run` or a
 // resolved key event; a scope narrows a chord to one part of the frame (the dashboard list, a card).
 
-import { chordMatches, isTypingChord, parseChord, sameChord, type Chord, type KeyGesture, type Platform } from "./keys.js";
+import { chordMatches, isTypingChord, parseChord, sameGesture, type Chord, type KeyGesture, type Platform } from "./keys.js";
 
 export interface CommandSpec {
   /** Stable internal id, for example `axis.view.toggle`. Never shown. */
@@ -34,7 +34,16 @@ const ID = /^[a-z][a-z0-9]*(\.[a-z][a-zA-Z0-9]*)+$/;
 export class CommandRegistry {
   private readonly commands = new Map<string, Command>();
 
-  /** Adds a command; returns the function that removes it. Throws on a bad or taken id, or a chord taken in the scope. */
+  /**
+   * `platform` is where the registry's chords are pressed. Two chords that are one gesture there (for example "Mod+K"
+   * and "Ctrl+K" off macOS) cannot share a scope. Without it, a pair that is one gesture on either platform is refused.
+   */
+  constructor(private readonly platform?: Platform) {}
+
+  /**
+   * Adds a command; returns the function that removes it. Throws on a bad or taken id, or a chord whose gesture is
+   * taken in the scope.
+   */
   register(spec: CommandSpec): () => void {
     if (!ID.test(spec.id)) throw new Error(`not a command id: ${spec.id}`);
     if (this.commands.has(spec.id)) throw new Error(`command already registered: ${spec.id}`);
@@ -42,7 +51,10 @@ export class CommandRegistry {
     const parsedChord = spec.chord === undefined ? undefined : parseChord(spec.chord);
     if (parsedChord !== undefined) {
       for (const other of this.commands.values()) {
-        if (other.scope === scope && other.parsedChord !== undefined && sameChord(other.parsedChord, parsedChord)) throw new Error(`chord ${spec.chord} is taken in ${scope} by ${other.id}`);
+        if (other.scope !== scope || other.parsedChord === undefined) continue;
+        const taken = other.parsedChord;
+        const platforms: readonly Platform[] = this.platform === undefined ? ["mac", "other"] : [this.platform];
+        if (platforms.some((p) => sameGesture(taken, parsedChord, p))) throw new Error(`chord ${spec.chord} is taken in ${scope} by ${other.id}`);
       }
     }
     const command: Command = { ...spec, scope, parsedChord };

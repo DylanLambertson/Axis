@@ -5,7 +5,7 @@
 // editor. Escape moves focus to Deny. The card decides nothing itself: it calls `onApprove` / `onDeny`, and the answer
 // path behind them checks the digest, the guard time and expiry exactly as for a click.
 
-import { useEffect, useRef, type KeyboardEvent } from "react";
+import { useEffect, useId, useRef, type KeyboardEvent } from "react";
 import { approvalShortcutAllowed, approvalShortcutAria, approvalShortcutKeys } from "@axis/shell-core";
 import { Glyph } from "./Glyph.js";
 import { Keycaps } from "./Keycaps.js";
@@ -40,6 +40,7 @@ export function DecisionCard(props: DecisionCardProps) {
   const card = useRef<HTMLElement>(null);
   const deny = useRef<HTMLButtonElement>(null);
   const off = props.disabledReason !== undefined;
+  const why = useId();
 
   useEffect(() => {
     if (props.focusOnMount) deny.current?.focus();
@@ -85,9 +86,13 @@ export function DecisionCard(props: DecisionCardProps) {
           </div>
         ))}
       </dl>
-      {off && <p className="axis-decision__why">{props.disabledReason}</p>}
+      {off && (
+        <p id={why} className="axis-decision__why">
+          {props.disabledReason}
+        </p>
+      )}
       <div className="axis-decision__actions">
-        <button type="button" className="axis-btn axis-btn--primary" disabled={off} aria-keyshortcuts={approvalShortcutAria(props.isMac)} onClick={props.onApprove}>
+        <button type="button" className="axis-btn axis-btn--primary" disabled={off} aria-describedby={off ? why : undefined} aria-keyshortcuts={approvalShortcutAria(props.isMac)} onClick={props.onApprove}>
           Approve once <Keycaps keys={approvalShortcutKeys(props.isMac)} />
         </button>
         <button ref={deny} type="button" className="axis-btn axis-btn--secondary" onClick={props.onDeny}>

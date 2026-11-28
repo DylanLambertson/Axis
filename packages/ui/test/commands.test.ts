@@ -58,3 +58,23 @@ test("run, list and the remover", () => {
   remove();
   assert.equal(r.get("axis.b.cmd")?.title, "Beta again", "a stale remover does not remove a newer command");
 });
+
+test("register refuses a second chord that is the same gesture on the registry's platform (review N1)", () => {
+  const other = new CommandRegistry("other");
+  other.register({ id: "axis.a.run", title: "A", chord: "Mod+K", run: () => {} });
+  assert.throws(() => other.register({ id: "axis.b.run", title: "B", chord: "Ctrl+K", run: () => {} }), /taken in global by axis\.a\.run/);
+  assert.throws(() => other.register({ id: "axis.c.run", title: "C", chord: "Mod+Ctrl+K", run: () => {} }), /taken/);
+  other.register({ id: "axis.d.run", title: "D", chord: "Ctrl+K", scope: "list", run: () => {} });
+  const mac = new CommandRegistry("mac");
+  mac.register({ id: "axis.a.run", title: "A", chord: "Mod+K", run: () => {} });
+  mac.register({ id: "axis.b.run", title: "B", chord: "Ctrl+K", run: () => {} });
+  mac.register({ id: "axis.c.run", title: "C", chord: "Ctrl+Mod+K", run: () => {} });
+  assert.throws(() => mac.register({ id: "axis.e.run", title: "E", chord: "Mod+Ctrl+K", run: () => {} }), /taken in global by axis\.c\.run/, "the same chord in another order");
+  const unknown = new CommandRegistry();
+  unknown.register({ id: "axis.a.run", title: "A", chord: "Mod+K", run: () => {} });
+  assert.throws(() => unknown.register({ id: "axis.b.run", title: "B", chord: "Ctrl+K", run: () => {} }), /taken/, "without a platform, a pair that collides anywhere is refused");
+  unknown.register({ id: "axis.c.run", title: "C", chord: "Alt+K", run: () => {} });
+  unknown.register({ id: "axis.f.run", title: "F", chord: "Shift+F6", run: () => {} });
+  unknown.register({ id: "axis.g.run", title: "G", chord: "Alt+Shift+F6", run: () => {} });
+  unknown.register({ id: "axis.h.run", title: "H", chord: "F6", run: () => {} });
+});

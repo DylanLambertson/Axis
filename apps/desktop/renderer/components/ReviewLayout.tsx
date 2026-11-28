@@ -44,7 +44,7 @@ export function ReviewLayout(props: ReviewLayoutProps) {
     <section className="axis-review" aria-label={props.title}>
       <header className="axis-review__head">
         <h2>{props.title}</h2>
-        <p className="axis-review__note">Commits are built in a private index: your own staged changes are never touched.</p>
+        <p className="axis-review__note">Commits are built from the reviewed changes in a private index, so staged changes you made yourself are kept.</p>
       </header>
       <div className="axis-review__body">
         <details className="axis-review__files" open>

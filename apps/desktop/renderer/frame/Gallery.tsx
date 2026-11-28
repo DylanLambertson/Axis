@@ -3,7 +3,7 @@
 // screenshots in both themes. It is not in the navigation and reads no data.
 
 import { useState, type ReactNode } from "react";
-import { commitDoneText, refusalText, storageNotice } from "@axis/shell-core";
+import { commitDone, refusalText, storageNotice } from "@axis/shell-core";
 import { DecisionCard } from "../components/DecisionCard.js";
 import { Notice } from "../components/Notice.js";
 import { ReviewLayout } from "../components/ReviewLayout.js";
@@ -46,8 +46,11 @@ export function Gallery({ isMac }: { readonly isMac: boolean }) {
       <Item name="Refused">
         <RefusalState title="The commit was refused" sentence={refusalText("axis.git/1.commit", "head_moved")} action={{ label: "Review again", onClick: () => {} }} />
       </Item>
-      <Item name="Committed (DC-0)">
-        <Notice notice={{ severity: "info", text: commitDoneText() }} />
+      <Item name="Committed (DC-0), index updated">
+        <Notice notice={commitDone({ refreshed: 2 })} />
+      </Item>
+      <Item name="Committed (DC-0), index update skipped">
+        <Notice notice={commitDone({ skipped: "locked" })} />
       </Item>
       <Item name="Decision">
         <DecisionCard

@@ -3,7 +3,7 @@ import assert from 'node:assert';
 import { suite, test } from 'node:test';
 import { GIT_COMMIT_REASONS, GIT_PUSH_REASONS, REVIEW_DIFF_REASONS } from '@axis/protocol';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../testing.js';
-import { commitDoneText, refusalText, type AxisRefusalSource } from '../../src/frame/axisRefusalText.js';
+import { refusalText, type AxisRefusalSource } from '../../src/frame/axisRefusalText.js';
 
 const SOURCES: readonly [AxisRefusalSource, readonly string[]][] = [
 	['axis.git/1.commit', GIT_COMMIT_REASONS],
@@ -39,9 +39,5 @@ suite('Axis refusal text', () => {
 		for (const reason of ['no_such_reason', 'constructor', '__proto__', 'toString', '<b>x</b>', undefined]) {
 			assert.strictEqual(refusalText('axis.review/1.diff', reason), 'That was refused. Nothing changed.', String(reason));
 		}
-	});
-
-	test('DC-0: the commit result says the user\'s staged changes were not touched', () => {
-		assert.strictEqual(commitDoneText(), 'Committed without touching your staged changes.');
 	});
 });

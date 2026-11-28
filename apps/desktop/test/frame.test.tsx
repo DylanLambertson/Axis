@@ -55,7 +55,7 @@ test("each screen kind draws its own state, and a disabled action always says wh
   assert.match(screen({ kind: "ready" }, emptySnapshot("E_TIMEOUT")), /Nothing could be read/);
   const empty = screen({ kind: "ready" }, { ...ROWS, notRegistered: true });
   assert.match(empty, /No projects yet/);
-  assert.match(empty, /<button type="button" class="axis-btn axis-btn--primary" disabled="">Add project<\/button><p class="axis-state__why">This is not part of this build yet\.<\/p>/);
+  assert.match(empty, /<button type="button" class="axis-btn axis-btn--primary" disabled="" aria-describedby="([^"]+)">Add project<\/button><p id="\1" class="axis-state__why">This is not part of this build yet\.<\/p>/, "the reason is shown and names the button");
   assert.match(screen({ kind: "ready" }, ROWS), /No workspaces yet/);
   assert.match(screen({ kind: "degraded" }, ROWS), /Nothing can be started while the service is read only\./);
   assert.match(screen({ kind: "ready" }, { ...ROWS, notRegistered: true }, "unavailable"), /Projects cannot be added while the service is read only\./);
@@ -76,8 +76,7 @@ test("the decision card: a labelled group, Approve once with its platform keycap
   const mac = renderToStaticMarkup(<DecisionCard {...props} isMac={true} />);
   assert.match(mac, /aria-keyshortcuts="Meta\+Enter">Approve once .*<kbd class="axis-kbd">⌘<\/kbd><kbd class="axis-kbd">↩<\/kbd>/);
   const off = renderToStaticMarkup(<DecisionCard {...props} isMac={false} disabledReason="Approvals are not available." />);
-  assert.match(off, /<p class="axis-decision__why">Approvals are not available\.<\/p>/);
-  assert.match(off, /disabled="" aria-keyshortcuts="Control\+Enter">Approve once/);
+  assert.match(off, /<p id="([^"]+)" class="axis-decision__why">Approvals are not available\.<\/p>.*disabled="" aria-describedby="\1" aria-keyshortcuts="Control\+Enter">Approve once/, "the reason describes Approve");
   assert.match(off, /<button type="button" class="axis-btn axis-btn--secondary">Deny<\/button>/, "Deny is never disabled");
 });
 
@@ -92,7 +91,7 @@ test("the terminal pane: the not-yet state, connecting as busy, and an exit with
 test("the review layout: the DC-0 note, a listbox with one selected tab stop, and counts spoken in words", () => {
   const files = [{ id: "a", path: "src/a.ts", additions: 3, deletions: 1 }, { id: "b", path: "src/b.ts", additions: 0, deletions: 2 }];
   const html = renderToStaticMarkup(<ReviewLayout title="Changes" files={files} selectedId="b" onSelect={() => {}}><pre /></ReviewLayout>);
-  assert.match(html, /your own staged changes are never touched/);
+  assert.match(html, /so staged changes you made yourself are kept\./);
   assert.match(html, /role="listbox" aria-label="Changed files"/);
   assert.equal(count(html, 'aria-selected="true"'), 1);
   assert.match(html, /aria-selected="true" tabindex="0"><span class="axis-review__path">src\/b\.ts/);
@@ -103,7 +102,7 @@ test("the review layout: the DC-0 note, a listbox with one selected tab stop, an
 
 test("the state gallery renders every state without data and is not in the navigation", () => {
   const html = renderToStaticMarkup(<App initialHash="#/states" isMac={false} />);
-  for (const t of ["Not connected to the", "No workspaces yet", "No secure storage", "HEAD or the branch moved", "Committed without touching your staged changes.", "Approve once", "Terminal process exited with code 1.", "never touched"]) {
+  for (const t of ["Not connected to the", "No workspaces yet", "No secure storage", "HEAD or the branch moved", "index now matches the new commit.", "index was not updated. Another git program was using the index.", "Approve once", "Terminal process exited with code 1.", "staged changes you made yourself are kept"]) {
     assert.ok(html.includes(t), t);
   }
   assert.doesNotMatch(html, /<button[^>]*>.{0,80}State gallery/, "no rail entry");

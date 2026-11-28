@@ -60,7 +60,7 @@ export function App(props: AppProps) {
   };
 
   const platform: Platform = props.isMac ? "mac" : "other";
-  const registry = useMemo(() => props.commands ?? new CommandRegistry(), [props.commands]);
+  const registry = useMemo(() => props.commands ?? new CommandRegistry(platform), [props.commands, platform]);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const isOpen = useRef(false);
   const opener = useRef<Element | null>(null);
