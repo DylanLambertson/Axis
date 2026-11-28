@@ -5,8 +5,15 @@ import type { ProviderCredential } from "@axis/protocol";
 import { ProviderError, guardProvider, type GenerateRequest, type GenerateResult, type GuardLimits, type GuardedProvider, type ModelInfo, type RunOptions, type StreamEvent } from "@axis/providers";
 import { VaultError, createVault, type ConnectionVault, type SecretBackend } from "@axis/vault";
 import { KEY_RULE, MAX_KEY_FORM_CHARS, holdsRegisteredSecret, providerRedactor } from "./provider-redactor.js";
+import type { BrokerSecretBackend } from "../secrets-backend.js";
 
 export type { FetchLike, Pricing, SecretBackend };
+
+/**
+ * The broker backend as the vault's `SecretBackend` (PV-N0c-1). This binding may import the vault and the backend may not, so
+ * the assignment lives here: the build fails when the backend's structural type stops fitting the vault's (review n0c1-2a SF-2).
+ */
+export const asVaultBackend = (backend: BrokerSecretBackend): SecretBackend => backend;
 
 /**
  * The network providers and the connection vault (docs/design/composer-runtime.md ticket C6). This is the ONLY file that
