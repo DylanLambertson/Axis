@@ -9,9 +9,10 @@
  *   control is the entries' own SIGUSR1 listener, installed as their first statement; the flag is kept because it costs
  *   nothing and holds wherever an entry runs under plain Node (`docs/design/own-shell-main-hardening.md` section 3, item 5).
  * - The environment is the caller's allow-listed one (`daemonEnvironment` for the daemon, the pty launch environment for the pty
- *   process), copied and frozen here, never main's own `process.env`. What is enforced here: every `NODE_*` and `ELECTRON_*`
- *   name is refused (case-insensitively: Windows environment names are), so `NODE_OPTIONS`, `NODE_PATH`,
- *   `NODE_EXTRA_CA_CERTS` and `ELECTRON_RUN_AS_NODE` can never reach a child Node.
+ *   process), copied and frozen here, never main's own `process.env`. What is enforced here: every `NODE_*`, `ELECTRON_*`,
+ *   `LD_*` and `DYLD_*` name is refused (case-insensitively: Windows environment names are), so `NODE_OPTIONS`, `NODE_PATH`,
+ *   `NODE_EXTRA_CA_CERTS`, `ELECTRON_RUN_AS_NODE`, `LD_PRELOAD`, `LD_LIBRARY_PATH` and `DYLD_INSERT_LIBRARIES` can never
+ *   reach a child.
  * - The working directory is main's choice, absolute (the child never inherits main's own).
  * - stdio is piped, so nothing reaches a terminal; main drains both pipes.
  */
@@ -29,18 +30,18 @@ export interface UtilityForkOptions {
 }
 
 /** Environment names no child may get: Node's and Electron's own controls. */
-export const REFUSED_CHILD_ENV = /^(NODE_|ELECTRON_)/i;
+export const REFUSED_CHILD_ENV = /^(NODE_|ELECTRON_|LD_|DYLD_)/i;
 
 /** Throws on an unknown service name, a refused or malformed environment entry, or a relative working directory. */
-export function utilityForkOptions(serviceName: UtilityServiceName, env: Readonly<Record<string, string | undefined>>, cwd: string): UtilityForkOptions {
+export function utilityForkOptions(serviceName: UtilityServiceName, env: Readonly<Record<string, string | undefined>>, cwd: string, platform: "darwin" | "linux" | "win32"): UtilityForkOptions {
   if (!(UTILITY_SERVICE_NAMES as readonly string[]).includes(serviceName)) throw new Error("utilityForkOptions: unknown service");
   const copy: Record<string, string> = Object.create(null) as Record<string, string>;
   for (const [k, v] of Object.entries(env)) {
     if (v === undefined) continue;
     if (typeof v !== "string" || k === "" || k.includes("=") || k.includes("\0") || v.includes("\0")) throw new Error("utilityForkOptions: bad environment entry");
-    if (REFUSED_CHILD_ENV.test(k)) throw new Error("utilityForkOptions: a NODE_ or ELECTRON_ environment name is refused");
+    if (REFUSED_CHILD_ENV.test(k)) throw new Error("utilityForkOptions: a NODE_, ELECTRON_, LD_ or DYLD_ environment name is refused");
     copy[k] = v;
   }
-  if (typeof cwd !== "string" || cwd.includes("\0") || !(cwd.startsWith("/") || /^[A-Za-z]:\\/.test(cwd))) throw new Error("utilityForkOptions: cwd must be an absolute path");
+  if (typeof cwd !== "string" || cwd.includes("\0") || !(platform === "win32" ? /^[A-Za-z]:\\/.test(cwd) : cwd.startsWith("/"))) throw new Error("utilityForkOptions: cwd must be an absolute path");
   return Object.freeze({ serviceName, env: Object.freeze(copy), execArgv: UTILITY_EXEC_ARGV, stdio: "pipe" as const, cwd });
 }

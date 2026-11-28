@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { stat } from "node:fs/promises";
 import { test } from "node:test";
 import type { Connection } from "@axis/daemon";
+import { FakeSecretsMain } from "../testing/secrets-main.js";
 import { TestSupervisor, type TestSupervisorOptions } from "../testing/test-supervisor.js";
 import { processSnapshot, settledTo } from "./helpers.js";
 
@@ -135,6 +136,26 @@ for (const mode of MODES) {
       assert.equal(sup.nativeConfirms.length, 1);
       sup.answerNative(challengeId, true);
       assert.deepEqual(await w.next(), { ok: true, confirmed: true, proof: "z".repeat(32), windowId: "win-1" });
+    });
+  });
+
+  test(`[${mode}] secrets.* go to the model of main's broker the test gave, through a real host (PV-N0c-1)`, async () => {
+    const secrets = new FakeSecretsMain();
+    secrets.entries.set("c2", { secret: "test-credential-value-0002", meta: { storedAt: 1, backend: "gnome_libsecret", protection: "none", weakConsent: false } });
+    await withSupervisor({ mode, secrets }, async (sup) => {
+      await sup.waitFor("ready");
+      const conn = sup.connect();
+      const w = watch(conn);
+      const meta = { storedAt: 5, backend: "gnome_libsecret", protection: "os_protected", weakConsent: false };
+      assert.deepEqual(await ask(w, conn, { op: "secrets", ask: { type: "secrets.put", name: "c1", secret: "test-credential-value-0001", meta } }), {
+        ok: true,
+        answer: { ok: true, value: { op: "put", landedOn: { backend: "gnome_libsecret", protection: "os_protected" } } },
+      });
+      assert.equal(secrets.entries.get("c1")?.secret, "test-credential-value-0001");
+      // The weak-entry case PV-N0c-1's provider reveal gate refuses: main reports the record's real protection.
+      assert.deepEqual(await ask(w, conn, { op: "secrets", ask: { type: "secrets.meta", name: "c2" } }), { ok: true, answer: { ok: true, value: { op: "meta", meta: { storedAt: 1, backend: "gnome_libsecret", protection: "none", weakConsent: false } } } });
+      assert.deepEqual(await ask(w, conn, { op: "secrets", ask: { type: "secrets.get", name: "c9" } }), { ok: true, answer: { ok: false, error: "not_found" } });
+      assert.deepEqual(secrets.seen.map((m) => m.type), ["secrets.put", "secrets.meta", "secrets.get"]);
     });
   });
 
