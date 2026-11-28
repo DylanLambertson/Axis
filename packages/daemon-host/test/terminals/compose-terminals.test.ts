@@ -1,31 +1,51 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
-// DC-3a's composition: until DC-3c's routing exists, a host whose pty port has all four terminal parts still serves no
-// axis.terminals/1 (planned; nothing registers), and starts cleanly. The wiring pieces: a CLI run's terminal is recorded when it
+// DC-3a/DC-3c's composition: a host serves axis.terminals/1 only with all four terminal-port parts AND a trust registry with
+// onRevoked (the routing is then installed on it) AND DC-3b's data-port broker attestation; with any missing, the contract is
+// dropped from what it serves and the host still starts. The wiring pieces: a CLI run's terminal is recorded when it
 // spawns, and project untrust reaches the plain terminals synchronously, before the run stop and whatever it throws.
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { test } from "node:test";
 import type { GitRunner } from "@axis/git-ops";
 import { composeDaemonHost, type ComposeOptions } from "../../src/index.js";
-import { hostTerminals, recordRunTerminals, withTerminalFanOut } from "../../src/terminals/compose.js";
+import { InMemoryTrustRegistry } from "../../src/policy/trust-registry.js";
+import { hostTerminals, installTerminals, recordRunTerminals, withTerminalFanOut } from "../../src/terminals/compose.js";
 import { hostFixture } from "../../testing/host-fixture.js";
 import { FakeHandle, FakeTerminalPort } from "./fakes.js";
 
 const runner: GitRunner = { run: () => Promise.reject(new Error("unused")) };
 const snapshotter: NonNullable<ComposeOptions["snapshotter"]> = () => ({ before: () => Promise.resolve(), after: () => Promise.resolve({ drift: false }) });
 
-test("a host with a fully terminal-capable pty port, and no DC-3c routing, serves no axis.terminals/1 and starts", async () => {
+const NONE = Symbol("no broker");
+async function served(pty: unknown, trust?: unknown, broker: unknown = { dataBroker: true }): Promise<readonly string[]> {
   const fix = hostFixture();
   const { control: _control, ...ports } = fix.ports as typeof fix.ports & { control: unknown };
-  const composed = composeDaemonHost({ config: fix.config, control: fix.client, ports, pty: new FakeTerminalPort(), ptyGitRunner: runner, snapshotter, process: new EventEmitter(), exit: () => undefined });
+  const composed = composeDaemonHost({ config: fix.config, control: fix.client, ports: { ...ports, ...(trust === undefined ? {} : { trust: trust as never }) }, pty: pty as never, ptyGitRunner: runner, snapshotter, process: new EventEmitter(), exit: () => undefined, ...(broker === NONE ? {} : { terminalDataBroker: broker as never }) });
   try {
-    const s = await composed.start();
-    assert.equal(s.served.includes("axis.terminals"), false);
-    assert.ok(s.served.includes("axis.cli-runs"), "the rest is served as before");
+    return (await composed.start()).served;
   } finally {
     await composed.stop();
     fix.cleanup();
   }
+}
+
+test("DC-3c decision (a): not served without DC-3b's data-port broker attestation, even with every other part; the host starts", async () => {
+  const s = await served(new FakeTerminalPort(), undefined, NONE);
+  assert.equal(s.includes("axis.terminals"), false);
+  assert.ok(s.includes("axis.cli-runs"));
+  assert.equal((await served(new FakeTerminalPort(), undefined, { dataBroker: "yes" })).includes("axis.terminals"), false, "only the literal attestation");
+});
+
+test("served with all four port parts, the default trust registry (which offers onRevoked) and the broker attestation; the rest as before", async () => {
+  const s = await served(new FakeTerminalPort());
+  assert.equal(s.includes("axis.terminals"), true);
+  assert.ok(s.includes("axis.cli-runs"));
+});
+
+test("not served, and the host still starts, with an ordinary CLI port or a trust registry without onRevoked", async () => {
+  assert.equal((await served({ spawn: () => Promise.reject(new Error("unused")) })).includes("axis.terminals"), false, "a port without the parts");
+  const plainTrust = { isTrusted: () => false, isRevoked: () => true, set: () => undefined };
+  assert.equal((await served(new FakeTerminalPort(), plainTrust)).includes("axis.terminals"), false, "a registry without onRevoked");
 });
 
 test("hostTerminals exists only for a port with all four parts", () => {
@@ -65,4 +85,18 @@ test("project untrust: the terminals are abandoned and closed synchronously, bef
   const seen: string[] = [];
   withTerminalFanOut((id) => seen.push(id), broken)("p2");
   assert.deepEqual(seen, ["p2"]);
+});
+
+test("review nit 3: at shutdown the routing is disposed FIRST, then the registry closes what is left", () => {
+  const terms = hostTerminals(new FakeTerminalPort());
+  assert.ok(terms !== undefined);
+  const trust = new InMemoryTrustRegistry();
+  const cleanups: Array<() => void> = [];
+  const routing = installTerminals(terms, trust, () => undefined, () => undefined, cleanups);
+  assert.ok(routing !== undefined && routing.active());
+  let activeAtShutdown: boolean | undefined;
+  const shutdown = terms.registry.shutdown.bind(terms.registry);
+  terms.registry.shutdown = () => ((activeAtShutdown = routing.active()), shutdown());
+  for (const c of cleanups) c();
+  assert.equal(activeAtShutdown, false, "the routing was already disposed when the registry shut down");
 });

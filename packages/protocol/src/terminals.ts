@@ -7,9 +7,8 @@ import { projectIdSchema, runIdSchema, workspaceIdSchema, type MethodSpec } from
  * `axis.terminals/1` (DC-3a, docs/design/terminals-contract.md): plain terminals in a managed worktree, and the grant of a terminal
  * to a named data connection. The user's own desktop connection's alone: never a web client, a plugin or a worker.
  *
- * PLANNED until DC-3c (terminal-trust-revocation.md): the contract is in `plannedContracts`, so no host serves it and every call
- * is an unknown method. It moves to `contracts` in the change that lands DC-3c's routing, and the host then serves it only when its
- * pty port has all four parts of the terminal capability (contract section 8).
+ * Served since DC-3c (terminal-trust-revocation.md): a host serves it only when its pty port has all four parts of the terminal
+ * capability AND the trust-registry routing is installed (contract section 8); otherwise the host drops it from what it serves.
  *
  * No payload carries a path, a command or an environment: a terminal is opened for a workspace id, and the daemon resolves the
  * directory (the shared locator) and the shell itself.
@@ -19,6 +18,11 @@ export const TERMINALS_VERSION = 1 as const;
 
 /** At most this many plain terminals per workspace, pending and live together (contract section 4). */
 export const MAX_TERMINALS_PER_WORKSPACE = 8;
+/**
+ * At most this many plain terminals in the whole host, pending and live together (DC-3c decision): well under the pty process's
+ * own bound (64), which CLI runs, hooks and pushes share, so a flood of opens across workspaces can never starve them.
+ */
+export const MAX_PLAIN_TERMINALS = 16;
 
 /** A terminal id is the pty process's: `pty_` and 32 lower-case hex characters. */
 export const terminalIdSchema = z.string().regex(/^pty_[0-9a-f]{32}$/);

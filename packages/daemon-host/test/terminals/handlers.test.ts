@@ -10,6 +10,7 @@ import { FakeHandle, FakeTerminalPort } from "./fakes.js";
 import { serviceRig } from "./service-rig.js";
 
 const on: TerminalRevocationRouting = { active: () => true };
+const B = { dataBroker: true } as const; // DC-3b's attestation, as a broker would hand it over
 const notFound = (e: unknown): boolean => (e as { code?: unknown }).code === "E_NOT_FOUND";
 
 function withoutPart(part: "spawn" | "grantTerminal" | "revoke" | "lateSpawnReports"): unknown {
@@ -20,24 +21,27 @@ function withoutPart(part: "spawn" | "grantTerminal" | "revoke" | "lateSpawnRepo
 }
 
 test("servable only with every port part and an active routing", () => {
-  assert.equal(terminalsServable(new FakeTerminalPort(), on), true);
-  for (const part of ["spawn", "grantTerminal", "revoke", "lateSpawnReports"] as const) assert.equal(terminalsServable(withoutPart(part), on), false, `without ${part}`);
-  assert.equal(terminalsServable({ ...new FakeTerminalPort(), lateSpawnReports: "yes" }, on), false, "the marker is the literal true");
-  assert.equal(terminalsServable(new FakeTerminalPort(), undefined), false, "no routing (DC-3c not installed)");
-  assert.equal(terminalsServable(new FakeTerminalPort(), { active: () => false }), false, "a disposed routing");
-  assert.equal(terminalsServable(new FakeTerminalPort(), { active: () => { throw new Error("x"); } }), false, "a routing that cannot answer");
+  assert.equal(terminalsServable(new FakeTerminalPort(), on, B), true);
+  for (const part of ["spawn", "grantTerminal", "revoke", "lateSpawnReports"] as const) assert.equal(terminalsServable(withoutPart(part), on, B), false, `without ${part}`);
+  assert.equal(terminalsServable({ ...new FakeTerminalPort(), lateSpawnReports: "yes" }, on, B), false, "the marker is the literal true");
+  assert.equal(terminalsServable(new FakeTerminalPort(), undefined, B), false, "no routing (DC-3c not installed)");
+  assert.equal(terminalsServable(new FakeTerminalPort(), { active: () => false }, B), false, "a disposed routing");
+  assert.equal(terminalsServable(new FakeTerminalPort(), { active: () => { throw new Error("x"); } }, B), false, "a routing that cannot answer");
   assert.equal(terminalPortOf(undefined), undefined);
+  // DC-3c decision (a): no DC-3b broker attestation, no terminals served.
+  for (const broker of [undefined, null, {}, { dataBroker: "yes" }, { dataBroker: 1 }]) assert.equal(terminalsServable(new FakeTerminalPort(), on, broker), false, `broker ${JSON.stringify(broker)}`);
 });
 
 test("register: nothing is registered unless servable; with every part and an active routing, axis.terminals/1 is", () => {
   const seen: string[] = [];
   const registrar = { register: (c: string, v: number) => void seen.push(`${c}/${v}`) };
   const deps = () => serviceRig().deps;
-  for (const part of ["spawn", "grantTerminal", "revoke", "lateSpawnReports"] as const) assert.equal(registerTerminalsServing(registrar, withoutPart(part), on, deps), false, part);
-  assert.equal(registerTerminalsServing(registrar, new FakeTerminalPort(), undefined, deps), false);
-  assert.equal(registerTerminalsServing(registrar, new FakeTerminalPort(), { active: () => false }, deps), false);
+  for (const part of ["spawn", "grantTerminal", "revoke", "lateSpawnReports"] as const) assert.equal(registerTerminalsServing(registrar, withoutPart(part), on, B, deps), false, part);
+  assert.equal(registerTerminalsServing(registrar, new FakeTerminalPort(), undefined, B, deps), false);
+  assert.equal(registerTerminalsServing(registrar, new FakeTerminalPort(), { active: () => false }, B, deps), false);
+  assert.equal(registerTerminalsServing(registrar, new FakeTerminalPort(), on, undefined, deps), false, "no broker");
   assert.deepEqual(seen, []);
-  assert.equal(registerTerminalsServing(registrar, new FakeTerminalPort(), on, deps), true);
+  assert.equal(registerTerminalsServing(registrar, new FakeTerminalPort(), on, B, deps), true);
   assert.deepEqual(seen, ["axis.terminals/1"]);
 });
 
@@ -47,7 +51,7 @@ function call(h: Handler, context: HandlerContext, payload: unknown): Promise<un
 
 test("a web, plugin or worker caller is refused not_found by the handler, before anything", async () => {
   const r = serviceRig();
-  const handlers = createTerminalsHandlers(r.deps, on);
+  const handlers = createTerminalsHandlers(r.deps, on, B);
   const base = r.context();
   for (const [label, identity] of [
     ["web", { ...base.identity, clientKind: "web", windowId: "web" }],
@@ -69,7 +73,7 @@ test("a web, plugin or worker caller is refused not_found by the handler, before
 test("once the routing is no longer active every method answers not_found, and open spawns nothing", async () => {
   const r = serviceRig();
   let active = true;
-  const handlers = createTerminalsHandlers(r.deps, { active: () => active });
+  const handlers = createTerminalsHandlers(r.deps, { active: () => active }, B);
   const p = call(handlers.open, r.context(), { workspaceId: "ws1", cols: 80, rows: 24 });
   for (let i = 0; i < 1000 && r.port.spawns.length === 0; i++) await new Promise((res) => setImmediate(res));
   const h = new FakeHandle();
