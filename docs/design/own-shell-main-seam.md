@@ -199,6 +199,8 @@ Both run the sender check first: a bad sender gets nothing, and a good sender ge
 
 **Slice 3.2 and OS-3p must also prove**, from the OS-3h review: a real shell survives a confirmed hand-over and ends on a replacement; a SIGKILL teardown ends the shell's process group; a hand-over retry during a live terminal behaves as §3a says; and the hand-over state, the `handover_failed` and `pty_unavailable` end states included, is shown to the renderer.
 
+**Slice 3.2 and OS-3p must also prove**, from the OS-3h review: a real shell survives a confirmed hand-over and ends on a replacement; a SIGKILL teardown ends the shell's process group; a hand-over retry during a live terminal behaves as §3a says; and the hand-over state, the `handover_failed` and `pty_unavailable` end states included, is shown to the renderer.
+
 **Slice 3.2 must prove**, from the slice 3.1 reviews:
 - a real tier-4 call from a renderer reaches `native.confirm`, with the dialog rules on every OS, in a test a false trust answer cannot pass;
 - `axis:connect` checks the sender before it parses, with `window.gone` and the per-window pruning;
