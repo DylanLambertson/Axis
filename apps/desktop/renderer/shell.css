@@ -105,8 +105,13 @@ ul { padding: 0; list-style: none; }
 
 .axis-body { flex: 1; display: flex; min-height: 0; }
 
+/* The rail is 72px at its 11px labels and grows with enlarged text (WCAG 1.4.4), up to a share of the window; past that,
+   or with spaced text (1.4.12), a label wraps, so the rail never scrolls sideways. */
 .axis-rail {
-  width: 72px;
+  font-size: var(--axis-text-xs);
+  width: calc(72em / 11);
+  min-width: 72px;
+  max-width: min(30vw, 160px);
   flex: none;
   padding: var(--axis-space-2) 6px;
   background: var(--axis-surface);
@@ -125,6 +130,9 @@ ul { padding: 0; list-style: none; }
   color: var(--axis-text-secondary);
   font-size: var(--axis-text-xs);
   line-height: 1.2;
+  text-align: center;
+  min-width: 0;
+  overflow-wrap: anywhere;
   transition: background-color var(--axis-dur-fast) var(--axis-ease-out);
 }
 .axis-rail__item:hover { background: var(--axis-hover); color: var(--axis-text); }
@@ -133,12 +141,14 @@ ul { padding: 0; list-style: none; }
 .axis-rail__icon { font-size: 15px; line-height: 18px; }
 
 /* Names and values the shell did not write (project, branch and file names, decision fields) may be one long word: they
-   wrap anywhere. Only code and diffs (.axis-diff) scroll sideways, inside their own box. */
+   wrap anywhere. Only code and diffs (.axis-diff) scroll sideways, inside their own box, at 320 CSS px and with enlarged
+   or spaced text alike (the frame smoke test measures all three). */
 .axis-main { flex: 1; min-width: 0; overflow: auto; padding: var(--axis-space-4) var(--axis-space-6); display: flex; flex-direction: column; gap: var(--axis-space-3); overflow-wrap: anywhere; }
 .axis-main > * { min-width: 0; max-width: 100%; }
 .axis-main__title { font-size: var(--axis-text-xl); line-height: 24px; font-weight: 600; letter-spacing: -0.01em; }
 
-/* Controls */
+/* Controls: a label and its keycaps stay on one line while they fit and wrap when they do not (320 CSS px, enlarged or
+   spaced text); the accessible name is the same either way. */
 .axis-btn {
   min-height: var(--axis-control);
   padding: 0 var(--axis-space-3);
@@ -146,8 +156,12 @@ ul { padding: 0; list-style: none; }
   font-weight: 500;
   display: inline-flex;
   align-items: center;
-  gap: var(--axis-space-2);
-  white-space: nowrap;
+  flex-wrap: wrap;
+  gap: 2px var(--axis-space-2);
+  max-width: 100%;
+  min-width: 0;
+  text-align: start;
+  overflow-wrap: anywhere;
   transition: background-color var(--axis-dur-fast) var(--axis-ease-out);
 }
 .axis-btn--primary { background: var(--axis-accent); color: var(--axis-on-accent); }
@@ -156,10 +170,10 @@ ul { padding: 0; list-style: none; }
 .axis-btn--secondary:hover:not(:disabled) { background: var(--axis-hover); }
 .axis-btn:disabled { background: var(--axis-hover); color: var(--axis-text-disabled); border: 1px solid var(--axis-border); }
 
-.axis-keycaps { display: inline-flex; gap: 2px; }
+.axis-keycaps { display: inline-flex; flex-wrap: wrap; gap: 2px; max-width: 100%; }
 .axis-kbd { font: var(--axis-text-xs) / 17px var(--axis-font-mono); border: 1px solid currentColor; border-radius: var(--axis-radius-xs); padding: 0 5px; }
 
-.axis-tag { font-size: var(--axis-text-sm); line-height: 18px; padding: 0 6px; border-radius: var(--axis-radius-xs); border: 1px solid var(--axis-control-border); color: var(--axis-text-secondary); white-space: nowrap; }
+.axis-tag { font-size: var(--axis-text-sm); line-height: 18px; padding: 0 6px; border-radius: var(--axis-radius-xs); border: 1px solid var(--axis-control-border); color: var(--axis-text-secondary); overflow-wrap: anywhere; }
 .axis-tag--warn { border-color: var(--axis-warn); color: var(--axis-warn); background: var(--axis-warn-soft); }
 
 /* Status glyphs: one shape per state, never the only cue */

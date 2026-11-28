@@ -46,10 +46,10 @@ async function result() {
   }
 }
 
-test("SF1: the palette ignores composing, repeated and modified Enter, and an input-method Escape; a plain Enter runs", async () => {
+test("SF1, review 2 F1: the palette ignores composing (flag, keyCode 229, an open composition), repeated and modified Enter, and an input-method Escape; a plain Enter runs once the composition ends", async () => {
   const p = (await result()).palette;
   assert.deepEqual([p.opened.dialog, p.opened.focus], [true, "combobox"]);
-  for (const step of ["composingEnter", "processKey", "composingEscape", "repeatedEnter", "ctrlEnter"]) {
+  for (const step of ["composingEnter", "processKey", "composingEscape", "repeatedEnter", "ctrlEnter", "imeCodeEnter", "openCompositionEnter", "openCompositionEscape"]) {
     assert.deepEqual({ dialog: p[step].dialog, focus: p[step].focus, hash: p[step].hash }, { dialog: true, focus: "combobox", hash: "#/home" }, `${step}: still open, nothing ran`);
   }
   assert.deepEqual([p.emptyEnter.dialog, p.emptyEnter.empty, p.emptyEnter.focus], [true, true, "combobox"], "Enter with no match does nothing");
@@ -69,15 +69,24 @@ test("SF4: the rail keeps exactly one tab stop through roving and route changes 
   one(r.backToRoved.stops, 0, "a stop roved before leaving a page is not brought back on return");
 });
 
-test("SF2: at 320 CSS px (400% zoom) nothing scrolls sideways, in both themes, with long names and the read-only tag", async () => {
+test("SF2, review 2 F2: nothing but a diff scrolls sideways at 320 CSS px (400% zoom), with long names, the read-only tag, WCAG spacing and 200% text, in both themes", async () => {
   const all = await result();
   for (const theme of ["reflowDark", "reflowLight"]) {
-    for (const [where, m] of Object.entries(all[theme])) {
-      assert.equal(m.width, 320, `${theme} ${where}: the zoomed width`);
-      assert.ok(m.page <= m.width, `${theme} ${where}: page ${m.page} wider than ${m.width}`);
-      assert.equal(m.main, 0, `${theme} ${where}: the main region scrolls sideways`);
-      for (const k of ["commands", "activity"]) assert.ok(m[k] > 0 && m[k] <= m.width, `${theme} ${where}: ${k} ends at ${m[k]}`);
+    const r = all[theme];
+    for (const [where, m] of Object.entries(r)) {
+      const what = `${theme} ${where}`;
+      assert.equal(m.width, where.startsWith("wide") ? 1280 : 320, `${what}: the zoomed width`);
+      assert.ok(m.page <= m.width, `${what}: page ${m.page} wider than ${m.width}`);
+      assert.equal(m.main, 0, `${what}: the main region scrolls sideways`);
+      assert.equal(m.rail, 0, `${what}: the rail scrolls sideways`);
+      assert.ok(m.far <= m.width + 0.5, `${what}: ${m.farWhat} ends at ${m.far}, past ${m.width}`);
+      for (const k of ["commands", "activity"]) assert.ok(m[k] > 0 && m[k] <= m.width, `${what}: ${k} ends at ${m[k]}`);
     }
-    assert.ok(all[theme].longNameReadOnly.tag > 0 && all[theme].longNameReadOnly.tag <= 320, `${theme}: the read-only tag is on screen`);
+    assert.ok(r.longNameReadOnly.tag > 0 && r.longNameReadOnly.tag <= 320, `${theme}: the read-only tag is on screen`);
+    for (const where of ["gallerySpaced", "homeSpaced", "wideSpacedLarge"]) assert.equal(r[where].letterSpacing, `${(11 * (where.includes("Large") ? 2 : 1) * 0.12).toFixed(2).replace(/\.?0+$/, "")}px`, `${theme} ${where}: the spacing applied`);
+    for (const where of ["galleryLarge", "homeLarge", "wideLarge"]) assert.equal(r[where].fontSize, 22, `${theme} ${where}: the rail's 11px text doubled`);
+    assert.equal(r.gallery.fontSize, 11);
+    assert.equal(r.gallery.railWidth, 72, `${theme}: the rail keeps its 72px at normal text`);
+    assert.ok(r.wideLarge.railWidth > 72 && r.wideLarge.railWidth <= 160, `${theme}: with room, the rail widens for enlarged labels (${r.wideLarge.railWidth}px) rather than breaking them`);
   }
 });

@@ -102,7 +102,7 @@ test("the review layout: the DC-0 note, a listbox with one selected tab stop, an
 
 test("the state gallery renders every state without data and is not in the navigation", () => {
   const html = renderToStaticMarkup(<App initialHash="#/states" isMac={false} />);
-  for (const t of ["Not connected to the", "No workspaces yet", "No secure storage", "HEAD or the branch moved", "index now matches the new commit.", "index was not updated. Another git program was using the index.", "Approve once", "Terminal process exited with code 1.", "staged changes you made yourself are kept"]) {
+  for (const t of ["Not connected to the", "No workspaces yet", "No secure storage", "HEAD or the branch moved", "could safely follow the commit were updated", "index was not updated. An index.lock file was in the way", "Approve once", "Terminal process exited with code 1.", "staged changes you made yourself are kept"]) {
     assert.ok(html.includes(t), t);
   }
   assert.doesNotMatch(html, /<button[^>]*>.{0,80}State gallery/, "no rail entry");

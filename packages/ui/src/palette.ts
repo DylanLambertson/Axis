@@ -26,7 +26,10 @@ export function filterCommands<T extends PaletteItem>(items: readonly T[], query
 /** The part of a DOM `KeyboardEvent` the palette reads. */
 export interface PaletteKey {
   readonly key: string;
+  /** The event's own `isComposing`, or a composition the input saw start and not yet end (`compositionstart`). */
   readonly isComposing: boolean;
+  /** The legacy `keyCode`: 229 marks a key an input method is handling, even when `isComposing` is false. */
+  readonly keyCode: number;
   readonly repeat: boolean;
   readonly ctrlKey: boolean;
   readonly metaKey: boolean;
@@ -34,17 +37,21 @@ export interface PaletteKey {
   readonly shiftKey: boolean;
 }
 
+/** The `keyCode` Chromium gives a key an input method handles. */
+const IME_KEY_CODE = 229;
+
 /** What a key in the palette does: nothing (left to the input or the page), close, keep focus, run, swallow, move. */
 export type PaletteKeyAction = "none" | "close" | "hold" | "run" | "swallow" | "next" | "previous";
 
 /**
- * The palette's reading of a key, before it acts. A key that completes or edits input-method text (`isComposing`)
- * belongs to the input method, so nothing happens, not even Escape (Chromium's "Process" key is no palette key either). Only an unmodified Enter
- * runs, and never a repeat: a held Enter that opened the palette must not also choose. Tab (with or without Shift) keeps
- * focus in the input. Arrows move, repeats included.
+ * The palette's reading of a key, before it acts. A key that completes or edits input-method text belongs to the input
+ * method, so nothing happens, not even Escape: `isComposing` (the event's flag or a composition still open on the input),
+ * keyCode 229, and Chromium's "Process" key, which is no palette key either. Only an unmodified Enter runs, and never a
+ * repeat: a held Enter that opened the palette must not also choose. Tab (with or without Shift) keeps focus in the
+ * input. Arrows move, repeats included.
  */
 export function paletteKeyAction(event: PaletteKey): PaletteKeyAction {
-  if (event.isComposing) return "none";
+  if (event.isComposing || event.keyCode === IME_KEY_CODE) return "none";
   const modified = event.ctrlKey || event.metaKey || event.altKey || event.shiftKey;
   switch (event.key) {
     case "Tab":

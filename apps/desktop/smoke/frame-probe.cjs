@@ -1,5 +1,5 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
-// Mounted frame checks (OS-6 review SF1, SF2, SF4), run by frame.test.mjs as Electron's main script. It loads the
+// Mounted frame checks (OS-6 review SF1, SF2, SF4; review 2 F1, F2), run by frame.test.mjs as Electron's main script. It loads the
 // bundled renderer page (apps/desktop/dist/app/renderer/index.html: the product's own page and CSP, no preload, no
 // test hook in the product) in a sandboxed window, drives it with real input events and DOM-dispatched key events,
 // and prints one line `AXIS_FRAME_PROBE <json>` of what it saw, then quits. The test decides pass or fail.
@@ -63,6 +63,14 @@ async function palette(win) {
   out.repeatedEnter = await d.state();
   await d.dispatch({ key: "Enter", ctrlKey: true });
   out.ctrlEnter = await d.state();
+  await d.dispatch({ key: "Enter", keyCode: 229 });
+  out.imeCodeEnter = await d.state();
+  await d.js(`document.activeElement.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true, data: "" }))`);
+  await d.dispatch({ key: "Enter" });
+  out.openCompositionEnter = await d.state();
+  await d.dispatch({ key: "Escape" });
+  out.openCompositionEscape = await d.state();
+  await d.js(`document.activeElement.dispatchEvent(new CompositionEvent("compositionend", { bubbles: true, data: "" }))`);
   for (const c of "zzzq") await d.press(c);
   await d.press("Enter");
   out.emptyEnter = await d.state();
@@ -99,42 +107,74 @@ async function rail(win) {
   return out;
 }
 
-/** Page width at 320 CSS px (1280 device px at 400% zoom), with long unbroken names put into the frame's text. */
+/** WCAG 1.4.12's spacing (line height 1.5, paragraph spacing 2em, letter spacing 0.12em, word spacing 0.16em), as a user style sheet would set it. */
+const SPACING = `(() => {
+  const sheet = new CSSStyleSheet();
+  sheet.replaceSync("* { line-height: 1.5 !important; letter-spacing: 0.12em !important; word-spacing: 0.16em !important; } p { margin-bottom: 2em !important; }");
+  document.adoptedStyleSheets = [...document.adoptedStyleSheets, sheet];
+})()`;
+/** Every element's text at twice its computed size (WCAG 1.4.4, text only, as a text-zoom setting would). */
+const ENLARGE = `(() => {
+  const all = [...document.querySelectorAll("body, body *")];
+  const sizes = all.map((e) => parseFloat(getComputedStyle(e).fontSize));
+  all.forEach((e, i) => e.style.setProperty("font-size", sizes[i] * 2 + "px", "important"));
+})()`;
+/** Long names the shell did not write, in the gallery: a card title and field, a notice, a file path. */
+const LONG_GALLERY = `(() => {
+  const card = document.querySelector(".axis-decision");
+  card.querySelector("h3").textContent = "t".repeat(400);
+  card.querySelector("dd").textContent = "v".repeat(2000);
+  document.querySelector(".axis-notice p").append("n".repeat(1000));
+  document.querySelector(".axis-review__path").textContent = "src/" + "d".repeat(500) + ".ts";
+})()`;
+
+/**
+ * Sideways overflow, at 320 CSS px (1280 device px at 400% zoom) or at full width: the page, the main region and the rail,
+ * and the right edge of every box in the frame outside a diff (which scrolls in its own box) and the screen-reader-only text.
+ */
 async function reflow(win, theme) {
   const d = driver(win);
   nativeTheme.themeSource = theme;
   const measure = () =>
     d.js(`(() => {
       const main = document.querySelector(".axis-main");
+      const rail = document.querySelector(".axis-rail");
       const right = (s) => { const e = document.querySelector(s); return e ? Math.round(e.getBoundingClientRect().right) : -1; };
-      return { width: innerWidth, page: document.documentElement.scrollWidth, main: main.scrollWidth - main.clientWidth, commands: right(".axis-top__cmd"), activity: right(".axis-top__activity"), tag: right(".axis-top .axis-tag") };
+      let far = 0, farWhat = "";
+      for (const e of document.querySelectorAll(".axis-frame *")) {
+        if (e.closest(".axis-diff, .axis-sr")) continue;
+        const r = e.getBoundingClientRect();
+        if (r.width > 0 && r.right > far) { far = r.right; farWhat = e.className || e.tagName; }
+      }
+      const kbd = document.querySelector(".axis-kbd");
+      return { width: innerWidth, page: document.documentElement.scrollWidth, main: main.scrollWidth - main.clientWidth, rail: rail.scrollWidth - rail.clientWidth, railWidth: Math.round(rail.getBoundingClientRect().width),
+        far: Math.round(far * 100) / 100, farWhat, commands: right(".axis-top__cmd"), activity: right(".axis-top__activity"), tag: right(".axis-top .axis-tag"),
+        letterSpacing: kbd ? getComputedStyle(kbd).letterSpacing : "", fontSize: parseFloat(getComputedStyle(document.querySelector(".axis-rail__item")).fontSize) };
     })()`);
+  const at = async (hash, zoom, ...steps) => {
+    await open(win, hash);
+    win.webContents.setZoomFactor(zoom);
+    for (const step of steps) await d.js(step);
+    await settle();
+    return measure();
+  };
   const out = {};
-  await open(win, "/home");
-  win.webContents.setZoomFactor(4);
-  await settle();
-  out.home = await measure();
+  out.home = await at("/home", 4);
   // A long project name in the breadcrumb and the read-only tag (shown when secure storage is missing).
-  await d.js(`(() => {
+  out.longNameReadOnly = await at("/home", 4, `(() => {
     document.querySelector(".axis-top__crumb [aria-current]").textContent = "p".repeat(300);
     const tag = document.createElement("span");
     tag.className = "axis-tag axis-tag--warn";
     tag.textContent = "Read only";
     document.querySelector(".axis-top__activity").before(tag);
   })()`);
-  await settle();
-  out.longNameReadOnly = await measure();
-  await open(win, "/states");
-  win.webContents.setZoomFactor(4);
-  await d.js(`(() => {
-    const card = document.querySelector(".axis-decision");
-    card.querySelector("h3").textContent = "t".repeat(400);
-    card.querySelector("dd").textContent = "v".repeat(2000);
-    document.querySelector(".axis-notice p").append("n".repeat(1000));
-    document.querySelector(".axis-review__path").textContent = "src/" + "d".repeat(500) + ".ts";
-  })()`);
-  await settle();
-  out.gallery = await measure();
+  out.gallery = await at("/states", 4, LONG_GALLERY);
+  out.gallerySpaced = await at("/states", 4, LONG_GALLERY, SPACING);
+  out.homeSpaced = await at("/home", 4, SPACING);
+  out.galleryLarge = await at("/states", 4, LONG_GALLERY, ENLARGE);
+  out.homeLarge = await at("/home", 4, ENLARGE);
+  out.wideLarge = await at("/states", 1, ENLARGE);
+  out.wideSpacedLarge = await at("/states", 1, SPACING, ENLARGE);
   win.webContents.setZoomFactor(1);
   return out;
 }

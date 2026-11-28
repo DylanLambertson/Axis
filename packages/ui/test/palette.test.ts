@@ -41,12 +41,16 @@ test("the active option: arrows wrap, nothing selected starts at an end, other k
   assert.equal(paletteMove(0, 0, "ArrowDown"), undefined);
 });
 
-const press = (key: string, extra: Partial<PaletteKey> = {}): PaletteKey => ({ key, isComposing: false, repeat: false, ctrlKey: false, metaKey: false, altKey: false, shiftKey: false, ...extra });
+const press = (key: string, extra: Partial<PaletteKey> = {}): PaletteKey => ({ key, isComposing: false, keyCode: 0, repeat: false, ctrlKey: false, metaKey: false, altKey: false, shiftKey: false, ...extra });
 
 test("palette keys: only an unmodified, first Enter runs; input-method keys do nothing, not even Escape (review SF1)", () => {
   assert.equal(paletteKeyAction(press("Enter")), "run");
   assert.equal(paletteKeyAction(press("Enter", { isComposing: true })), "none", "Enter that completes IME text");
   assert.equal(paletteKeyAction(press("Process")), "none", "Chromium's composition key");
+  for (const key of ["Enter", "Escape", "ArrowDown", "ArrowUp", "Tab"]) {
+    assert.equal(paletteKeyAction(press(key, { keyCode: 229 })), "none", `${key} with keyCode 229 and isComposing false (review 2 F1)`);
+    assert.notEqual(paletteKeyAction(press(key, { keyCode: 228 })), "none", `${key}: only 229 is the input-method code`);
+  }
   assert.equal(paletteKeyAction(press("Escape", { isComposing: true })), "none");
   assert.equal(paletteKeyAction(press("ArrowDown", { isComposing: true })), "none");
   assert.equal(paletteKeyAction(press("Enter", { repeat: true })), "swallow", "a held Enter never chooses");

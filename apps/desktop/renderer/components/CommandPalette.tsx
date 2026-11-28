@@ -2,7 +2,8 @@
 // The command palette (OS-6): a modal dialog over a scrim with one combobox input and a listbox of the registry's
 // commands, each with its keycaps. Focus stays in the input (the active option is `aria-activedescendant`); an
 // unmodified, non-repeated Enter runs the active command, Escape or a click on the scrim closes it, and the app returns
-// focus to where it was. Keys that belong to an input method (`paletteKeyAction`) are never read as palette keys.
+// focus to where it was. Keys that belong to an input method (`paletteKeyAction`: the event's flag, keyCode 229, or a
+// composition the input saw start and not yet end) are never read as palette keys.
 
 import { useEffect, useId, useRef, useState, type KeyboardEvent } from "react";
 import { chordKeys, filterCommands, paletteKeyAction, paletteMove, type Command, type Platform } from "@axis/ui";
@@ -21,6 +22,8 @@ export function CommandPalette(props: CommandPaletteProps) {
   const [query, setQuery] = useState("");
   const [active, setActive] = useState(0);
   const input = useRef<HTMLInputElement>(null);
+  /** An input-method composition on the input, from compositionstart to compositionend: its keys are not palette keys. */
+  const composing = useRef(false);
   const id = useId();
   const shown = filterCommands(props.commands, query);
   const at = shown.length === 0 ? -1 : Math.min(active, shown.length - 1);
@@ -35,7 +38,7 @@ export function CommandPalette(props: CommandPaletteProps) {
 
   function onKeyDown(event: KeyboardEvent<HTMLDivElement>) {
     const native = event.nativeEvent;
-    const action = paletteKeyAction({ key: event.key, isComposing: native.isComposing, repeat: event.repeat, ctrlKey: event.ctrlKey, metaKey: event.metaKey, altKey: event.altKey, shiftKey: event.shiftKey });
+    const action = paletteKeyAction({ key: event.key, isComposing: native.isComposing || composing.current, keyCode: native.keyCode, repeat: event.repeat, ctrlKey: event.ctrlKey, metaKey: event.metaKey, altKey: event.altKey, shiftKey: event.shiftKey });
     switch (action) {
       case "none":
         return;
@@ -76,6 +79,8 @@ export function CommandPalette(props: CommandPaletteProps) {
           placeholder="Type a command"
           autoComplete="off"
           spellCheck={false}
+          onCompositionStart={() => (composing.current = true)}
+          onCompositionEnd={() => (composing.current = false)}
           value={query}
           onChange={(event) => {
             setQuery(event.target.value);
