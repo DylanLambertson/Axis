@@ -281,3 +281,14 @@ test("commit (DC-0 review 2 S2): the reply and the audit say what the index refr
     rmSync(lock, { force: true });
   }
 });
+
+test("commit (DC-0 review 3 nit 2): an audit write that throws after the commit landed still answers the commit and its refresh outcome", { skip: SKIP ?? false }, async (t) => {
+  const { r, c } = await setup(t, { auditAppend: () => { throw new Error("the audit log is down"); } });
+  const req = await review(r, c);
+  const res = await commit(c, r, req);
+  assert.equal(res.ok, true, JSON.stringify(res.error));
+  const { commit: sha, indexRefresh } = res.result as { commit: string; indexRefresh?: unknown };
+  assert.equal(r.head(), sha, "the commit landed");
+  assert.deepEqual(indexRefresh, { refreshed: 1 });
+  assert.equal(r.gate.bookkeeping.length, 1, "the failed write is reported as bookkeeping, not as a failed commit");
+});

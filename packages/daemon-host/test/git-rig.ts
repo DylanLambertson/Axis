@@ -77,6 +77,8 @@ export interface GitRigOptions {
   ptyRunner?: "node" | "none" | ((env: { home: string; gitPath: string; path: string }) => GitRunner);
   /** The drift check of the git port (default: no drift). */
   assertNoDrift?: () => Promise<void>;
+  /** The git handlers' audit append (default: kept in `auditRows`). */
+  auditAppend?: (event: { action: string; payload?: unknown }) => void;
 }
 
 /** A real repository on `axis/feat`, a bare remote named `origin`, the real daemon, gate, registrar and git handlers. */
@@ -229,7 +231,7 @@ export async function gitRig(options: GitRigOptions = {}) {
     bases: options.bases ?? new PushedBases(),
     onInternalError: (e) => void gate.internal.push(e),
     onBookkeepingError: (e) => void gate.bookkeeping.push(e),
-    audit: { append: (e) => void auditRows.push(e) },
+    audit: { append: (e) => (options.auditAppend ?? ((x) => void auditRows.push(x)))(e) },
   };
   registerGitHandlers(createHandlerRegistrar(daemon, guard), handlerDeps);
 
