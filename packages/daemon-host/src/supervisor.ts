@@ -88,7 +88,7 @@ export const DEFAULT_RESTART_POLICY: RestartPolicy = Object.freeze({
 });
 
 /** Closed event names: the log of the supervisor never carries text from the child. */
-export type SupervisorEvent = "spawned" | "ready" | "degraded" | "exited" | "restart_scheduled" | "failed" | "stopping" | "stopped" | "invalid_message" | "unanswered_request" | "fatal_reported";
+export type SupervisorEvent = "spawned" | "ready" | "degraded" | "exited" | "restart_scheduled" | "failed" | "stopping" | "stopped" | "invalid_message" | "unanswered_request" | "fatal_reported" | "start_held";
 
 export interface DaemonSupervisorOptions {
   /** Starts the FIXED entry (never a path from a renderer). */
@@ -106,6 +106,13 @@ export interface DaemonSupervisorOptions {
   readonly onStateChange?: (state: SupervisorState, reason: FailureReason | undefined) => void;
   /** HMAC-SHA256 for signing connects (the seam passes `crypto.createHmac`). Absent: `connect` always refuses. */
   readonly hmacSha256?: HmacSha256;
+  /** The daemon's answers in the pty control hand-over (OS-3h): routed here, never treated as requests. */
+  readonly onHandover?: (message: { readonly type: "pty-control-adopted" | "pty-control-closed"; readonly generation: number }) => void;
+  /**
+   * The start gate (OS-3h): false while the pty process is not running. A spawn (first or restart) waits in `backoff` until
+   * `resume()`, so the daemon never starts without a pty process to hand it a control port.
+   */
+  readonly mayStart?: () => boolean;
   /** Wall-clock milliseconds for `issuedAt` (the daemon judges freshness on its wall clock). Default `Date.now`. */
   readonly wallNow?: () => number;
 }
@@ -167,6 +174,8 @@ export class DaemonSupervisor {
   readonly #policy: RestartPolicy;
   #state: SupervisorState = "idle";
   #failure: FailureReason | undefined;
+  #fatalReason: string | undefined;
+  #held = false;
   #child: DaemonChild | undefined;
   #generation = 0;
   #offs: Array<() => void> = [];
@@ -188,6 +197,25 @@ export class DaemonSupervisor {
 
   state(): SupervisorState {
     return this.#state;
+  }
+
+  /**
+   * A start held by `mayStart` goes ahead now (OS-3h: the pty process is running again). No effect otherwise.
+   */
+  resume(): void {
+    if (this.#held && this.#state === "backoff") this.#spawn();
+  }
+
+  /**
+   * A daemon that ended `pty_required` (exit 78 after its wait for a control port) is started again: the pty process was down,
+   * which is no configuration failure. Any other failure stays. True when it restarted. The caller does this once per pty child.
+   */
+  restartAfterPtyRequired(): boolean {
+    if (this.#state !== "failed" || this.#failure !== "bad_config" || this.#fatalReason !== "pty_required") return false;
+    this.#failure = undefined;
+    this.#crashes = [];
+    this.#spawn();
+    return true;
   }
 
   failure(): FailureReason | undefined {
@@ -291,6 +319,14 @@ export class DaemonSupervisor {
   }
 
   #spawn(): void {
+    if (this.#o.mayStart !== undefined && !this.#o.mayStart()) {
+      this.#held = true;
+      this.#set("backoff");
+      this.#emit("start_held", {});
+      return;
+    }
+    this.#held = false;
+    this.#fatalReason = undefined;
     const generation = ++this.#generation;
     this.#sentReady = false;
     this.#readyAt = undefined;
@@ -359,7 +395,16 @@ export class DaemonSupervisor {
         this.#emit(m.degraded === undefined ? "ready" : "degraded", m.degraded === undefined ? {} : { reason: m.degraded });
         return;
       case "fatal":
+        this.#fatalReason = m.reason ?? m.code;
         this.#emit("fatal_reported", { reason: m.reason ?? m.code });
+        return;
+      case "pty-control-adopted":
+      case "pty-control-closed":
+        try {
+          this.#o.onHandover?.(m);
+        } catch {
+          // an observer never changes the state machine
+        }
         return;
       case "log":
         return;

@@ -17,6 +17,7 @@ import type { StoragePort } from "./ports/storage.js";
 import { createNodeStorage } from "./storage/node-storage.js";
 import { adaptParentPort, type ParentPortLike } from "./transport/electron-parent-port.js";
 import { ChannelMux } from "./transport/mux.js";
+import { ptyControlGenerationSchema } from "./control/messages.js";
 
 /**
  * The utility process entry logic (ticket X1, design `docs/design/daemon-host-entry.md`). The forked file (the shell's, OS-3;
@@ -110,6 +111,8 @@ export interface DaemonEntryHandle {
 }
 
 export const DEFAULT_INIT_TIMEOUT_MS = 10_000;
+/** A pty control generation main has not confirmed within this time is dropped (OS-3h, own-shell-main-seam.md §3a). */
+export const PTY_CONTROL_EXPIRY_MS = 10_000;
 const DEBUG_FLAG = /^--(?:inspect|debug|remote-debugging)/i;
 const REASON = /^[a-z][a-z0-9_]{0,63}$/;
 /** Opaque handles under Code OSS's typings (ADR 0005), as in compose.ts. Unref'd: neither timer may keep a Node process alive on its own. */
@@ -200,6 +203,18 @@ export function runDaemonEntry(deps: DaemonEntryDeps): DaemonEntryHandle {
   const control = adaptParentPort(deps.parentPort);
   const mux = new ChannelMux(control.channel);
   const client = new ControlClient({ mux });
+  client.onPtyControl((m) => {
+    if (m.type === "pty-control-confirmed") {
+      if (held?.generation === m.generation && !held.confirmed) {
+        held.confirmed = true;
+        if (held.expiry !== undefined) timers.clear(held.expiry);
+        held.expiry = undefined;
+      }
+      return;
+    }
+    if (held?.generation === m.generation) retire();
+    sendNote("pty-control-closed", m.generation);
+  });
   let initTimer: unknown;
   const timers: EntryTimers = deps.timers ?? realTimers;
   let ended = false;
@@ -214,13 +229,44 @@ export function runDaemonEntry(deps: DaemonEntryDeps): DaemonEntryHandle {
       // already closed
     }
   };
+  // The acknowledged hand-over (OS-3h, docs/design/own-shell-main-seam.md §3a): the generation held, whether main confirmed it,
+  // and its expiry. A legacy `pty-control` without a generation (the Code OSS shell) is adopted unacknowledged.
+  let held: { readonly generation: number; confirmed: boolean; expiry: unknown } | undefined;
+  let highestGeneration = 0;
+  const sendNote = (type: "pty-control-adopted" | "pty-control-closed", generation: number): void => {
+    try {
+      client.send({ type, generation });
+    } catch {
+      // the control channel is closed: main is gone
+    }
+  };
+  const retire = (): void => {
+    if (held?.expiry !== undefined) timers.clear(held.expiry);
+    held = undefined;
+    slot?.detach();
+  };
   control.onPort((data, port) => {
     const kind = typeof data === "object" && data !== null ? (data as { type?: unknown }).type : undefined;
     if (kind === "pty-control") {
-      const exact = Object.keys(data as object).length === 1;
-      if (slot === undefined || ended || !exact || typeof (port as { removeListener?: unknown }).removeListener !== "function") return closePort(port);
+      const keys = Object.keys(data as object);
+      const generation = (data as { generation?: unknown }).generation;
+      const legacy = keys.length === 1;
+      const numbered = keys.length === 2 && ptyControlGenerationSchema.safeParse(generation).success && (generation as number) > highestGeneration;
+      if (slot === undefined || ended || !(legacy || numbered) || typeof (port as { removeListener?: unknown }).removeListener !== "function") return closePort(port);
+      if (held?.expiry !== undefined) timers.clear(held.expiry);
+      held = undefined;
       slot.attach(port as unknown as ControlPortLike);
       compose();
+      if (numbered) {
+        const g = generation as number;
+        highestGeneration = g;
+        const mine: { generation: number; confirmed: boolean; expiry: unknown } = { generation: g, confirmed: false, expiry: undefined };
+        held = mine;
+        mine.expiry = timers.set(() => {
+          if (held === mine && !mine.confirmed) retire();
+        }, PTY_CONTROL_EXPIRY_MS);
+        sendNote("pty-control-adopted", g);
+      }
       return;
     }
     if (connectHandler === undefined) return closePort(port);

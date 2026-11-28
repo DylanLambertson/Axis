@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Dylan Lambertson. All rights reserved.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { createPtyService } from "../src/index.js";
+import { createPtyProcessPort, createPtyService } from "../src/index.js";
 import { channelPair, FakeChild, settle } from "../testing/helpers.js";
 import { rig, SPEC } from "../testing/rig.js";
 
@@ -194,11 +194,15 @@ test("PTY-7: the daemon control channel never receives terminal output, only sta
   assert.deepEqual(r.pair.sent.b.at(-1), { t: "exit", term, exitCode: 3, signal: null });
 });
 
-test("PTY-7: a second control channel is refused while one is serving", async () => {
+test("PTY-7 (OS-3h): a newer control channel replaces the one serving; the old one serves nothing more", async () => {
+  // Only main can hand this process a control port, so a newer one is main's own replacement (latest wins); the old one ends.
   const r = rig();
   const other = channelPair();
   r.service.serveControl(other.b);
-  other.a.send({ t: "spawn", req: "z", runId: "x", argv: ["/bin/x"], cwd: "/w", env: {}, cols: 80, rows: 24 });
-  await settle();
-  assert.equal(r.requests.length, 0);
+  const newer = createPtyProcessPort({ channel: other.a, ops: r.procs });
+  const h = await newer.spawn(SPEC);
+  assert.ok(h.terminalId, "the newer channel serves");
+  assert.equal(r.requests.length, 1);
+  await assert.rejects(r.port.spawn(SPEC), "the retired channel fails closed");
+  assert.equal(r.requests.length, 1, "and starts nothing");
 });

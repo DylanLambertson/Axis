@@ -89,15 +89,24 @@ test("the daemon and the pty process run from a read-only cwd, survive SIGUSR1, 
     assert.equal(await portOpen(9229), false, "no inspector on 127.0.0.1:9229");
     assert.doesNotMatch(out, /Debugger listening/);
     assert.doesNotMatch(out, /EACCES|EROFS|read-only/i, "no write into the read-only cwd");
+    // OS-3h: the first hand-over completed only once both children acknowledged it.
+    assert.match(out, /axis pty: handed_over generation=1/, "generation 1 acknowledged by both");
+    // A daemon killed while running is restarted, and the next generation is acknowledged by both (the pty child started first).
+    const daemonPid = Math.max(...kids);
+    process.kill(daemonPid, "SIGKILL");
+    const restartBy = Date.now() + 30_000;
+    while (!/axis pty: handed_over generation=2/.test(out) && Date.now() < restartBy) await wait(100);
+    assert.match(out, /axis pty: handed_over generation=2/, `a fresh hand-over after the daemon's restart\n${out}`);
+    assert.doesNotMatch(out, /handover_failed/);
     // Quit: SIGTERM to main runs before-quit; the daemon stops first, then the pty process.
     child.kill("SIGTERM");
     const { code } = await Promise.race([exited, wait(40_000).then(() => ({ code: "timeout" }))]);
     assert.notEqual(code, "timeout", `main quit within the bound\n${out}`);
-    const stopping = out.indexOf("axis daemon: stopping");
-    const daemonGone = out.indexOf("axis daemon: exited");
+    const stopping = out.lastIndexOf("axis daemon: stopping");
+    const daemonGone = out.indexOf("axis daemon: exited", out.lastIndexOf("axis daemon: stopping"));
     assert.ok(stopping !== -1, `the daemon was stopped gracefully\n${out}`);
     assert.ok(daemonGone === -1 || daemonGone > stopping, "the daemon stopped after the stop began");
-    for (const pid of kids) assert.equal(alive(pid), false, `child ${pid} gone after quit`);
+    for (const pid of children(child.pid).concat(kids)) assert.equal(alive(pid), false, `child ${pid} gone after quit`);
   } finally {
     if (child.exitCode === null) child.kill("SIGKILL");
     setWritable(app);

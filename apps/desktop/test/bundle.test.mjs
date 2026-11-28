@@ -61,6 +61,7 @@ const MAIN_DAEMON_HOST_INPUTS = [
   "src/main/attest-sign.js",
   "src/main/index.js",
   "src/main/native-queue.js",
+  "src/main/pty-handover-acked.js",
   "src/main/pty-handover.js",
   "src/main/pty-launch.js",
   "src/main/pty-supervisor.js",

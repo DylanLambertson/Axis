@@ -228,17 +228,17 @@ test("every malformed hand-over is dropped and every port in it closed", () => {
   h.entry.dispose();
 });
 
-test("a second control port is closed by the service and the first keeps working", { skip: posix }, async () => {
+test("a newer control port replaces the old one (OS-3h): the old peer's calls fail closed, the newer one serves", { skip: posix }, async () => {
   const h = harness();
   const { host, data } = await wire(h);
   try {
-    const intruder = nodePair();
-    let closed = false;
-    intruder.a.on("close", () => void (closed = true));
-    h.send({ type: "pty-control" }, [electronShaped(intruder.b)]);
-    await until(() => closed);
-    const t = await host.spawn({ ...SPEC, argv: ["/bin/sh", "-c", "sleep 30"], cwd: "/", env: { PATH: "/usr/bin:/bin" } });
+    const replacement = nodePair();
+    h.send({ type: "pty-control" }, [electronShaped(replacement.b)]);
+    const newer = createPtyProcessPort({ channel: adaptMessagePort(nodeShaped(replacement.a), { shape: "node" }) });
+    await assert.rejects(host.spawn({ ...SPEC, argv: ["/bin/sh", "-c", "sleep 30"], cwd: "/", env: { PATH: "/usr/bin:/bin" } }), "the retired channel fails closed");
+    const t = await newer.spawn({ ...SPEC, argv: ["/bin/sh", "-c", "sleep 30"], cwd: "/", env: { PATH: "/usr/bin:/bin" } });
     assert.equal(typeof t.terminalId, "string");
+    newer.dispose();
   } finally {
     h.entry.dispose();
     host.dispose();

@@ -384,3 +384,44 @@ test("windowGone: only while running, only a code window id, and only window.gon
   assert.equal(t.sup.windowGone({ toString: () => "w4" } as never), false, "a string only");
   assert.equal(t.last().sent.length, before + 1, "nothing else was posted");
 });
+
+// OS-3h (own-shell-main-seam.md §3a). Mutants: V1 an acknowledgement treated as a request or dropped; V2 a spawn while the start
+// gate is closed, or a held start never resumed; V3 any bad_config restarted as if it were pty_required, or pty_required not.
+test("OS-3h: the hand-over's answers go to onHandover, never to onRequest", () => {
+  const got: unknown[] = [];
+  const requests: unknown[] = [];
+  const t = rig({ onHandover: (m) => void got.push(m), onRequest: (m) => void requests.push(m) });
+  t.sup.start();
+  t.last().say({ type: "pty-control-adopted", generation: 3 });
+  t.last().say({ type: "pty-control-closed", generation: 2 });
+  t.last().say({ type: "pty-control-adopted", generation: 0 });
+  assert.deepEqual(got, [{ type: "pty-control-adopted", generation: 3 }, { type: "pty-control-closed", generation: 2 }], "V1");
+  assert.deepEqual(requests, [], "V1");
+});
+
+test("OS-3h: the start gate holds a spawn until resume()", () => {
+  let open = false;
+  const t = rig({ mayStart: () => open });
+  t.sup.start();
+  assert.equal(t.children.length, 0, "V2: held");
+  assert.equal(t.sup.state(), "backoff");
+  t.sup.resume();
+  assert.equal(t.children.length, 0, "V2: still closed");
+  open = true;
+  t.sup.resume();
+  assert.equal(t.children.length, 1, "V2: resumed");
+});
+
+test("OS-3h: only a daemon that ended pty_required is restarted after a pty start", () => {
+  const t = rig();
+  t.sup.start();
+  t.last().say({ type: "fatal", code: "E_INVALID_ARGUMENT", reason: "pty_required" });
+  t.last().exit(SUPERVISED_EXIT.BAD_CONFIG);
+  assert.equal(t.sup.state(), "failed");
+  assert.equal(t.sup.restartAfterPtyRequired(), true, "V3");
+  assert.equal(t.children.length, 2);
+  t.last().say({ type: "fatal", code: "E_INVALID_ARGUMENT", reason: "bad_data_dir" });
+  t.last().exit(SUPERVISED_EXIT.BAD_CONFIG);
+  assert.equal(t.sup.restartAfterPtyRequired(), false, "V3: another bad_config stays failed");
+  assert.equal(t.children.length, 2);
+});

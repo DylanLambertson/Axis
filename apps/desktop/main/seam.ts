@@ -12,7 +12,7 @@
 //   answers false. Tier 4 is refused until slice 3.2.
 import { dirname, isAbsolute, join } from "node:path";
 import {
-  ControlHandover,
+  AckedHandover,
   DEFAULT_PTY_POLICY,
   DEFAULT_RESTART_POLICY,
   DaemonSupervisor,
@@ -144,11 +144,38 @@ export function startMainSeam<P>(deps: SeamDeps<P>): MainSeam | undefined {
   if (!isAbsolute(deps.bundleDir)) throw new Error("the bundle directory must be absolute");
   const { config, log, timers } = deps;
 
-  const handover = new ControlHandover<P>({
+  // The acknowledged control hand-over (OS-3h, own-shell-main-seam.md §3a). `pids` are the live children's, for a teardown by
+  // exact pid; `ptyHeld` holds the pty process down after a failed hand-over until the next daemon start.
+  const pids: { pty: number | undefined; daemon: number | undefined } = { pty: undefined, daemon: undefined };
+  let ptyHeld = false;
+  let ptyAlive = false;
+  let ptyChildren = 0;
+  let restartedForPty = 0;
+  const handover = new AckedHandover<P>({
     createChannel: deps.createChannel,
     closePort: deps.closePort,
-    onEvent: (event, fields) => (event === "post_failed" ? log.warn(`axis pty: ${event} side=${fields.side}`) : log.trace(`axis pty: ${event}`)),
+    timers,
+    teardown: (side) => {
+      const pid = pids[side];
+      if (pid !== undefined) deps.killPid(pid, "SIGKILL");
+    },
+    onFailed: () => {
+      // Tear the pty process down and hold it until the next daemon start: the daemon stays up, every pty-backed call fails closed.
+      ptyHeld = true;
+      if (pids.pty !== undefined) deps.killPid(pids.pty, "SIGKILL");
+    },
+    onEvent: (event, fields) => {
+      const line = `axis pty: ${event}${fields.generation === undefined ? "" : ` generation=${fields.generation}`}${fields.side === undefined ? "" : ` side=${fields.side}`}`;
+      if (event === "handover_failed" || event === "teardown" || event === "post_failed") log.warn(line);
+      else log.trace(line);
+    },
   });
+  const note = (side: "pty" | "daemon", message: unknown): void => {
+    const m = message as { type?: unknown; generation?: unknown } | null;
+    if (typeof m !== "object" || m === null || Object.keys(m).length !== 2 || typeof m.generation !== "number" || !Number.isSafeInteger(m.generation)) return;
+    if (m.type === "pty-control-adopted") handover.adopted(side, m.generation);
+    else if (m.type === "pty-control-closed") handover.closed(side, m.generation);
+  };
 
   // The pty process (pty-exec-node.md §6.4). Its own environment comes from createPtySpawn (the daemon's allow-list plus
   // SSH_AUTH_SOCK and the handed-over program paths); a program found inside the data root is never chosen.
@@ -165,7 +192,7 @@ export function startMainSeam<P>(deps: SeamDeps<P>): MainSeam | undefined {
       programs,
       excludeDirs,
       scratchRoot,
-      fork: (childEnv) => forkPtyChild(deps, childEnv),
+      fork: (childEnv) => forkPtyChild(deps, childEnv, (pid) => (pids.pty = pid), (m) => note("pty", m)),
       onEvent: (event) => log.warn(`axis pty: ${event}`),
     }),
     timers,
@@ -176,7 +203,19 @@ export function startMainSeam<P>(deps: SeamDeps<P>): MainSeam | undefined {
       else if (event === "restart_scheduled") log.warn(line);
       else log.trace(line);
     },
-    onChild: (child, alive) => handover.pty(child as PtyForkedChild & P, alive),
+    // Held down after a failed hand-over until the next daemon start (`resume()` below).
+    mayStart: () => !ptyHeld,
+    onChild: (child, alive) => {
+      ptyAlive = alive;
+      if (!alive) pids.pty = undefined;
+      handover.pty(child as PtyForkedChild & P, alive);
+      if (!alive) return;
+      ptyChildren++;
+      // The daemon never starts without a pty process: a held start goes ahead now, and a daemon that ended pty_required
+      // (its wait for a control port ran out while this process was down) is started again, once per pty child.
+      supervisor.resume();
+      if (restartedForPty !== ptyChildren && supervisor.restartAfterPtyRequired()) restartedForPty = ptyChildren;
+    },
   });
 
   const answers = createMainAnswers({
@@ -202,8 +241,16 @@ export function startMainSeam<P>(deps: SeamDeps<P>): MainSeam | undefined {
     now: deps.now,
     timers,
     onRequest: (message, reply) => answers.onRequest(message, reply),
+    onHandover: (message) => note("daemon", message),
+    mayStart: () => ptyAlive,
     spawn: () => {
       const child = forkFixed(deps, DAEMON_FILE, "axis-daemon", daemonEnvironment(deps.env));
+      pids.daemon = child.pid;
+      // A daemon start ends a hold on the pty process (OS-3h): the next round begins with both.
+      if (ptyHeld) {
+        ptyHeld = false;
+        queueMicrotask(() => pty.resume());
+      }
       const handle: DaemonChild = {
         // A `connect` carries exactly one port (slice 3.2); every other message carries none.
         postMessage: (message, transfer) => (transfer === undefined ? child.postMessage(message) : child.postMessage(message, [...transfer])),
@@ -214,7 +261,10 @@ export function startMainSeam<P>(deps: SeamDeps<P>): MainSeam | undefined {
         onExit: (handler) => onChild(child, "exit", (code: unknown) => (typeof code === "number" ? code : null), handler),
       };
       // The control channel (pty-exec-node.md §6.3): a new one to both processes now, and none to this child after its exit.
-      child.once("exit", () => handover.daemon(handle as DaemonChild & P, false));
+      child.once("exit", () => {
+        if (pids.daemon === child.pid) pids.daemon = undefined;
+        handover.daemon(handle as DaemonChild & P, false);
+      });
       handover.daemon(handle as DaemonChild & P, true);
       return handle;
     },
@@ -257,8 +307,11 @@ export function startMainSeam<P>(deps: SeamDeps<P>): MainSeam | undefined {
 }
 
 /** The pty child: the fixed `pty.cjs`, with exactly the launch environment createPtySpawn built. */
-function forkPtyChild<P>(deps: SeamDeps<P>, env: Record<string, string>): PtyForkedChild {
+function forkPtyChild<P>(deps: SeamDeps<P>, env: Record<string, string>, onPid: (pid: number | undefined) => void, onNote: (message: unknown) => void): PtyForkedChild {
   const child = forkFixed(deps, PTY_FILE, "axis-pty", env);
+  onPid(child.pid);
+  // The pty process's answers in the hand-over (OS-3h); it sends main nothing else.
+  child.on("message", ((m: unknown) => onNote(m)) as never);
   return {
     // `pty-control` carries exactly one port; main sends the pty process nothing else.
     postMessage: (message, transfer) => (transfer === undefined ? child.postMessage(message) : child.postMessage(message, [...transfer])),

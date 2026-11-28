@@ -138,7 +138,21 @@ export const windowGoneSchema = z.strictObject({
 });
 
 /** Supervisor to host. */
+/**
+ * The acknowledged pty control hand-over (OS-3h, docs/design/own-shell-main-seam.md §3a). Main numbers each control channel it makes
+ * (a safe integer from 1, rising for main's lifetime) and sends it in the `pty-control` port message. Main to host:
+ * `pty-control-confirmed` once both ends adopted G, `pty-control-close` to retire G. Host to main: `pty-control-adopted` and
+ * `pty-control-closed`.
+ */
+export const ptyControlGenerationSchema = z.number().int().min(1).max(Number.MAX_SAFE_INTEGER);
+export const ptyControlConfirmedSchema = z.strictObject({ type: z.literal("pty-control-confirmed"), generation: ptyControlGenerationSchema });
+export const ptyControlCloseSchema = z.strictObject({ type: z.literal("pty-control-close"), generation: ptyControlGenerationSchema });
+const ptyControlAdoptedSchema = z.strictObject({ type: z.literal("pty-control-adopted"), generation: ptyControlGenerationSchema });
+const ptyControlClosedSchema = z.strictObject({ type: z.literal("pty-control-closed"), generation: ptyControlGenerationSchema });
+
 export const inboundMessageSchema = z.discriminatedUnion("type", [
+  ptyControlConfirmedSchema,
+  ptyControlCloseSchema,
   secretsResultSchema,
   initMessageSchema,
   connectMessageSchema,
@@ -238,6 +252,8 @@ const logSchema = z.strictObject({
 /** Host to supervisor. Every outbound message is parsed with this before it is sent. */
 export const outboundMessageSchema = z.union([
   readySchema,
+  ptyControlAdoptedSchema,
+  ptyControlClosedSchema,
   ...secretsRequestSchemas,
   anchorGetSchema,
   anchorPutSchema,

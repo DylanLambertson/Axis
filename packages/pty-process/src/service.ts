@@ -430,13 +430,25 @@ export function createPtyService(options: PtyServiceOptions): PtyService {
 
   return {
     serveControl(channel) {
-      if (disposed || control !== undefined) {
+      if (disposed) {
         try {
           channel.close();
         } catch {
           /* already closed */
         }
         return { dispose: () => undefined };
+      }
+      // Latest wins (OS-3h, own-shell-main-seam.md §3a): only main can hand this process a control port, so a newer one is main's
+      // own replacement. The old channel is retired first, exactly as if it had closed: every terminal, exec and scratch attempt on
+      // it ends (the daemon that owned them is gone or starts with an empty registry, so a surviving shell would have no owner).
+      const old = control;
+      if (old !== undefined) {
+        closeChannel(old);
+        try {
+          old.close();
+        } catch {
+          /* already closed */
+        }
       }
       control = channel;
       const subs = [channel.onMessage((m) => onControl(channel, m)), channel.onClose(() => closeChannel(channel))];
