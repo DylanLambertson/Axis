@@ -18,6 +18,8 @@ export interface PtyControlSlot {
   readonly port: PtyPort & PtyTerminalPort & PtyExecPort & PtyPushPort & PtyForgePort & PtyRelayPort;
   /** Takes a new control port. The previous one is disposed first: every pending spawn, exec, push and forge-list on it settles `channel_closed`. */
   attach(port: ControlPortLike): void;
+  /** Drops the current port (OS-3h: main retired its generation): pending calls settle `channel_closed`. Idempotent. */
+  detach(): void;
   /** True once a control port was attached (even if it has since closed). */
   attached(): boolean;
   dispose(): void;
@@ -82,6 +84,7 @@ export function createPtyControlSlot(options: PtyControlOptions = {}): PtyContro
       channel = adaptMessagePort(port, { shape: "electron" });
       current = createPtyProcessPort({ channel, onRelay: (m) => relayHandler?.(m), ...(options.spawnTimeoutMs === undefined ? {} : { spawnTimeoutMs: options.spawnTimeoutMs }) });
     },
+    detach: () => drop(),
     attached: () => ever,
     dispose() {
       disposed = true;

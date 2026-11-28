@@ -2,55 +2,20 @@
 import { randomBytes } from "node:crypto";
 import { classifyDeniedName, isValidName } from "@axis/pty-policy";
 import type { ForgeReply } from "@axis/protocol";
-import { createForgeList, forgeRequestId, type ForgeList, type ForgeListConfig } from "./forge-list.js";
-import { createGitExec, type GitExec, type GitExecConfig } from "./git-exec.js";
+import { createForgeList, forgeRequestId, type ForgeList } from "./forge-list.js";
+import { createGitExec, type GitExec } from "./git-exec.js";
 import { controlRequest, dataRequest, relayOutbound, type ControlReply, type ControlRequest, type DataReply, type ExecReply, type RelayInbound } from "./messages.js";
-import { createEndpointHost, type EndpointHostConfig } from "./endpoint-host.js";
-import { DEFAULT_FLOW, OutputFlow, type FlowLimits } from "./flow.js";
+import { createEndpointHost } from "./endpoint-host.js";
+import { DEFAULT_FLOW, OutputFlow } from "./flow.js";
 import { DEFAULT_INPUT_LIMITS, inputFull as inputOver } from "./input.js";
 import { probeGroup, signalGroup, validPgid } from "./group.js";
 import { OscCwdFilter } from "./osc.js";
 import { preparePush, vetPushRemote } from "./push-run.js";
 import { hasNul, isAbsolutePath } from "./paths.js";
-import { systemClock, systemProcessOps, type Channel, type Clock, type Disposable, type ExecChild, type ProcessOps, type PtyChild, type PtySignal, type SpawnFn } from "./ports.js";
+import { systemClock, systemProcessOps, type Channel, type Disposable, type ExecChild, type PtyChild, type PtySignal } from "./ports.js";
 
-export interface PtyServiceOptions {
-  /** Starts a child in its own session or job. In the shipped entry this is the native pty binding. */
-  readonly spawn: SpawnFn;
-  readonly ops?: ProcessOps;
-  /** Terminal ids are `pty_` plus 32 hex characters of this. Default: node:crypto. */
-  readonly randomBytes?: (n: number) => Uint8Array;
-  /** Live terminals (a leader or a group still running). Default 64. */
-  readonly maxTerminals?: number;
-  /** Decides what an absolute path is for `argv[0]` and `cwd`. Default: this process's platform. */
-  readonly platform?: NodeJS.Platform;
-  /** `exec`, `scratch-*` and `hook` (H9-hooks). Absent: every such message is refused. */
-  readonly git?: GitExecConfig;
-  /** `forge-list` (PV-D2): `gh` through its own exec function. Absent: every `forge-list` answers `spawn_missing`. */
-  readonly forge?: ForgeListConfig;
-  /** Times each exec. Default: the system clock. */
-  readonly clock?: Clock;
-  /** Output flow-control bounds per terminal (characters in flight to the viewer). Default 1 MiB pause, 256 KiB resume, 4 MiB drop. */
-  readonly flow?: FlowLimits;
-  /** Bytes of unconsumed input per terminal and in the whole process before further input is refused (PTY-4). Default 1 MiB and 8 MiB. */
-  readonly input?: Partial<{ terminal: number; process: number; entriesTerminal: number; entriesProcess: number }>;
-  /** Distinct data-connection names served over the life of the service; past this a new name is refused. Default 65536. */
-  readonly maxConnNames?: number;
-  /** PV-M6: the messaging endpoint listener's runtime directory. Absent (the default): a spawn asking for an endpoint is refused. */
-  readonly messagesEndpoints?: EndpointHostConfig;
-}
-
-export interface PtyService {
-  /** The one channel that may spawn and signal (the daemon's). A second control channel is refused. */
-  serveControl(channel: Channel): Disposable;
-  /**
-   * A renderer data channel, named `conn` by whoever brokered it. It can attach only to a terminal the control channel
-   * `grant`ed to `conn`, then write, resize and read output. A second channel with the same `conn` is closed.
-   */
-  serveData(channel: Channel, conn: string): Disposable;
-  /** SIGKILLs the process group of every terminal, closes the channels, releases the listeners and settles. Idempotent. */
-  dispose(): void;
-}
+export type { PtyService, PtyServiceOptions } from "./service-types.js";
+import type { PtyService, PtyServiceOptions } from "./service-types.js";
 
 interface Terminal {
   readonly id: string;
@@ -430,13 +395,25 @@ export function createPtyService(options: PtyServiceOptions): PtyService {
 
   return {
     serveControl(channel) {
-      if (disposed || control !== undefined) {
+      if (disposed) {
         try {
           channel.close();
         } catch {
           /* already closed */
         }
         return { dispose: () => undefined };
+      }
+      // Latest wins (OS-3h, own-shell-main-seam.md §3a): only main can hand this process a control port, so a newer one is main's
+      // own replacement. The old channel is retired first, exactly as if it had closed: every terminal, exec and scratch attempt on
+      // it ends (the daemon that owned them is gone or starts with an empty registry, so a surviving shell would have no owner).
+      const old = control;
+      if (old !== undefined) {
+        closeChannel(old);
+        try {
+          old.close();
+        } catch {
+          /* already closed */
+        }
       }
       control = channel;
       const subs = [channel.onMessage((m) => onControl(channel, m)), channel.onClose(() => closeChannel(channel))];

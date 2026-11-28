@@ -16,7 +16,7 @@ export interface PtyChild {
 
 export type PtySupervisorState = "idle" | "running" | "backoff" | "stopping" | "stopped" | "failed";
 export type PtyFailureReason = "bad_config" | "crash_loop" | "spawn_failed";
-export type PtySupervisorEvent = "spawned" | "exited" | "restart_scheduled" | "failed" | "stopping" | "stopped";
+export type PtySupervisorEvent = "spawned" | "exited" | "restart_scheduled" | "failed" | "stopping" | "stopped" | "start_held";
 export type PtyRestartPolicy = Pick<RestartPolicy, "maxRestarts" | "windowMs" | "baseDelayMs" | "maxDelayMs" | "stableMs" | "stopGraceMs">;
 
 /** The daemon's restart policy; the stop grace is the pty process's own (it has nothing to flush: terminals are killed by group). */
@@ -39,6 +39,8 @@ export interface PtySupervisorOptions {
   readonly onEvent?: (event: PtySupervisorEvent, fields: { readonly code?: number | null; readonly reason?: PtyFailureReason; readonly count?: number }) => void;
   /** Each (re)spawned child, and its exit: the control hand-over follows these. */
   readonly onChild?: (child: PtyChild, alive: boolean) => void;
+  /** The start gate (OS-3h): false while main holds the pty process down after a failed hand-over; `resume()` releases it. */
+  readonly mayStart?: () => boolean;
 }
 
 export class PtySupervisor {
@@ -54,6 +56,7 @@ export class PtySupervisor {
   #backoffTimer: unknown;
   #stopTimer: unknown;
   #stopWaiters: (() => void)[] = [];
+  #held = false;
 
   constructor(options: PtySupervisorOptions) {
     this.#o = options;
@@ -70,6 +73,11 @@ export class PtySupervisor {
 
   start(): void {
     if (this.#state === "idle") this.#spawn();
+  }
+
+  /** A start held by `mayStart` goes ahead now. No effect otherwise. */
+  resume(): void {
+    if (this.#held && this.#state === "backoff") this.#spawn();
   }
 
   /** SIGTERM, then SIGKILL after `stopGraceMs`; resolves when the child is gone or the kill was sent. Cancels a pending restart. */
@@ -98,6 +106,13 @@ export class PtySupervisor {
   }
 
   #spawn(): void {
+    if (this.#o.mayStart !== undefined && !this.#o.mayStart()) {
+      this.#held = true;
+      this.#state = "backoff";
+      this.#emit("start_held", {});
+      return;
+    }
+    this.#held = false;
     const generation = ++this.#generation;
     let child: PtyChild;
     try {

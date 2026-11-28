@@ -103,6 +103,7 @@ export class ControlClient {
   readonly #onProjects: Handlers<Extract<InboundMessage, { type: "projects.inspect" | "projects.register" | "projects.trust" }>> = [];
   readonly #onShutdown: Handlers<void> = [];
   readonly #onWindowGone: Handlers<Extract<InboundMessage, { type: "window.gone" }>> = [];
+  readonly #onPtyControl: Handlers<Extract<InboundMessage, { type: "pty-control-confirmed" | "pty-control-close" }>> = [];
   readonly #onInit: Handlers<Record<string, unknown>> = [];
   readonly #onAck: Handlers<number> = [];
   #nextId = 1;
@@ -146,6 +147,11 @@ export class ControlClient {
     return this.#add(this.#onTrustSet, handler);
   }
   /** `window.gone` (main only, PV-K2 K2-g4a): a code window was destroyed or its renderer died. */
+  /** Main's notes on the pty control hand-over (OS-3h): a generation confirmed, or to be closed. */
+  onPtyControl(handler: (message: Extract<InboundMessage, { type: "pty-control-confirmed" | "pty-control-close" }>) => void): Unsubscribe {
+    return this.#add(this.#onPtyControl, handler);
+  }
+
   onWindowGone(handler: (message: Extract<InboundMessage, { type: "window.gone" }>) => void): Unsubscribe {
     return this.#add(this.#onWindowGone, handler);
   }
@@ -296,7 +302,7 @@ export class ControlClient {
     this.#disposed = true;
     for (const u of this.#unsubscribe.splice(0)) u();
     this.#failAll("client_closed");
-    for (const list of [this.#onConnect, this.#onTrustSet, this.#onProjects, this.#onShutdown, this.#onInit, this.#onAck]) {
+    for (const list of [this.#onConnect, this.#onTrustSet, this.#onProjects, this.#onShutdown, this.#onInit, this.#onAck, this.#onPtyControl]) {
       list.length = 0;
     }
   }
@@ -405,6 +411,9 @@ export class ControlClient {
         return this.#emit(this.#onShutdown, undefined);
       case "window.gone":
         return this.#emit(this.#onWindowGone, m);
+      case "pty-control-confirmed":
+      case "pty-control-close":
+        return this.#emit(this.#onPtyControl, m);
       case "anchor.ack":
         return this.#emit(this.#onAck, m.seq);
       case "anchor.result":

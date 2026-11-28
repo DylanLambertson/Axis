@@ -12,7 +12,8 @@ import { createPtyService, type PtyService, type PtyServiceOptions } from "./ser
  * OSS's own node-pty; everything that can be tested without Electron is here.
  *
  * Only main can write `parentPort`. Main sends exactly two kinds of message, each carrying exactly ONE port:
- *   `{ type: "pty-control" }`            the daemon's control channel (one at a time; a second is closed by the service)
+ *   `{ type: "pty-control", generation }` the daemon's control channel; the newest generation wins (OS-3h, below). The legacy
+ *                                         `{ type: "pty-control" }` without a generation (the Code OSS shell) is adopted too, unacknowledged.
  *   `{ type: "pty-data", conn: <name> }` one renderer data connection, named `conn` by main (the name the `grant` message uses)
  * Anything else (another shape, no port, several ports, a bad name) is dropped and every port in it closed. Terminal ids, spawn and
  * kill authority and the per-connection binding are the service's; nothing is decided here.
@@ -30,11 +31,30 @@ import { createPtyService, type PtyService, type PtyServiceOptions } from "./ser
  * every `forge-list` answers `unsupported_platform`).
  */
 export const PTY_EXIT_REFUSED = 78;
+
+/**
+ * The acknowledged control hand-over (OS-3h, `docs/design/own-shell-main-seam.md` §3a). On `pty-control` with generation G (a safe
+ * integer above every generation seen), this process adopts G (the service retires the channel it held: latest wins) and answers
+ * `{ type: "pty-control-adopted", generation: G }` on its parent port. Portless messages from main:
+ *   `{ type: "pty-control-confirmed", generation }` both ends adopted G: keep it;
+ *   `{ type: "pty-control-close", generation }`     close G if held; always answered `{ type: "pty-control-closed", generation }`.
+ * A G that is not confirmed within PTY_CONTROL_EXPIRY_MS closes itself, so a channel cannot outlive a main that lost track of it.
+ * A generation at or below one already seen is closed unadopted, with no answer.
+ */
+export const PTY_CONTROL_EXPIRY_MS = 10_000;
+const isGeneration = (g: unknown): g is number => typeof g === "number" && Number.isSafeInteger(g) && g >= 1;
+
+export interface PtyEntryTimers {
+  set(fn: () => void, ms: number): unknown;
+  clear(handle: unknown): void;
+}
 const MAX_CONN_CHARS = 128;
 const DEBUG_FLAG = /^--(?:inspect|debug|remote-debugging)/i;
 
 export interface PtyParentPortLike {
   on(event: "message", listener: (event: { data: unknown; ports?: readonly MessagePortLike[] }) => void): unknown;
+  /** Electron's `process.parentPort.postMessage`: the hand-over's acknowledgements. Without it nothing is acknowledged. */
+  postMessage?(message: unknown): void;
   removeListener(event: "message", listener: (event: { data: unknown; ports?: readonly MessagePortLike[] }) => void): unknown;
 }
 
@@ -55,6 +75,8 @@ export interface PtyEntryDeps {
   readonly uid?: number;
   /** One closed line per refusal. */
   readonly stderr: (line: string) => void;
+  /** The control expiry timer. Default `setTimeout`. */
+  readonly timers?: PtyEntryTimers;
 }
 
 export { PTY_ENV_GH, PTY_ENV_GIT, PTY_ENV_SCRATCH, readPtyExecConfig, type PtyExecConfig } from "./config.js";
@@ -143,16 +165,72 @@ export function runPtyEntry(deps: PtyEntryDeps): PtyEntryHandle {
   const endpoints: EndpointHostConfig | undefined = platform === "win32" || uid === undefined || dir === undefined ? undefined : { dir, platform, uid };
   const service = createPtyService({ spawn: deps.spawn, ...(endpoints === undefined ? {} : { messagesEndpoints: endpoints }), ...(deps.platform === undefined ? {} : { platform: deps.platform }), ...(git === undefined ? {} : { git }), ...(forge === undefined ? {} : { forge }) });
   let disposed = false;
+  const timers: PtyEntryTimers = deps.timers ?? { set: (fn, ms) => setTimeout(fn, ms), clear: (h) => clearTimeout(h as ReturnType<typeof setTimeout>) };
+  // The control generation this process holds (OS-3h). `generation` is undefined for a legacy, unacknowledged channel.
+  let held: { readonly generation: number | undefined; readonly served: { dispose(): void }; readonly port: MessagePortLike; confirmed: boolean; expiry: unknown } | undefined;
+  let highest = 0;
+  const answer = (message: { type: string; generation: number }): void => {
+    try {
+      parentPort.postMessage?.(message);
+    } catch {
+      // main is gone: nothing to tell
+    }
+  };
+  const release = (): void => {
+    const h = held;
+    held = undefined;
+    if (h === undefined) return;
+    if (h.expiry !== undefined) timers.clear(h.expiry);
+    h.served.dispose();
+    try {
+      h.port.close();
+    } catch {
+      // already closed
+    }
+  };
+  const adopt = (port: MessagePortLike, generation: number | undefined): void => {
+    const served = service.serveControl(adaptMessagePort(port, { shape: "electron" }));
+    if (held !== undefined && held.expiry !== undefined) timers.clear(held.expiry);
+    held = { generation, served, port, confirmed: generation === undefined, expiry: undefined };
+    if (generation === undefined) return;
+    const mine = held;
+    mine.expiry = timers.set(() => {
+      if (held === mine && !mine.confirmed) release();
+    }, PTY_CONTROL_EXPIRY_MS);
+    answer({ type: "pty-control-adopted", generation });
+  };
+  const onControlNote = (data: object, kind: unknown): boolean => {
+    const generation = (data as { generation?: unknown }).generation;
+    if ((kind !== "pty-control-confirmed" && kind !== "pty-control-close") || Object.keys(data).length !== 2 || !isGeneration(generation)) return false;
+    if (kind === "pty-control-confirmed") {
+      if (held?.generation === generation && !held.confirmed) {
+        held.confirmed = true;
+        if (held.expiry !== undefined) timers.clear(held.expiry);
+        held.expiry = undefined;
+      }
+    } else {
+      if (held?.generation === generation) release();
+      answer({ type: "pty-control-closed", generation });
+    }
+    return true;
+  };
 
   const onMessage = (event: { data: unknown; ports?: readonly MessagePortLike[] }): void => {
     const ports = Array.isArray(event.ports) ? event.ports : [];
     const data = event.data;
     const kind = typeof data === "object" && data !== null ? (data as { type?: unknown }).type : undefined;
     const conn = typeof data === "object" && data !== null ? (data as { conn?: unknown }).conn : undefined;
+    if (!disposed && ports.length === 0 && typeof data === "object" && data !== null && onControlNote(data, kind)) return;
     const only = ports.length === 1 ? ports[0] : undefined;
     if (disposed || only === undefined) return closeAll(ports);
-    if (kind === "pty-control" && Object.keys(data as object).length === 1) {
-      service.serveControl(adaptMessagePort(only, { shape: "electron" }));
+    const keys = kind === "pty-control" ? Object.keys(data as object) : [];
+    const generation = (data as { generation?: unknown } | null)?.generation;
+    if (kind === "pty-control" && keys.length === 1) {
+      adopt(only, undefined);
+    } else if (kind === "pty-control" && keys.length === 2 && isGeneration(generation)) {
+      if (generation <= highest) return closeAll(ports);
+      highest = generation;
+      adopt(only, generation);
     } else if (kind === "pty-data" && typeof conn === "string" && conn.length >= 1 && conn.length <= MAX_CONN_CHARS && Object.keys(data as object).length === 2) {
       service.serveData(adaptMessagePort(only, { shape: "electron" }), conn);
     } else {
@@ -169,6 +247,7 @@ export function runPtyEntry(deps: PtyEntryDeps): PtyEntryHandle {
     if (disposed) return;
     disposed = true;
     parentPort.removeListener("message", onMessage);
+    if (held?.expiry !== undefined) timers.clear(held.expiry);
     deps.process.removeListener("SIGTERM", terminate);
     deps.process.removeListener("SIGINT", terminate);
     deps.process.removeListener("exit", end);

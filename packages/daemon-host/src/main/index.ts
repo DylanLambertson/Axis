@@ -10,6 +10,7 @@ export * from "./answers.js";
 export * from "./attest-sign.js";
 export * from "./native-queue.js";
 export * from "./pty-handover.js";
+export * from "./pty-handover-acked.js";
 export * from "./pty-launch.js";
 export * from "./pty-supervisor.js";
 export * from "./settings-scope.js";
