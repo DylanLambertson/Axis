@@ -209,3 +209,10 @@ test("S4 part 1: runHooks on over a pty process that cannot run pre-push refuses
     await assert.rejects(ops.planPush(call), (e: unknown) => !isHooks(e));
   }
 });
+
+test("DC-0b: the git port hands the index lock ledger to git-ops, and has none when the host gives none", () => {
+  const scanner = createSecretScanner({ mode: "refuse" });
+  const ledger = { record: () => undefined, clear: () => undefined };
+  assert.equal(createGitPort({ ...base, scanner, indexLockLedger: ledger }).indexLockLedger, ledger);
+  assert.equal(createGitPort({ ...base, scanner }).indexLockLedger, undefined);
+});

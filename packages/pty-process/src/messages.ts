@@ -111,6 +111,8 @@ export const controlRequest = z.discriminatedUnion("t", [
   z.object({ t: z.literal("write"), data: z.string().max(LIMITS.writeChars) }).merge(term).strict(),
   /** G-2: binds an issued terminal id to one brokered data connection. Only this message lets a data connection attach. */
   z.object({ t: z.literal("grant"), conn: id }).merge(term).strict(),
+  /** DC-3a: ends every data connection's access to one terminal for good (its grant, its owner, and any later grant). */
+  z.object({ t: z.literal("revoke") }).merge(term).strict(),
   exec,
   hook,
   push,
