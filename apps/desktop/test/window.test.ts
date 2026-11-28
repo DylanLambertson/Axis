@@ -3,28 +3,23 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import { PALETTES, windowTitle } from "@axis/ui";
+import { APP_PARTITION, appWebPreferences } from "@axis/desktop-main";
 import { mainWindowOptions } from "../main/window.js";
 
-test("the window is sandboxed and isolated, with no Node in any frame or worker, and no webview", () => {
-  const p = mainWindowOptions("/b", "dark").webPreferences;
-  assert.deepEqual(p, {
-    preload: join("/b", "preload.cjs"),
-    sandbox: true,
-    contextIsolation: true,
-    nodeIntegration: false,
-    nodeIntegrationInWorker: false,
-    nodeIntegrationInSubFrames: false,
-    webSecurity: true,
-    allowRunningInsecureContent: false,
-    webviewTag: false,
-    navigateOnDragDrop: false,
-    spellcheck: false,
-  });
+test("the window takes the hardened web preferences: sandboxed, isolated, the app partition, DevTools only unpackaged", () => {
+  const p = mainWindowOptions("/b", "dark", true).webPreferences;
+  assert.deepEqual(p, { ...appWebPreferences({ preload: join("/b", "preload.cjs"), packaged: true }) });
+  assert.equal(p?.sandbox, true);
+  assert.equal(p?.contextIsolation, true);
+  assert.equal(p?.nodeIntegration, false);
+  assert.equal(p?.partition, APP_PARTITION);
+  assert.equal(p?.devTools, false);
+  assert.equal(mainWindowOptions("/b", "dark", false).webPreferences?.devTools, true);
 });
 
 test("title from the brand module, background from the theme's canvas token, hidden until ready", () => {
-  const dark = mainWindowOptions("/b", "dark");
-  const light = mainWindowOptions("/b", "light");
+  const dark = mainWindowOptions("/b", "dark", true);
+  const light = mainWindowOptions("/b", "light", true);
   assert.equal(dark.title, windowTitle());
   assert.equal(dark.backgroundColor, PALETTES.dark.canvas);
   assert.equal(light.backgroundColor, PALETTES.light.canvas);

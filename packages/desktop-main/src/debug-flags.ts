@@ -24,7 +24,13 @@
  * switch only, never its value.
  */
 
-/** The switches a packaged build accepts (lower case, no prefix): the Linux display switches users pass. */
+/**
+ * The switches a packaged build accepts (lower case, no prefix): the Linux display switches users pass. Decided and refused:
+ * `--no-sandbox` (an AppImage on a host without unprivileged user namespaces needs it; the renderer sandbox is not optional, so
+ * such a host uses the distribution package or enables the namespaces) and Squirrel's `--squirrel-*` (no installer is chosen yet;
+ * OS-21 adds exactly the switches of the one it picks, with its reason). A protocol or file launch passes a positional argument,
+ * which is never judged.
+ */
 export const PACKAGED_ALLOWED_SWITCHES: ReadonlySet<string> = new Set(["ozone-platform", "ozone-platform-hint"]);
 
 /** Known debugging switch names (lower case, no prefix). Never allowed in a packaged build. */
@@ -62,6 +68,8 @@ export function debugFlagRefusals(argv: readonly unknown[], env: Readonly<Record
   if (!Array.isArray(argv) || argv.length > MAX_ARGS) return Object.freeze(["argv"]);
   // argv[0] is the executable.
   for (let i = 1; i < argv.length; i++) {
+    // LaunchServices may still pass `-psn_<n>_<n>` on a macOS Finder launch (a quarantined first launch). It is not a switch.
+    if (options.platform === "darwin" && typeof argv[i] === "string" && MAC_PSN.test(argv[i] as string)) continue;
     const name = switchName(argv[i], options.platform);
     if (name !== undefined && (REFUSED_SWITCHES.has(name) || !PACKAGED_ALLOWED_SWITCHES.has(name))) found.add(`--${shown(name)}`);
   }
@@ -72,8 +80,10 @@ export function debugFlagRefusals(argv: readonly unknown[], env: Readonly<Record
   return Object.freeze([...found].sort());
 }
 
-/** A refused name as the log shows it: the switch characters only, bounded (an unknown switch's name is caller text). */
-const shown = (name: string): string => (/^[a-z0-9][a-z0-9._-]{0,63}$/.test(name) ? name : "(unprintable)");
+/** A refused name as the log shows it: a known debugging switch by name; any other name is caller text and is never echoed. */
+const shown = (name: string): string => (REFUSED_SWITCHES.has(name) ? name : "(unknown)");
+
+const MAC_PSN = /^-psn_\d{1,10}_\d{1,10}$/;
 
 /** The lower-case name of a switch argument, or undefined when the argument is not a switch. */
 export function switchName(arg: unknown, platform: string): string | undefined {

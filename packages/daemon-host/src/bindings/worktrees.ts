@@ -18,6 +18,7 @@ import type { WorktreesService } from "../ports/worktrees.js";
 import { fromWorktreeError, worktreeFailure } from "../worktrees/errors.js";
 import { createWorktreeContentHooks } from "../worktrees/hooks.js";
 import { assertSafeRestorePath } from "../worktrees/restore-paths.js";
+import type { WorkspaceTerminals } from "../worktrees/guards.js";
 import { createWorktreeLocator } from "../worktrees/locator.js";
 import { ProjectMutex } from "../worktrees/project-mutex.js";
 import { createWorktreesService, type ServiceJournal } from "../worktrees/service.js";
@@ -30,6 +31,8 @@ export interface WorktreesBindingDeps {
   readonly transact: <T>(fn: () => T) => T;
   readonly random: RandomSource;
   readonly runs: Pick<RunsService, "hasActiveRun">;
+  /** DC-3a: the plain terminals, closed before finalise and remove. */
+  readonly terminals?: WorkspaceTerminals;
   /** Monotonic milliseconds for the project trust ticket: the SAME clock the gate mints on (`clock.monotonic`). */
   readonly now: () => number;
   /** The ONE absolute git path of `HostServices.gitPath` (design step 5a, FU-GIT-RESOLVE): never looked up again. */
@@ -168,6 +171,7 @@ function build(deps: WorktreesBindingDeps, seams: WorktreesTestSeams): Worktrees
     locator,
     mutex,
     runs: deps.runs,
+    ...(deps.terminals === undefined ? {} : { terminals: deps.terminals }),
     now: deps.now,
     random: deps.random,
     platform: deps.platform,

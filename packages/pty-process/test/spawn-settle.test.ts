@@ -45,7 +45,7 @@ test("a late `spawned` after the timeout kills the orphan group instead of leaki
   await assert.rejects(p, code("timeout"));
   pair.b.send({ t: "spawned", req, term: "pty_late", group: { kind: "pgid", pgid: 4242 } });
   await settle();
-  assert.deepEqual(pair.sent.a.at(-1), { t: "kill", term: "pty_late", signal: "SIGKILL" });
+  assert.deepEqual(pair.sent.a.slice(-2), [{ t: "revoke", term: "pty_late" }, { t: "kill", term: "pty_late", signal: "SIGKILL" }]);
 });
 
 test("closing the channel rejects every pending spawn, and later spawns reject at once", async () => {

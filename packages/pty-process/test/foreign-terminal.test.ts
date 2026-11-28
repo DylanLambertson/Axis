@@ -62,7 +62,7 @@ test("G-2: attach without a grant is refused; a pre-claim cannot take the termin
   intruder.a.send({ t: "attach", term }); // pre-claim: no grant exists yet
   await settle();
   assert.deepEqual(intruder.sent.b, [REFUSED]);
-  r.port.grant(term, "win1");
+  r.port.grantTerminal(term, "win1");
   await settle();
   intruder.a.send({ t: "attach", term });
   owner.a.send({ t: "attach", term });
@@ -81,7 +81,7 @@ test("G-2: another connection cannot steal, write to or resize a terminal grante
   const two = channelPair();
   r.service.serveData(one.b, "win1");
   r.service.serveData(two.b, "win2");
-  r.port.grant(term, "win1");
+  r.port.grantTerminal(term, "win1");
   await settle();
   one.a.send({ t: "attach", term });
   await settle();
@@ -98,7 +98,7 @@ test("G-2: a granted connection that has not attached cannot write; once attache
   const { r, term, child } = await withTerminal();
   const one = channelPair();
   r.service.serveData(one.b, "win1");
-  r.port.grant(term, "win1");
+  r.port.grantTerminal(term, "win1");
   await settle();
   one.a.send({ t: "write", term, data: "x" });
   one.a.send({ t: "attach", term });
@@ -114,7 +114,7 @@ test("G-2: when the granted connection closes the id cannot be reused by another
   const { r, term } = await withTerminal();
   const one = channelPair();
   r.service.serveData(one.b, "win1");
-  r.port.grant(term, "win1");
+  r.port.grantTerminal(term, "win1");
   await settle();
   one.a.send({ t: "attach", term });
   await settle();
@@ -129,7 +129,7 @@ test("G-2: when the granted connection closes the id cannot be reused by another
   assert.deepEqual(two.sent.b, [REFUSED]);
   assert.throws(() => again.a.send({ t: "attach", term }), /closed/, "the service closes a port that reuses a name: names are single use");
   assert.deepEqual(again.sent.b, []);
-  r.port.grant(term, "win2"); // main brokers a new port: only now
+  r.port.grantTerminal(term, "win2"); // main brokers a new port: only now
   await settle();
   two.a.send({ t: "attach", term });
   await settle();
@@ -142,11 +142,11 @@ test("G-2: a re-grant to another connection detaches the first one", async () =>
   const two = channelPair();
   r.service.serveData(one.b, "win1");
   r.service.serveData(two.b, "win2");
-  r.port.grant(term, "win1");
+  r.port.grantTerminal(term, "win1");
   await settle();
   one.a.send({ t: "attach", term });
   await settle();
-  r.port.grant(term, "win2");
+  r.port.grantTerminal(term, "win2");
   await settle();
   child.emit("later");
   one.a.send({ t: "write", term, data: "x" });
@@ -170,7 +170,7 @@ test("G-2: two channels cannot share one connection name; the second is closed",
 
 test("G-2: only the control channel can grant; a grant for an unknown terminal is ignored", async () => {
   const { r, term } = await withTerminal();
-  r.port.grant("pty_00000000000000000000000000000000", "win1");
+  r.port.grantTerminal("pty_00000000000000000000000000000000", "win1");
   const one = channelPair();
   r.service.serveData(one.b, "win1");
   await settle();
@@ -183,7 +183,7 @@ test("PTY-7: the daemon control channel never receives terminal output, only sta
   const { r, term, child } = await withTerminal();
   const one = channelPair();
   r.service.serveData(one.b, "c1");
-  r.port.grant(term, "c1");
+  r.port.grantTerminal(term, "c1");
   await settle();
   one.a.send({ t: "attach", term });
   await settle();
