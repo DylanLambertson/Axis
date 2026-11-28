@@ -113,3 +113,24 @@ test("a whole added file whose last line is the width plus a bare CR is cut, in 
     f.cleanup();
   }
 });
+
+// The build's partial recheck is the only gate on this path: a whole-file accept WITHOUT the acknowledgement, then one uncut
+// hunk taken back, leaves a partial decision holding a cut hunk that no `acceptHunk` gate saw. A weaker cut rule in the
+// recheck (the old strip-any-CR one) would let the hidden CR through here.
+test("a whole-file accept narrowed to a cut hunk by rejectHunk is still refused at build without the acknowledgement", async () => {
+  const f = withLast();
+  try {
+    const { s, h } = await lastHunk(f, `${EARLY}${"x".repeat(WIDTH)}\r`);
+    const first = (await s.hunks("probe")).hunks?.[0];
+    assert.equal(first?.truncated, false);
+    assert.equal(h.truncated, true);
+    s.acceptFile("probe");
+    s.rejectHunk("probe", first?.id ?? "");
+    assert.equal(s.decision("probe").state, "partial");
+    assert.equal((await refusal(s.build())).details?.["reason"], "truncated_hunk");
+    s.acceptHunk("probe", h.id, { acceptTruncated: true });
+    assert.equal(show(f, (await s.build()).reviewedTree, "probe"), `${CONTEXT}${"x".repeat(WIDTH)}\r`);
+  } finally {
+    f.cleanup();
+  }
+});

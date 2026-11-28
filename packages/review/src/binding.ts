@@ -189,6 +189,8 @@ export function prepareCommit(deps: ReviewDeps, binding: ReviewBinding): Promise
         { changedCount: fresh.changedCount },
       );
     }
+    // A self-check, not a gate: it proves the reviewed tree loads whole, which git-ops' `rev-parse --verify <id>^{tree}` and
+    // `commit-tree` prove again. It uses a PRIVATE index only, so the real index is never read or written here.
     const idx = await acquireIndex(deps.tempIndex);
     try {
       expectOk(await git(["read-tree", binding.reviewedTree], { index: idx.path }), "load the reviewed tree");

@@ -2,7 +2,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   GitOpsError, createNodeRunner, executeCommit, executePush, guardedRunner, planCommit, planPush, prefix,
@@ -45,6 +45,28 @@ test("commit (DC-0): the reviewed tree is committed, not the index, and the user
   assert.equal(r.tree, reviewed);
   assert.equal(f.git("rev-parse", "HEAD^{tree}").trim(), reviewed, "c.txt is not committed");
   assert.equal(f.git("write-tree").trim(), staged, "the index is as the user staged it");
+});
+
+// Slice 1 review N3: the commit path never writes the real index, proven on the file's bytes. The index is left in a state
+// where any write would change it: a staged entry's stat data is stale (its file was touched after staging), and the cache
+// tree is invalid (a file added without a write-tree). b.txt is staged as committed, so no entry equals old HEAD and the
+// refresh has nothing to do; a stat refresh, a write-tree or any other index write in the path changes the bytes.
+test("commit (DC-0): the index file is byte-identical after a commit whose refresh has nothing to change", async () => {
+  const f = fixture();
+  const reviewed = stage(f, "b.txt", "two\n");
+  stage(f, "c.txt", "staged after review\n");
+  writeFileSync(join(f.wt.workTree, "d.txt"), "added, no write-tree\n");
+  f.git("add", "d.txt");
+  const later = new Date(Date.now() + 120_000);
+  utimesSync(join(f.wt.workTree, "c.txt"), later, later);
+  const indexFile = join(f.wt.gitDir, "index");
+  const before = readFileSync(indexFile);
+  const entries = f.git("ls-files", "--stage");
+  const r = await executeCommit(f.deps, { worktree: f.wt, reviewedTreeHash: reviewed, message: "m", ...pin(f) });
+  assert.equal(r.tree, reviewed);
+  assert.deepEqual(r.indexRefresh, { refreshed: 0 });
+  assert.ok(readFileSync(indexFile).equals(before), "the index file is byte-identical");
+  assert.equal(f.git("ls-files", "--stage"), entries);
 });
 
 test("commit: refused while a CLI run is active", async () => {
